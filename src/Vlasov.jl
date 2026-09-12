@@ -10,6 +10,7 @@ include("mesh.jl")
 include("deposition.jl")
 include("poisson.jl")
 include("particles.jl")
+include("fields.jl")
 
 export HermiteKind, Value, Slope, BasisIndex, linearindex
 export SplineAxis, nknots, nbasis, evaluate, value, derivative, curvature, support
@@ -22,5 +23,6 @@ export Multipole, multipole, potential, boundary_potential!, poisson_rhs, poisso
 export poisson, poisson!
 export ParticleCloud, ELECTRON_MASS, ELECTRON_CHARGE, mass, charge
 export step!, half_step_back, full_step_back
+export GaussianSmoothing, smoothed_field, spline_field, forces!, nearest_knot, cell_index
 
 end # module

@@ -31,6 +31,7 @@ des `Float64`). Convention de nommage : `dump_*` pour la **grille fine**,
 | `dumprh2.bin`, `dumprh2gt.bin`, `dumpphi.bin`, `dumprhs.bin` | densité, grille, potentiel de bord et second membre de `makerh2` |
 | `dumpcsol.bin`, `dumpphi2.bin` | potentiel résolu et ses coefficients spline |
 | `mv_*.bin` | état avant/après un pas de Verlet, et ses diagnostics |
+| `fg_*.bin` | tables de convolution, potentiels, positions et forces de `force2g` |
 
 `dumpqp.bin` et `dumprho.bin` sont écrits par `makerho`, qui est appelée
 plusieurs fois : c'est la dernière invocation qui subsiste. Peu importe —

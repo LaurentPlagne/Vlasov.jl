@@ -191,5 +191,36 @@ reldiff(a, b) = norm(a - b) / norm(b)
             @test diag.kinetic ≈ read_dump_vector("mv_ekin.bin")[1] rtol = 1e-13
             @test reldiff(collect(diag.angular), read_dump_vector("mv_lcin.bin")) < 1e-12
         end
+
+        @testset "Champs et forces" begin
+            triplets(v) = [(v[3i-2], v[3i-1], v[3i]) for i in 1:length(v)÷3]
+            flat(t) = collect(Iterators.flatten(t))
+
+            gx = read_dump_vector("fg_gx.bin")
+            gxb = read_dump_vector("fg_gxb.bin")
+            fine = SplineAxis(gx, collocation_points(gx))
+            coarse = SplineAxis(gxb, collocation_points(gxb))
+
+            # Tables de convolution gaussienne.
+            sm = GaussianSmoothing(fine)
+            @test sm.spacing ≈ read_dump_vector("fg_pas.bin")[1]
+            @test reldiff(sm.overlap, reshape(read_dump_vector("fg_it1.bin"), 10, :)) < 1e-11
+            @test reldiff(sm.gradient, reshape(read_dump_vector("fg_it2.bin"), 10, :)) < 1e-11
+
+            # Forces sur les pseudo-particules.
+            n = nbasis(fine)
+            csol = reshape(read_dump_vector("fg_csol.bin"), n, n, n)
+            csolb = reshape(read_dump_vector("fg_csolb.bin"), n, n, n)
+            qp = triplets(read_dump_vector("fg_qp.bin"))
+            cloud = ParticleCloud(qp, 196.0 / length(qp))
+            nout = forces!(cloud, (fine, fine, fine), csol,
+                           (coarse, coarse, coarse), csolb, sm;
+                           escaped = Int(read_dump_vector("fg_n.bin")[1]))
+            # Sur ce dump, toutes les particules sont dans la grille fine ; les
+            # régimes grossier et monopolaire sont couverts par la suite
+            # autonome, pas ici.
+            @test nout == 0
+            @test reldiff(flat(cloud.forces), read_dump_vector("fg_fp.bin")) < 1e-11
+        end
     end
 end

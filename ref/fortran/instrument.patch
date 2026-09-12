@@ -1,5 +1,5 @@
 --- vlas.f	2026-09-12 15:01:37
-+++ vlas_dump.f	2026-09-12 15:19:28
++++ vlas_dump.f	2026-09-12 15:23:59
 @@ -1183,6 +1183,24 @@
        call diagonal(nsx,dex,mx,mxi,lxr,lxi)
        call diagonal(nsy,dey,my,myi,lyr,lyi)
@@ -97,7 +97,25 @@
        end
  c-----------------------------------------------------------
        subroutine force2g(npart,nbelec,fp,qp,nx,ny,nz,
-@@ -3668,6 +3716,10 @@
+@@ -3202,6 +3250,17 @@
+             fp(3,j)=csr3s2*z
+          end if
+       end do
++      call dumpflat('fg_qp.bin',qp,3*(npart-nbcap))
++      call dumpflat('fg_fp.bin',fp,3*(npart-nbcap))
++      call dumpflat('fg_csol.bin',csol,(NTXT+1)*(NTYT+1)*(NTZT+1))
++      call dumpflat('fg_csolb.bin',csolbig,(NTXT+1)*(NTYT+1)*(NTZT+1))
++      call dumpflat('fg_gx.bin',gx,NHFX+1)
++      call dumpflat('fg_gxb.bin',gxbig,NHFX+1)
++      call dumpflat('fg_pas.bin',pasgrid,1)
++      call dumpflat('fg_it1.bin',inttab1,10*(nbdt+1))
++      call dumpflat('fg_it2.bin',inttab2,10*(nbdt+1))
++      call dumpint('fg_n.bin',nboutbig+nbcap)
++      print*,'DUMPED force2g compt=',compt
+       end
+ c-----------------------------------------------------------
+       subroutine enerele2g(npart,nbelec,qp,nx,ny,nz,
+@@ -3668,6 +3727,10 @@
        ekin=0.d0
        ekinout=0.d0
        j=1
@@ -108,7 +126,7 @@
        lcix=0.d0
        lciy=0.d0
        lciz=0.d0
-@@ -3705,6 +3757,12 @@
+@@ -3705,6 +3768,12 @@
        lcine(1)=lcix
        lcine(2)=lciy
        lcine(3)=lciz

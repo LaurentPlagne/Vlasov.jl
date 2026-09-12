@@ -37,3 +37,14 @@ c     Ecrit n reels consecutifs d'un tableau vu a plat (ordre colonne).
       end do
       close(78)
       end
+      subroutine dumpint(nom,n)
+      implicit none
+      character*(*) nom
+      integer n
+      double precision v(1)
+      v(1)=dble(n)
+      open(79,file=trim(nom),form='unformatted',access='stream')
+      write(79) 1
+      write(79) v(1)
+      close(79)
+      end

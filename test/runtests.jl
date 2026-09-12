@@ -439,6 +439,90 @@ end
         @test all(full_step_back(q0, demi0, F, M, dt; consistent = true)[1] .≈ exact(-dt))
     end
 
+    @testset "Repérage sur un axe" begin
+        ax = uniform_axis(0.0, 10.0, 10)
+        @test nearest_knot(ax.knots, 0.4) == 1
+        @test nearest_knot(ax.knots, 0.6) == 2
+        @test nearest_knot(ax.knots, 5.0) == 6
+        @test nearest_knot(ax.knots, 10.0) == 11
+        @test cell_index(ax.knots, 0.0) == 1
+        @test cell_index(ax.knots, 3.5) == 4
+        @test cell_index(ax.knots, -0.1) === nothing
+        @test cell_index(ax.knots, 10.1) === nothing
+    end
+
+    @testset "Champs électriques" begin
+        ax = uniform_axis(-50.0, 50.0, 28)
+        n = nbasis(ax)
+        axes3 = (ax, ax, ax)
+
+        """Coefficients spline 1D d'un polynôme, par interpolation d'Hermite."""
+        function coefs1d(a, p, p′)
+            c = zeros(nbasis(a))
+            for k in 1:nknots(a)
+                c[linearindex(BasisIndex(k, Value))] = p(a.knots[k])
+                c[linearindex(BasisIndex(k, Slope))] = p′(a.knots[k])
+            end
+            c
+        end
+
+        # Potentiel Φ = x : le gradient vaut (1,0,0), donc E = (−1,0,0).
+        cx = coefs1d(ax, identity, _ -> 1.0)
+        c1 = coefs1d(ax, _ -> 1.0, _ -> 0.0)
+        csol = [cx[i] * c1[j] * c1[k] for i in 1:n, j in 1:n, k in 1:n]
+        pts = ((2.3, -1.7, 4.1), (-8.0, 0.5, -3.3), (11.2, 6.6, -9.9))
+
+        # Le champ non lissé est le gradient exact de l'interpolant : la base
+        # d'Hermite reproduit les cubiques, donc a fortiori les affines.
+        for p in pts
+            E = spline_field(axes3, csol, p)
+            @test all(E .≈ (-1.0, 0.0, 0.0)) || maximum(abs, E .- (-1.0, 0.0, 0.0)) < 1e-13
+        end
+        @test spline_field(axes3, csol, (200.0, 0.0, 0.0)) === nothing
+
+        # Le champ lissé ne l'est PAS : le noyau tabulé n'est pas exactement
+        # normalisé (voir `GaussianSmoothing`). On borne l'erreur connue —
+        # ce test échouerait si elle s'aggravait.
+        sm = GaussianSmoothing(ax; nbdt = 200, quadrature = 200)
+        for p in pts
+            E = smoothed_field(axes3, csol, sm, p)
+            @test maximum(abs, E .- (-1.0, 0.0, 0.0)) < 1e-4
+        end
+
+        # Diagnostic direct de la normalisation du noyau.
+        cst = [isodd(a) ? 1.0 : 0.0 for a in 1:10]
+        S0 = [sum(@view(sm.overlap[:, i]) .* cst) for i in axes(sm.overlap, 2)]
+        D0 = [sum(@view(sm.gradient[:, i]) .* cst) for i in axes(sm.gradient, 2)]
+        @test maximum(abs, S0 .- 1) < 1e-5      # doit valoir 1
+        @test maximum(abs, D0) < 1e-4           # doit valoir 0
+        @test sm.σ ≈ (ax.knots[2] - ax.knots[1]) / 3
+    end
+
+    @testset "Forces sur le nuage" begin
+        fine = uniform_axis(-50.0, 50.0, 28)
+        coarse = uniform_axis(-150.0, 150.0, 28)
+        n = nbasis(fine)
+        sm = GaussianSmoothing(fine; nbdt = 100, quadrature = 100)
+        csol = zeros(n, n, n)
+
+        # Trois particules, une par régime : dedans, entre les deux grilles,
+        # hors des deux.
+        w = 0.01
+        cloud = ParticleCloud([(0.0, 0.0, 0.0), (100.0, 0.0, 0.0), (400.0, 0.0, 0.0)], w)
+        nout = forces!(cloud, (fine, fine, fine), csol,
+                       (coarse, coarse, coarse), csol, sm; escaped = 7)
+        @test nout == 2
+
+        # Potentiel nul : les deux premiers régimes ne donnent aucune force.
+        @test all(iszero, cloud.forces[1])
+        @test all(iszero, cloud.forces[2])
+
+        # Le troisième bascule sur le monopôle coulombien de la charge enfermée.
+        r = 400.0
+        @test cloud.forces[3][1] ≈ -w^2 * 7 / r^2
+        @test cloud.forces[3][2] == 0
+    end
+
     @testset "Produit mode-d" begin
         A = randn(4, 4)
         X = randn(4, 5, 6)
