@@ -358,6 +358,87 @@ end
         @test_throws DimensionMismatch poisson_rhs!(zeros(3, 3, 3), ρ, mesh)
     end
 
+    @testset "Intégration de Verlet" begin
+        w, dt = 0.5, 0.05
+        q0, v = (1.0, -2.0, 0.5), (0.3, 0.1, -0.2)
+
+        # Force nulle : le Verlet est exact, la position est affine en temps.
+        libre = ParticleCloud([q0], w)
+        libre.previous[1] = q0 .- dt .* v
+        local diag
+        for _ in 1:20
+            diag = step!(libre, dt)
+        end
+        @test all(libre.positions[1] .≈ q0 .+ (20dt) .* v)
+        M = mass(libre)
+        @test M == ELECTRON_MASS * w
+        @test diag.kinetic ≈ M * (v[1]^2 + v[2]^2 + v[3]^2) / 2
+
+        # Oscillateur harmonique : le Verlet ne conserve pas l'énergie
+        # exactement, mais sans dérive — elle oscille dans une bande étroite.
+        k = 3.0
+        osc = ParticleCloud([(1.0, 0.0, 0.0)], w)
+        osc.previous[1] = osc.positions[1]           # départ au repos
+        énergies = Float64[]
+        for _ in 1:4000
+            osc.forces[1] = (-k) .* osc.positions[1]
+            d = step!(osc, dt)
+            # `d.kinetic` est l'énergie cinétique en t ; après le pas,
+            # `previous` porte q(t). Mélanger les temps ferait osciller
+            # l'énergie pour de mauvaises raisons.
+            q = osc.previous[1]
+            push!(énergies, d.kinetic + k * (q[1]^2 + q[2]^2 + q[3]^2) / 2)
+        end
+        amplitude = (maximum(énergies) - minimum(énergies)) / abs(first(énergies))
+        @test amplitude < 1e-2
+        # Pas de dérive : les deux moitiés de la trajectoire ont même moyenne.
+        moitié = length(énergies) ÷ 2
+        m1 = sum(énergies[1:moitié]) / moitié
+        m2 = sum(énergies[moitié+1:end]) / moitié
+        @test abs(m2 - m1) / abs(m1) < 1e-6
+
+        # Force centrale : le moment cinétique se conserve.
+        orb = ParticleCloud([(1.0, 0.0, 0.0)], w)
+        orb.previous[1] = (1.0, -0.4dt, 0.0)
+        Ls = NTuple{3,Float64}[]
+        for _ in 1:500
+            r = orb.positions[1]
+            n3 = sqrt(sum(abs2, r))
+            orb.forces[1] = (-1.0 / n3^3) .* r
+            push!(Ls, step!(orb, dt).angular)
+        end
+        Lz = [L[3] for L in Ls]
+        @test maximum(abs, Lz .- first(Lz)) / abs(first(Lz)) < 1e-3
+        @test all(L -> abs(L[1]) < 1e-14 && abs(L[2]) < 1e-14, Ls)
+    end
+
+    @testset "Amorçage du leapfrog" begin
+        M, dt = 0.25, 0.1
+        q = [(1.0, 2.0, -1.0), (0.0, 0.5, 3.0)]
+        p = [(0.4, -0.2, 0.1), (-0.3, 0.0, 0.2)]
+        f = [(1.0, 0.0, -1.0), (0.5, 0.5, 0.5)]
+
+        demi = half_step_back(q, p, M, dt)
+        @test all(demi[1] .≈ q[1] .- (dt / 2M) .* p[1])
+
+        # Les deux coefficients diffèrent du facteur documenté : le code
+        # d'origine applique dt/M là où Taylor donne dt²/4M.
+        fidèle = full_step_back(q, demi, f, M, dt)
+        homogène = full_step_back(q, demi, f, M, dt; consistent = true)
+        écart = fidèle[1] .- homogène[1]
+        @test all(écart .≈ (dt / M - dt^2 / 4M) .* f[1])
+
+        # La variante homogène doit reproduire le développement de Taylor
+        # d'un mouvement uniformément accéléré, ce que l'autre ne fait pas.
+        a = (2.0, -1.0, 0.5)
+        q0 = [(0.0, 0.0, 0.0)]
+        v0 = (1.0, 2.0, -0.5)
+        exact(t) = q0[1] .+ t .* v0 .+ (t^2 / 2) .* a
+        demi0 = [exact(-dt / 2)]
+        F = [M .* a]
+        @test all(full_step_back(q0, demi0, F, M, dt; consistent = true)[1] .≈ exact(-dt))
+    end
+
     @testset "Produit mode-d" begin
         A = randn(4, 4)
         X = randn(4, 5, 6)

@@ -167,5 +167,29 @@ reldiff(a, b) = norm(a - b) / norm(b)
             @test reldiff(spline_coefficients(φ, mesh),
                           reshape(read_dump_vector("dumpcsol.bin"), n, n, n)) < 1e-11
         end
+
+        @testset "Pas de Verlet" begin
+            triplets(v) = [(v[3i-2], v[3i-1], v[3i]) for i in 1:length(v)÷3]
+            flat(t) = collect(Iterators.flatten(t))
+
+            q0 = triplets(read_dump_vector("mv_qp0.bin"))
+            qold0 = triplets(read_dump_vector("mv_qo0.bin"))
+            forces = triplets(read_dump_vector("mv_fp.bin"))
+            dt = read_dump_vector("mv_par.bin")[1]
+
+            # `move` dumpe aussi `coef` = 1/2M : de quoi retrouver la masse de
+            # la pseudo-particule sans la supposer.
+            M = 1 / (2 * read_dump_vector("mv_nb.bin")[1])
+            cloud = ParticleCloud(q0, M / ELECTRON_MASS)
+            @test mass(cloud) ≈ M
+            copyto!(cloud.previous, qold0)
+            copyto!(cloud.forces, forces)
+
+            diag = step!(cloud, dt)
+            @test reldiff(flat(cloud.positions), read_dump_vector("mv_qp1.bin")) < 1e-14
+            @test flat(cloud.previous) == read_dump_vector("mv_qo1.bin")
+            @test diag.kinetic ≈ read_dump_vector("mv_ekin.bin")[1] rtol = 1e-13
+            @test reldiff(collect(diag.angular), read_dump_vector("mv_lcin.bin")) < 1e-12
+        end
     end
 end

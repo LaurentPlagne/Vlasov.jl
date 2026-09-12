@@ -9,6 +9,7 @@ include("tensorsolver.jl")
 include("mesh.jl")
 include("deposition.jl")
 include("poisson.jl")
+include("particles.jl")
 
 export HermiteKind, Value, Slope, BasisIndex, linearindex
 export SplineAxis, nknots, nbasis, evaluate, value, derivative, curvature, support
@@ -19,5 +20,7 @@ export SplineMesh, collocation_axes, laplacian!
 export dual_lengths, locate, deposit!, spline_coefficients, spline_coefficients!, total_charge
 export Multipole, multipole, potential, boundary_potential!, poisson_rhs, poisson_rhs!
 export poisson, poisson!
+export ParticleCloud, ELECTRON_MASS, ELECTRON_CHARGE, mass, charge
+export step!, half_step_back, full_step_back
 
 end # module

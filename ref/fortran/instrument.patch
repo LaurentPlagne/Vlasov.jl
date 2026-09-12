@@ -1,5 +1,5 @@
 --- vlas.f	2026-09-12 15:01:37
-+++ vlas_dump.f	2026-09-12 15:16:07
++++ vlas_dump.f	2026-09-12 15:19:28
 @@ -1183,6 +1183,24 @@
        call diagonal(nsx,dex,mx,mxi,lxr,lxi)
        call diagonal(nsy,dey,my,myi,lyr,lyi)
@@ -97,3 +97,27 @@
        end
  c-----------------------------------------------------------
        subroutine force2g(npart,nbelec,fp,qp,nx,ny,nz,
+@@ -3668,6 +3716,10 @@
+       ekin=0.d0
+       ekinout=0.d0
+       j=1
++      call dumpflat('mv_qp0.bin',qp,3*(npart-nbcap))
++      call dumpflat('mv_qo0.bin',qpold,3*(npart-nbcap))
++      call dumpflat('mv_fp.bin',fp,3*(npart-nbcap))
++      call dumpflat('mv_par.bin',dltt,1)
+       lcix=0.d0
+       lciy=0.d0
+       lciz=0.d0
+@@ -3705,6 +3757,12 @@
+       lcine(1)=lcix
+       lcine(2)=lciy
+       lcine(3)=lciz
++      call dumpflat('mv_qp1.bin',qp,3*(npart-nbcap))
++      call dumpflat('mv_qo1.bin',qpold,3*(npart-nbcap))
++      call dumpflat('mv_ekin.bin',ekin,1)
++      call dumpflat('mv_lcin.bin',lcine,3)
++      call dumpflat('mv_nb.bin',coef,1)
++      print*,'DUMPED move npart=',npart-nbcap,' ekin=',ekin
+       end
+ c-----------------------------------------------------------
+       subroutine force2gi(npart,nbelec,fpi,qpi,nx,ny,nz,
