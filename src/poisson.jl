@@ -257,7 +257,7 @@ multipolaires.
 """
 poisson_rhs!(rhs::Array{T,3}, ρ::Array{T,3}, mesh::SplineMesh{3,T}) where {T} =
     poisson_rhs!(rhs, ρ, mesh,
-                 boundary_potential!(similar(ρ), mesh, multipole(ρ, mesh)))
+                 boundary_potential!(mesh.scratch[1], mesh, multipole(ρ, mesh)))
 
 """Version allouante de [`poisson_rhs!`](@ref)."""
 poisson_rhs(ρ::Array{T,3}, mesh::SplineMesh{3,T}) where {T} =
@@ -288,7 +288,7 @@ développement multipolaire, et au raccord entre grilles, qui les lit dans la
 solution du niveau plus grossier.
 """
 function solve_interior!(φ::Array{T,3}, ρ::Array{T,3}, mesh::SplineMesh{3,T}) where {T}
-    rhs = poisson_rhs!(Array{T,3}(undef, size(mesh)), ρ, mesh, φ)
+    rhs = poisson_rhs!(mesh.scratch_inner, ρ, mesh, φ)
     solve!(rhs, rhs, mesh.solver)
     @views φ[2:end-1, 2:end-1, 2:end-1] .= rhs
     φ
@@ -336,7 +336,7 @@ function poisson!(φs::NTuple{L,Array{T,3}}, ρs::NTuple{L,Array{T,3}},
                   nested::NestedMeshes{L,3,T}) where {L,T}
     poisson!(φs[L], ρs[L], nested[L])
     for l in (L-1):-1:1
-        coefs = spline_coefficients(φs[l+1], nested[l+1])
+        coefs = spline_coefficients!(nested[l+1].scratch[2], φs[l+1], nested[l+1])
         boundary_from_coarse!(φs[l], nested[l], nested[l+1], coefs)
         solve_interior!(φs[l], ρs[l], nested[l])
     end

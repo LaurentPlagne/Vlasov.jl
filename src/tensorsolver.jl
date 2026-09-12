@@ -105,32 +105,85 @@ function apply_mode!(dest::Array{T,N}, A::AbstractMatrix{T}, src::Array{T,N},
 end
 
 """
+    apply_rotating!(dest, A, src, dims) -> dims permutées
+
+Applique `A` le long de la **première** dimension, en un seul produit
+matrice-matrice, et rend les dimensions permutées circulairement.
+
+    mul!(C, Xᵀ, Aᵀ)  calcule  C = (A·X)ᵀ
+
+La transposition n'est pas un détour : c'est elle qui fait la permutation. Le
+résultat `(m, n)` se relit tel quel comme un tableau de dimensions
+`(d₂, d₃, …, d₁)`, sans déplacer un octet. Appliquer `N` fois ramène donc les
+dimensions dans leur ordre initial.
+
+Deux conséquences : **une seule GEMM par dimension** au lieu d'une boucle de
+tranches pour les dimensions du milieu, et une forme — un gros produit
+matrice-matrice — qui est exactement ce qu'un GPU exécute le mieux.
+"""
+@inline function apply_rotating!(dest::Array{T,N}, A::AbstractMatrix{T},
+                                 src::Array{T,N}, dims::NTuple{N,Int}) where {T,N}
+    n = dims[1]
+    m = length(src) ÷ n
+    mul!(reshape(dest, m, n), transpose(reshape(src, n, m)), transpose(A))
+    ntuple(i -> dims[mod1(i + 1, N)], N)
+end
+
+"""
+    apply_all_rotating!(dest, mats, src, work) -> dest
+
+Applique `mats[d]` le long de chaque dimension, par `N` rotations successives.
+
+Après `N` rotations les dimensions ont retrouvé leur ordre : c'est le seul
+motif dont le code ait besoin — le solveur tensoriel l'emploie deux fois, le
+passage aux coefficients spline une fois. Un unique noyau BLAS pour toute la
+boucle en temps, et un unique endroit à porter sur GPU le jour venu.
+
+`work` est un tampon de la taille de `src`, fourni par l'appelant : cette
+fonction n'alloue rien. `dest` doit être distinct de `src`.
+
+⚠️ L'alternance entre `dest` et `work` se déduit de la **parité du nombre
+d'étapes restantes**, et non d'un compteur ad hoc. Un ping-pong à un seul
+tampon ferait coïncider source et destination dès la deuxième étape — la
+lecture et l'écriture se marcheraient dessus, silencieusement.
+"""
+function apply_all_rotating!(dest::Array{T,N}, mats, src::Array{T,N},
+                             work::Array{T,N}) where {T,N}
+    dest === src && throw(ArgumentError("`dest` et `src` doivent être distincts"))
+    dims = size(src)
+    cur = src
+    for d in 1:N
+        out = iseven(N - d) ? dest : work
+        dims = apply_rotating!(out, mats[d], cur, dims)
+        cur = out
+    end
+    dest
+end
+
+"""
     solve!(X, B, solver)
 
 Résout l'opérateur tensoriel pour le second membre `B`, résultat dans `X`.
 `X` et `B` peuvent être le même tableau.
+
+`2N` produits matrice-matrice et une division terme à terme, sans aucune
+allocation : les deux tampons appartiennent au solveur. Les allocations
+comptent double ici — elles ne coûtent pas que leur prix, elles déclenchent un
+ramasse-miettes qui met les fils à l'arrêt.
 """
 function solve!(X::Array{T,N}, B::Array{T,N}, s::TensorSolver{N,T}) where {T,N}
     size(X) == size(B) == size(s) ||
         throw(DimensionMismatch("dimensions incompatibles avec le solveur"))
 
     # Transformée directe : passage dans la base propre de chaque dimension.
-    src, dst = B, s.work1
-    for d in 1:N
-        apply_mode!(dst, s.ops[d].Minv, src, d)
-        src, dst = dst, (d == 1 ? s.work2 : src)
-    end
+    apply_all_rotating!(s.work1, map(o -> o.Minv, s.ops), B, s.work2)
 
     # Le cœur de la méthode : l'inversion devient une division terme à terme.
-    src .*= s.invλsum
+    s.work1 .*= s.invλsum
 
-    # Transformée inverse ; la dernière étape écrit directement dans X.
-    for d in 1:N
-        out = (d == N) ? X : dst
-        apply_mode!(out, s.ops[d].M, src, d)
-        src, dst = out, src
-    end
-    X
+    # Transformée inverse. `X` peut être `B` : le second membre a déjà été
+    # entièrement consommé par la transformée directe.
+    apply_all_rotating!(X, map(o -> o.M, s.ops), s.work1, s.work2)
 end
 
 """Version allouante de [`solve!`](@ref)."""

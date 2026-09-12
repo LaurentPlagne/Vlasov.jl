@@ -77,6 +77,10 @@ struct Simulation{T<:AbstractFloat,P}
     projectile::P
     ρ::NTuple{2,Array{T,3}}
     φ::NTuple{2,Array{T,3}}
+    """Coefficients spline du potentiel, un jeu par niveau. Ils vivent le temps
+       d'un pas entier : leur donner des tampons propres évite 2,8 Mo
+       d'allocations par pas, et le ramasse-miettes qui va avec."""
+    csol::NTuple{2,Array{T,3}}
 end
 
 function Simulation(p::SimulationParameters{T}, profile::RadialProfile{T};
@@ -92,6 +96,7 @@ function Simulation(p::SimulationParameters{T}, profile::RadialProfile{T};
     n = nbasis(fine)
     sim = Simulation(p, meshes, GaussianSmoothing(fine), Jellium(p.nions),
                      ParticleCloud(positions, weight), projectile,
+                     (zeros(T, n, n, n), zeros(T, n, n, n)),
                      (zeros(T, n, n, n), zeros(T, n, n, n)),
                      (zeros(T, n, n, n), zeros(T, n, n, n)))
     prime_leapfrog!(sim, positions, momenta; consistent = consistent_startup)
@@ -150,8 +155,8 @@ function update_forces!(sim::Simulation{T}; advance::Bool = true) where {T}
     deposit!(ρc, coarse, sim.cloud.positions; charge = w)
     poisson!(sim.φ, sim.ρ, sim.meshes)
 
-    csolf = spline_coefficients(sim.φ[1], fine)
-    csolc = spline_coefficients(sim.φ[2], coarse)
+    csolf = spline_coefficients!(sim.csol[1], sim.φ[1], fine)
+    csolc = spline_coefficients!(sim.csol[2], sim.φ[2], coarse)
     hartree = interaction_energy(sim.cloud, fine.axes, csolf,
                                  coarse.axes, csolc, sim.smoothing) / 2
 

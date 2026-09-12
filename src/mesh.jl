@@ -30,6 +30,14 @@ struct SplineMesh{N,T,M}
      collocation sans jamais former ses coefficients spline — voir `multipole`."
     dual_moments::NTuple{N,NTuple{3,Vector{T}}}
     solver::TensorSolver{N,T}
+    """Tampons de travail, pleine grille et grille intérieure.
+
+    Les allocations comptent double dans une boucle en temps parallèle : elles
+    ne coûtent pas que leur prix, elles déclenchent un ramasse-miettes qui met
+    tous les fils à l'arrêt. Un maillage est donc **réutilisable mais pas
+    partageable** entre fils."""
+    scratch::NTuple{3,Array{T,N}}
+    scratch_inner::Array{T,N}
 end
 
 function SplineMesh(axes::SplineAxis{T}...) where {T}
@@ -41,7 +49,11 @@ function SplineMesh(axes::SplineAxis{T}...) where {T}
     duals = map(cms) do cm
         ntuple(k -> transpose(cm.Sinv) * moments(cm.axis, Val(k - 1)), 3)
     end
-    SplineMesh(axes, cms, full, duals, TensorSolver(ops...))
+    solver = TensorSolver(ops...)
+    full_dims = map(nbasis, axes)
+    SplineMesh(axes, cms, full, duals, solver,
+               ntuple(_ -> Array{T,length(axes)}(undef, full_dims), 3),
+               Array{T,length(axes)}(undef, size(solver)))
 end
 
 """

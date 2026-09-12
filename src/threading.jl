@@ -7,6 +7,8 @@ parcours indépendant des pseudo-particules ou des points de grille, suivi
 entrelacées — pour que chaque fil travaille sur une zone de mémoire continue.
 """
 
+using LinearAlgebra: BLAS
+
 """
 Interrupteur global du parallélisme.
 
@@ -21,6 +23,34 @@ const PARALLEL = Ref(true)
 
 """Nombre de tranches à utiliser : 1 si le parallélisme est coupé."""
 @inline nchunks_now() = PARALLEL[] ? Threads.nthreads() : 1
+
+"""
+    configure_blas!(; threads = 2)
+
+Limite le nombre de fils d'OpenBLAS.
+
+⚠️ **Le défaut d'OpenBLAS est mauvais ici.** Il prend autant de fils que de
+cœurs, en plus de ceux de Julia, et les deux se disputent la machine. Mesuré
+sur `poisson!`, 8 fils Julia sur 10 cœurs :
+
+| fils BLAS | médiane | étendue (max/min) |
+|---|---|---|
+| 1 | 11,1 ms | 1,1× |
+| 2 | 9,6 ms | 1,4× |
+| 4 | 8,6 ms | 2,6× |
+| 8 *(défaut)* | **20,5 ms** | **5,4×** |
+
+Le défaut n'est pas seulement deux fois plus lent en médiane : il rend les
+temps **imprévisibles**, du simple au quintuple. Deux fils donnent le meilleur
+compromis entre vitesse et régularité.
+
+N'est appelée nulle part automatiquement : changer un réglage global à l'insu
+de l'appelant serait discourtois. À invoquer avant une campagne de calcul.
+"""
+function configure_blas!(; threads::Integer = 2)
+    BLAS.set_num_threads(threads)
+    threads
+end
 
 """
     chunks(n, nchunks = nchunks_now()) -> Vector{UnitRange}

@@ -97,7 +97,7 @@ pour empêcher.
 function effective_potential!(csol::Array{T,3}, ρ::Array{T,3},
                               mesh::SplineMesh{3,T}, jel::Jellium{T}) where {T}
     gx, gy, gz = map(ax -> ax.colloc, mesh.axes)
-    extra = similar(ρ)
+    extra = mesh.scratch[1]
     # ⚠️ Délibérément séquentielle. Mesuré sur machine au repos : la version
     # parallèle est 0,93 fois plus rapide, c'est-à-dire plus lente. Le corps
     # est trop court — un `cbrt`, un `log`, une racine — pour amortir le
@@ -106,5 +106,5 @@ function effective_potential!(csol::Array{T,3}, ρ::Array{T,3},
         r = sqrt(gx[i]^2 + gy[j]^2 + gz[k]^2)
         extra[i, j, k] = xc_potential(ρ[i, j, k]) + potential(jel, r)
     end
-    csol .+= spline_coefficients(extra, mesh)
+    csol .+= spline_coefficients!(mesh.scratch[2], extra, mesh)
 end

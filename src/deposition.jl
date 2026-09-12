@@ -102,13 +102,10 @@ appliquant `S⁻¹` dans chaque direction (le `tensrus2` du Fortran).
 """
 function spline_coefficients!(c::Array{T,N}, ρ::Array{T,N},
                               mesh::SplineMesh{N,T}) where {T,N}
-    src, dst = ρ, c
-    work = similar(c)
-    for d in 1:N
-        apply_mode!(dst, mesh.collocation[d].Sinv, src, d)
-        src, dst = dst, (d == 1 ? work : src)
-    end
-    src === c ? c : copyto!(c, src)
+    # Même noyau que le solveur tensoriel : `N` rotations, `N` produits
+    # matrice-matrice, aucune tranche. Le tampon vient du maillage plutôt que
+    # d'une allocation de 1,4 Mo à chaque appel.
+    apply_all_rotating!(c, map(cm -> cm.Sinv, mesh.collocation), ρ, mesh.scratch[3])
 end
 
 """Version allouante de [`spline_coefficients!`](@ref)."""
