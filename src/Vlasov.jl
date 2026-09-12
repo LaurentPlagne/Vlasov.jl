@@ -38,5 +38,6 @@ export RadialProfile, read_radial_profile, sample_thomas_fermi, initial_cloud, F
 export EnergyBudget, energy_budget, interaction_energy, hartree_energy, ion_self_energy
 export SimulationParameters, read_parameters, Simulation, run!
 export Projectile, projectile_forces!, energy_loss, kinetic_energy, HARTREE_TO_EV
+export enclosed_charge, capture!, advance_projectile!
 
 end # module

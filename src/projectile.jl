@@ -22,7 +22,8 @@ obtenir la perte.
 """
 mutable struct Projectile{T<:AbstractFloat}
     const mass::T
-    const charge::T
+    "Charge courante. Elle **diminue** si le projectile capture des électrons."
+    charge::T
     const cutoff::T
     const initial_energy::T
     position::NTuple{3,T}
@@ -99,6 +100,63 @@ function projectile_forces!(cloud::ParticleCloud{T}, proj::Projectile{T},
         e_electrons += w * uniform_sphere_potential(q, proj.cutoff, sqrt(d2))
     end
     (force, e_electrons, e_jellium)
+end
+
+"""
+    enclosed_charge(cloud, proj, radius) -> T
+
+Charge électronique contenue dans une boule de rayon `radius` autour du
+projectile (le `capture` du Fortran, qui n'en faisait qu'un affichage).
+
+Diagnostic : suivre cette quantité sur plusieurs rayons montre si le
+projectile entraîne un cortège.
+"""
+function enclosed_charge(cloud::ParticleCloud{T}, proj::Projectile{T}, radius) where {T}
+    r2 = radius^2
+    n = count(p -> sum(abs2, p .- proj.position) < r2, cloud.positions)
+    cloud.weight * n
+end
+
+"""
+    capture!(cloud, proj; radius) -> (ncaptured, internal_energy)
+
+Retire du nuage les pseudo-particules liées au projectile — celles à moins de
+`radius` — et diminue d'autant sa charge : l'ion emporte des électrons.
+
+⚠️ **L'adoucissement diffère ici de celui de [`projectile_forces!`](@ref)**, et
+c'est le code d'origine qui en décide ainsi. `docapture` emploie
+`2q/c − q·r²/c³` là où `incproj` emploie `1.5q/c − 0.5q·r²/c³`. Seule la
+seconde est le potentiel d'une boule uniformément chargée ; la première est
+continue au raccord mais vaut `4/3` de l'autre au centre. Reproduit tel quel,
+consigné comme anomalie 9.
+
+L'énergie rendue ne sert qu'au compte rendu, ce qui limite la portée de
+l'écart.
+"""
+function capture!(cloud::ParticleCloud{T}, proj::Projectile{T};
+                  radius::T = T(10)) where {T}
+    q, c, w = proj.charge, proj.cutoff, cloud.weight
+    vcent, coefcent = 2q / c, -q / c^3
+    internal = zero(T)
+
+    keep = Int[]
+    for (i, p) in enumerate(cloud.positions)
+        r = sqrt(sum(abs2, p .- proj.position))
+        if r < radius
+            internal += r > c ? -w * q / r : -w * (vcent + r^2 * coefcent)
+        else
+            push!(keep, i)
+        end
+    end
+
+    ncaptured = length(cloud) - length(keep)
+    if ncaptured > 0
+        for field in (cloud.positions, cloud.previous, cloud.forces)
+            keepat!(field, keep)
+        end
+        proj.charge -= w * ncaptured
+    end
+    (ncaptured, internal)
 end
 
 """

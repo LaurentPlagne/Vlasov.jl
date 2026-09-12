@@ -66,18 +66,22 @@ Construire une `Simulation` fait le travail lourd une fois : assemblage des
 matrices, diagonalisations, tables de convolution. Les pas qui suivent ne
 réutilisent que des multiplications.
 """
-struct Simulation{T<:AbstractFloat}
+struct Simulation{T<:AbstractFloat,P}
     params::SimulationParameters{T}
     meshes::NestedMeshes{2,3,T,BandedMatrix{T,Matrix{T},Base.OneTo{Int}}}
     smoothing::GaussianSmoothing{T}
     jellium::Jellium{T}
     cloud::ParticleCloud{T}
+    """Projectile, ou `nothing` pour un agrégat isolé. Le type le porte plutôt
+       qu'un champ `Union` : la boucle reste spécialisée dans les deux cas."""
+    projectile::P
     ρ::NTuple{2,Array{T,3}}
     φ::NTuple{2,Array{T,3}}
 end
 
 function Simulation(p::SimulationParameters{T}, profile::RadialProfile{T};
-                    rng::Ran2 = Ran2(-1), consistent_startup::Bool = false) where {T}
+                    rng::Ran2 = Ran2(-1), consistent_startup::Bool = false,
+                    projectile = nothing) where {T}
     fine = uniform_axis(-p.rcluster, p.rcluster, p.nfine)
     coarse = stretched_axis(p.rcluster, p.rbox, p.ninner ÷ 2, (p.nouter + 2) ÷ 2)
     meshes = NestedMeshes(SplineMesh(fine, fine, fine),
@@ -87,7 +91,7 @@ function Simulation(p::SimulationParameters{T}, profile::RadialProfile{T};
     positions, momenta = sample_thomas_fermi(profile, p.nparticles, weight; rng)
     n = nbasis(fine)
     sim = Simulation(p, meshes, GaussianSmoothing(fine), Jellium(p.nions),
-                     ParticleCloud(positions, weight),
+                     ParticleCloud(positions, weight), projectile,
                      (zeros(T, n, n, n), zeros(T, n, n, n)),
                      (zeros(T, n, n, n), zeros(T, n, n, n)))
     prime_leapfrog!(sim, positions, momenta; consistent = consistent_startup)
@@ -114,9 +118,11 @@ function prime_leapfrog!(sim::Simulation{T}, positions, momenta;
     dt = sim.params.dt
     half = half_step_back(positions, momenta, M, dt)
 
-    # Les forces s'évaluent en q(−dt/2), pas en q(0).
+    # Les forces s'évaluent en q(−dt/2), pas en q(0). Le projectile, lui, ne
+    # bouge pas : le Fortran n'appelle `incproj` qu'une fois l'amorçage fini,
+    # et l'avancer ici le ferait entrer dans l'agrégat avec un pas d'avance.
     copyto!(sim.cloud.positions, half)
-    update_forces!(sim)
+    update_forces!(sim; advance = false)
 
     copyto!(sim.cloud.previous,
             full_step_back(positions, half, sim.cloud.forces, M, dt; consistent))
@@ -131,8 +137,11 @@ Dépose les particules, résout Poisson sur les deux grilles, ajoute le champ
 moyen et remplit les forces du nuage. Renvoie l'énergie de Hartree, mesurée
 **avant** l'ajout du champ moyen — c'est le seul moment où le potentiel nu est
 disponible.
+
+`advance = false` calcule les forces sans faire avancer le projectile, ce dont
+l'amorçage a besoin.
 """
-function update_forces!(sim::Simulation{T}) where {T}
+function update_forces!(sim::Simulation{T}; advance::Bool = true) where {T}
     fine, coarse = sim.meshes[1], sim.meshes[2]
     ρf, ρc = sim.ρ
     w = sim.cloud.weight
@@ -149,6 +158,7 @@ function update_forces!(sim::Simulation{T}) where {T}
     effective_potential!(csolf, ρf, fine, sim.jellium)
     effective_potential!(csolc, ρc, coarse, sim.jellium)
     forces!(sim.cloud, fine.axes, csolf, coarse.axes, csolc, sim.smoothing)
+    advance && advance_projectile!(sim)
 
     # Le potentiel total sert ensuite au bilan : on le garde sous la main.
     sim.φ[1] .= csolf
@@ -196,4 +206,21 @@ function run!(sim::Simulation; nsteps::Integer = sim.params.nsteps,
         callback(i, b)
     end
     history
+end
+
+"""
+    advance_projectile!(sim)
+
+Ajoute l'interaction du projectile — force sur lui, réaction sur les
+pseudo-particules — puis l'avance d'un pas.
+
+Sans projectile, ne fait rien : le corps est éliminé à la compilation, la
+boucle de l'agrégat isolé n'en paie pas le prix.
+"""
+advance_projectile!(::Simulation{T,Nothing}) where {T} = nothing
+
+function advance_projectile!(sim::Simulation{T,Projectile{T}}) where {T}
+    force, _, _ = projectile_forces!(sim.cloud, sim.projectile, sim.jellium)
+    step!(sim.projectile, force, sim.params.dt)
+    nothing
 end

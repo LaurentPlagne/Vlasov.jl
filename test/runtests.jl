@@ -846,6 +846,69 @@ end
         end
     end
 
+    @testset "Capture d'électrons" begin
+        dt = 1.0
+        proj = Projectile(; mass = 1836.154, charge = 1.0, energy = 73.498,
+                          x0 = 0.0, dt = dt, cutoff = 1.0)
+        proj.position = (0.0, 0.0, 0.0)
+        w = 0.02
+        # Deux dedans (rayon 10), deux dehors.
+        pos = [(1.0, 0.0, 0.0), (0.0, 5.0, 0.0), (30.0, 0.0, 0.0), (0.0, 0.0, 40.0)]
+        cloud = ParticleCloud(pos, w)
+        cloud.forces[3] = (1.0, 2.0, 3.0)
+
+        @test enclosed_charge(cloud, proj, 10.0) ≈ 2w
+        @test enclosed_charge(cloud, proj, 2.0) ≈ w
+        @test enclosed_charge(cloud, proj, 100.0) ≈ 4w
+
+        q0 = proj.charge
+        n, interne = capture!(cloud, proj; radius = 10.0)
+        @test n == 2
+        @test length(cloud) == 2
+        @test proj.charge ≈ q0 - 2w            # l'ion emporte deux paquets
+        @test interne < 0                       # liaison, donc énergie négative
+
+        # Les survivants gardent leur état, pas seulement leur position.
+        @test cloud.positions == [(30.0, 0.0, 0.0), (0.0, 0.0, 40.0)]
+        @test cloud.forces[1] == (1.0, 2.0, 3.0)
+
+        # Aucune capture ne doit rien changer.
+        q1 = proj.charge
+        @test capture!(cloud, proj; radius = 1.0)[1] == 0
+        @test proj.charge == q1 && length(cloud) == 2
+    end
+
+    @testset "Simulation avec projectile" begin
+        oracle = joinpath(@__DIR__, "..", "ref", "fortran")
+        if !isdir(joinpath(oracle, "data"))
+            @test_skip false
+        else
+            prof = read_radial_profile(joinpath(oracle, "data"))
+            p = SimulationParameters(; nparticles = 1_000, nsteps = 5, dt = 1.0)
+            proj = Projectile(; mass = 1836.154, charge = 1.0, energy = 73.498,
+                              impact = 0.0, x0 = -70.0, dt = 1.0, cutoff = 1.0)
+            sim = Simulation(p, prof; projectile = proj)
+
+            # ⚠️ L'amorçage ne doit PAS avancer le projectile : il calcule des
+            # forces en q(−dt/2), et l'y faire avancer lui donnerait un pas
+            # d'avance sur le nuage.
+            @test proj.position == (-70.0, 0.0, 0.0)
+
+            v = proj.velocity[1]
+            run!(sim; nsteps = 5)
+            @test proj.position[1] ≈ -70.0 + 5 * v rtol = 1e-3
+            @test proj.position[1] > -70.0          # il avance vers l'agrégat
+
+            # Loin de l'agrégat (rayon ≈ 23), le freinage est négligeable.
+            @test abs(energy_loss(proj)) * HARTREE_TO_EV < 1.0
+
+            # Sans projectile, le champ le porte et la boucle n'en paie rien.
+            isolé = Simulation(p, prof)
+            @test isolé.projectile === nothing
+            @test run!(isolé; nsteps = 2) |> length == 2
+        end
+    end
+
     @testset "Paramètres de simulation" begin
         p = SimulationParameters()
         @test p.nfine == 28 && p.nelectrons == 196.0

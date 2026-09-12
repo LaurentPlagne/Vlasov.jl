@@ -78,6 +78,7 @@ voir davantage. Ni des runs longs, où un biais sous le bruit peut s'accumuler.
 | 6 | `makerhsf` | multipôles calculés puis jetés | temps de calcul, bruit | — |
 | 7 | `ceq3d.f` | `π` tronqué à 12 décimales | ~1e-12 partout | non reproduite |
 | 8 | `pspech2` / `enertot2g` | potentiel incohérent au bilan ? | à élucider | — |
+| 9 | `docapture` | adoucissement différent d'`incproj` | énergie de compte rendu | — |
 
 Les points 4 et 5 sont corrigés dans `modernize.patch`, sans quoi le code ne
 compile pas ; voir [`ref/fortran/README.md`](../ref/fortran/README.md).
@@ -320,6 +321,26 @@ tracé en montre plus que la lecture de la boucle n'en laissait attendre, et
 dans un ordre inattendu. Tant que ce n'est pas élucidé, ne rien conclure de
 physique à partir des énergies **du Fortran** ; celles du portage reposent,
 elles, sur une définition explicite.
+
+---
+
+## 9. `docapture` — deux adoucissements pour un seul projectile
+
+Le projectile est une boule uniformément chargée de rayon `cutoff`. Deux
+routines évaluent son potentiel au contact, et elles ne s'accordent pas :
+
+| routine | terme constant | terme en `r²` |
+|---|---|---|
+| `incproj` | `1,5·q/c` | `−0,5·q/c³` |
+| `docapture` | `2·q/c` | `−q/c³` |
+
+Seule la première est le potentiel d'une boule uniformément chargée,
+`−q(3 − (r/c)²)/2c`. La seconde reste continue au raccord `r = c` — les deux
+y valent `−q/c` — mais vaut `4/3` de l'autre au centre.
+
+**Portée.** Faible : `einterne` ne sert qu'au compte rendu, et `docapture`
+n'est appelée qu'une fois, quand le projectile a quitté la boîte. Le portage
+reproduit les deux formes, en les signalant l'une à l'autre.
 
 ---
 
