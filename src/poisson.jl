@@ -101,16 +101,24 @@ end
 
 Moments de la densité `ρ` donnée aux points de collocation.
 
-L'intégration passe par les **coefficients spline** : `∫f = Σ cᵦ ∫φᵦ`, ce que
-les valeurs aux points de collocation ne permettent pas directement.
+L'intégration devrait passer par les coefficients spline — `∫f = Σ cᵦ ∫φᵦ` —
+mais il n'est pas nécessaire de les former. Avec `c = S⁻¹ρ` :
+
+    Σ c[i,j,k]·u[i]v[j]w[k] = Σ ρ[a,b,c]·ũ[a]ṽ[b]w̃[c]     où  ũ = S⁻ᵀu
+
+Transformer les trois **vecteurs** de moments coûte trois produits
+matrice-vecteur ; transformer le **tableau 3D** en coûtait trois produits
+matrice-matrice, quatre ordres de grandeur de plus. Et comme les moments ne
+dépendent que du maillage, `SplineMesh` les garde déjà transformés.
 """
 function multipole(ρ::Array{T,3}, mesh::SplineMesh{3,T}) where {T}
-    c = spline_coefficients(ρ, mesh)
-    p0 = map(ax -> moments(ax, Val(0)), mesh.axes)
-    p1 = map(ax -> moments(ax, Val(1)), mesh.axes)
-    p2 = map(ax -> moments(ax, Val(2)), mesh.axes)
+    # Les moments duaux portent déjà `S⁻ᵀ` : on contracte directement la
+    # densité, sans former ses coefficients spline.
+    p0 = map(m -> m[1], mesh.dual_moments)
+    p1 = map(m -> m[2], mesh.dual_moments)
+    p2 = map(m -> m[3], mesh.dual_moments)
 
-    q, d100, d010, d001, m200, m020, m002, mxy, mxz, myz = all_moments(c, p0, p1, p2)
+    q, d100, d010, d001, m200, m020, m002, mxy, mxz, myz = all_moments(ρ, p0, p1, p2)
 
     # Dipôle, ramené en barycentre. Une densité de charge nulle n'en a pas.
     dip = (d100, d010, d001)

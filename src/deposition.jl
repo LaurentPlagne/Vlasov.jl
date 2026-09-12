@@ -125,8 +125,12 @@ C'est le contrôle de conservation du dépôt : déposer `N` électrons doit ren
 `N`, à la précision de l'interpolation près.
 """
 function total_charge(ρ::Array{T,3}, mesh::SplineMesh{3,T}) where {T}
-    c = spline_coefficients(ρ, mesh)
-    px, py, pz = map(ax -> moments(ax, Val(0)), mesh.axes)
-    sum(c[i, j, k] * px[i] * py[j] * pz[k]
-        for i in eachindex(px), j in eachindex(py), k in eachindex(pz))
+    # Comme pour `multipole` : les moments duaux portent `S⁻ᵀ`, la densité se
+    # contracte telle quelle et ses coefficients n'ont pas à être formés.
+    px, py, pz = map(m -> m[1], mesh.dual_moments)
+    s = zero(T)
+    @inbounds for k in eachindex(pz), j in eachindex(py), i in eachindex(px)
+        s += ρ[i, j, k] * px[i] * py[j] * pz[k]
+    end
+    s
 end

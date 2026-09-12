@@ -25,6 +25,10 @@ struct SplineMesh{N,T,M}
     "Opérateurs de dérivée seconde **complets**, bords compris : leurs colonnes
      extrêmes servent au relèvement des conditions de Dirichlet."
     laplacians::NTuple{N,Matrix{T}}
+    "Moments `∫φ`, `∫xφ`, `∫x²φ` de chaque direction, **déjà transformés par
+     `S⁻ᵀ`**. Ils permettent d'intégrer une densité donnée aux points de
+     collocation sans jamais former ses coefficients spline — voir `multipole`."
+    dual_moments::NTuple{N,NTuple{3,Vector{T}}}
     solver::TensorSolver{N,T}
 end
 
@@ -32,7 +36,12 @@ function SplineMesh(axes::SplineAxis{T}...) where {T}
     cms = map(CollocationMatrices, axes)
     full = map(laplacian1d_full, cms)
     ops = map(D -> DiagonalizedOperator(D[2:end-1, 2:end-1]), full)
-    SplineMesh(axes, cms, full, TensorSolver(ops...))
+    # `S⁻ᵀ·m` une fois pour toutes : c'est ce qui dispense d'appliquer `S⁻¹`
+    # au tableau 3D à chaque intégration.
+    duals = map(cms) do cm
+        ntuple(k -> transpose(cm.Sinv) * moments(cm.axis, Val(k - 1)), 3)
+    end
+    SplineMesh(axes, cms, full, duals, TensorSolver(ops...))
 end
 
 """
