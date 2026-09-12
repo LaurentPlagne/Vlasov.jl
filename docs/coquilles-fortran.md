@@ -14,12 +14,60 @@ prête à servir à cette mesure.
 > d'origine, ou erreur de portage ? — jamais corrigé en silence. Ce fichier
 > est la trace de cet arbitrage.
 
+## Arbitrage des anomalies 1 et 2 — mesuré
+
+Depuis que la simulation de l'agrégat isolé tourne, les deux coquilles qui ont
+une variante corrigée peuvent être **mesurées** au lieu d'être discutées.
+
+**Protocole.** Agrégat de 196 électrons, 10 000 pseudo-particules, 30 pas à
+`dt = 1 u.a.`. On compare quatre configurations — référence, `moveback2`
+corrigé, `ran2` corrigé, les deux — sur l'énergie cinétique initiale,
+l'énergie totale initiale et l'amplitude de dérive de l'énergie.
+
+**La précaution qui compte.** Corriger `ran2` change le tirage : l'écart
+observé pourrait n'être que du bruit d'échantillonnage. On établit donc
+d'abord cette barre, en relançant la configuration de référence sur **cinq
+graines** :
+
+| grandeur | moyenne | σ (5 graines) |
+|---|---|---|
+| énergie cinétique initiale | 13,09 | 0,121 |
+| énergie totale initiale | −23,75 | 0,160 |
+| amplitude de dérive | 5,5e−5 | 1,1e−5 |
+
+**Résultat.** Chaque correction, rapportée à cette dispersion :
+
+| effet | en unités de σ |
+|---|---|
+| `moveback2` sur l'énergie cinétique | 0,06 σ |
+| `moveback2` sur l'énergie totale | 0,18 σ |
+| `moveback2` sur l'amplitude de dérive | 0,71 σ |
+| `ran2` sur l'énergie cinétique | 0,27 σ |
+| `ran2` sur l'amplitude de dérive | 0,33 σ |
+
+**Conclusion.** Aucune des deux ne produit un effet distinguable du bruit
+d'échantillonnage. Les résultats de la thèse ne sont pas remis en cause par
+ces deux coquilles.
+
+Pour `moveback2`, c'était prévisible une fois chiffré : l'écart de coefficient
+ne déplace les particules que d'environ `0,03 u.a.` à l'amorçage, contre un
+rayon d'agrégat de `23 u.a.`
+
+⚠️ **Portée de cette conclusion.** Elle vaut pour *cette* configuration :
+agrégat isolé, 30 pas, 10 000 particules. Elle ne dit rien des runs du
+chapitre 6, où un projectile unique suit **une** trajectoire — le bruit
+d'échantillonnage n'y joue pas le même rôle, et une erreur d'amorçage peut s'y
+voir davantage. Ni des runs longs, où un biais sous le bruit peut s'accumuler.
+À refaire sur ces cas-là le moment venu.
+
+---
+
 ## Vue d'ensemble
 
 | # | Où | Nature | Portée | Correction disponible |
 |---|---|---|---|---|
-| 1 | `moveback2` | `dltt*2` pour `dltt**2` | amorçage du leapfrog | `consistent = true` |
-| 2 | `ran2` | `IQ1 = 3668` pour `53668` | tout le tirage initial | `consistent = true` |
+| 1 | `moveback2` | `dltt*2` pour `dltt**2` | **mesurée : 0,06–0,71 σ** | `consistent = true` |
+| 2 | `ran2` | `IQ1 = 3668` pour `53668` | **mesurée : 0,27–0,33 σ** | `consistent = true` |
 | 3 | `maketaint` | supports d'intégration tronqués | champ lissé, ~1e-5 | — |
 | 4 | `initialise` | `rmax` entier lisant un réel | lecture de `rhoinit.dat` | corrigée (obligatoire) |
 | 5 | `force2gi` | appel avec un argument de trop | code mort | corrigée (obligatoire) |
