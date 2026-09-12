@@ -24,5 +24,6 @@ export poisson, poisson!
 export ParticleCloud, ELECTRON_MASS, ELECTRON_CHARGE, mass, charge
 export step!, half_step_back, full_step_back
 export GaussianSmoothing, smoothed_field, spline_field, forces!, nearest_knot, cell_index
+export deposit_smoothed!
 
 end # module

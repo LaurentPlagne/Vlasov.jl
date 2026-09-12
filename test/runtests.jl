@@ -523,6 +523,83 @@ end
         @test cloud.forces[3][2] == 0
     end
 
+    @testset "Dépôt lissé" begin
+        using Random
+        rng = Random.MersenneTwister(99)
+        ax = uniform_axis(-50.0, 50.0, 28)
+        mesh = SplineMesh(ax, ax, ax)
+        sm = GaussianSmoothing(ax; nbdt = 100, quadrature = 100)
+        n = nbasis(ax)
+
+        npart, nbelec = 5_000, 196.0
+        positions = [ntuple(_ -> 8.0 * randn(rng), 3) for _ in 1:npart]
+        ρ = zeros(n, n, n)
+        nout = deposit_smoothed!(ρ, mesh, sm, positions; charge = nbelec / npart)
+        @test nout == 0
+
+        # La renormalisation rend la conservation exacte, là où le noyau
+        # tabulé seul se tromperait de quelques 1e-4.
+        @test total_charge(ρ, mesh) ≈ nbelec rtol = 1e-12
+
+        # Le dépôt lissé étale UNE particule sur 8³ points de collocation, là
+        # où le trilinéaire n'en touche que 2³ : c'est tout son objet, adoucir
+        # ce qu'une interpolation à 8 points rendrait abrupt. Le mesurer sur le
+        # nuage entier ne dirait rien — les pochoirs s'y recouvrent et les deux
+        # saturent la zone occupée.
+        une = [(1.3, -0.7, 2.1)]
+        ρ1, ρtri = zeros(n, n, n), zeros(n, n, n)
+        deposit_smoothed!(ρ1, mesh, sm, une; charge = 1.0)
+        deposit!(ρtri, mesh, une; charge = 1.0)
+        @test count(!iszero, ρ1) == 8^3
+        @test count(!iszero, ρtri) == 2^3
+
+        # Les particules trop près du bord sont rejetées : leur pochoir de 8
+        # points déborderait.
+        h = ax.knots[2] - ax.knots[1]
+        bord = [(ax.knots[1] + h / 4, 0.0, 0.0), (0.0, ax.knots[end] - h / 4, 0.0)]
+        ρb = zeros(n, n, n)
+        @test deposit_smoothed!(ρb, mesh, sm, [bord; positions];
+                                charge = nbelec / npart) == 2
+    end
+
+    @testset "Un pas de temps complet" begin
+        # Enchaîne les quatre étages sur une seule grille : dépôt, Poisson,
+        # forces, Verlet. Le raccord fine/grossière (`makerhsf`) n'est pas
+        # encore porté, d'où la grille unique.
+        using Random
+        rng = Random.MersenneTwister(7)
+        ax = uniform_axis(-50.0, 50.0, 28)
+        mesh = SplineMesh(ax, ax, ax)
+        sm = GaussianSmoothing(ax; nbdt = 100, quadrature = 100)
+        n = nbasis(ax)
+
+        npart, nbelec, dt = 2_000, 196.0, 1.0
+        positions = [ntuple(_ -> 6.0 * randn(rng), 3) for _ in 1:npart]
+        cloud = ParticleCloud(positions, nbelec / npart)
+        copyto!(cloud.previous, cloud.positions)          # départ au repos
+
+        ρ = zeros(n, n, n)
+        @test deposit_smoothed!(ρ, mesh, sm, cloud.positions;
+                                charge = cloud.weight) == 0
+        @test total_charge(ρ, mesh) ≈ nbelec rtol = 1e-12
+
+        φ = poisson(ρ, mesh)
+        csol = spline_coefficients(φ, mesh)
+        @test all(isfinite, csol)
+
+        nout = forces!(cloud, mesh.axes, csol, mesh.axes, csol, sm)
+        @test nout < npart ÷ 10                  # la plupart sont au centre
+        @test all(f -> all(isfinite, f), cloud.forces)
+
+        diag = step!(cloud, dt)
+        @test diag.kinetic > 0                   # le nuage s'est mis en mouvement
+        @test all(p -> all(isfinite, p), cloud.positions)
+
+        # Les particules partent du repos dans un nuage globalement neutre en
+        # moment : le moment cinétique total reste petit devant l'énergie.
+        @test maximum(abs, diag.angular) < 1e3
+    end
+
     @testset "Produit mode-d" begin
         A = randn(4, 4)
         X = randn(4, 5, 6)

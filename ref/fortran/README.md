@@ -32,6 +32,7 @@ des `Float64`). Convention de nommage : `dump_*` pour la **grille fine**,
 | `dumpcsol.bin`, `dumpphi2.bin` | potentiel résolu et ses coefficients spline |
 | `mv_*.bin` | état avant/après un pas de Verlet, et ses diagnostics |
 | `fg_*.bin` | tables de convolution, potentiels, positions et forces de `force2g` |
+| `rg_*.bin` | table des nœuds, positions et densité lissée de `makerhog` |
 
 `dumpqp.bin` et `dumprho.bin` sont écrits par `makerho`, qui est appelée
 plusieurs fois : c'est la dernière invocation qui subsiste. Peu importe —

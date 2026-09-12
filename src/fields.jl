@@ -47,6 +47,9 @@ struct GaussianSmoothing{T<:AbstractFloat}
     nbdt::Int
     overlap::Matrix{T}
     gradient::Matrix{T}
+    "Gaussienne évaluée aux 8 points de collocation voisins (`gausstab` du
+     Fortran), pour le dépôt de charge lissé."
+    nodes::Matrix{T}
 end
 
 """
@@ -70,13 +73,14 @@ function GaussianSmoothing(ax::SplineAxis{T}; nbdt::Int = 1000,
 
     overlap = Matrix{T}(undef, 10, nbdt + 1)
     gradient = Matrix{T}(undef, 10, nbdt + 1)
+    nodes = Matrix{T}(undef, 8, nbdt + 1)
 
     for i in 0:nbdt
         r = rmin + i * (rmax - rmin) / nbdt
+        gauss(x) = norm1d * exp(-(r - x)^2 / 2σ^2)
         for a in 1:10
             lo, hi = SMOOTHING_SUPPORTS[a]
             b = BasisIndex(a)
-            gauss(x) = norm1d * exp(-(r - x)^2 / 2σ^2)
             overlap[a, i+1] = trapezoid(g[lo], g[hi], quadrature) do x
                 value(ax, b, x) * gauss(x)
             end
@@ -84,8 +88,12 @@ function GaussianSmoothing(ax::SplineAxis{T}; nbdt::Int = 1000,
                 -(r - x) / σ^2 * value(ax, b, x) * gauss(x)
             end
         end
+        # Les 8 points de collocation de la fenêtre, pour le dépôt.
+        for a in 1:8
+            nodes[a, i+1] = gauss(ax.colloc[a+1])
+        end
     end
-    GaussianSmoothing{T}(σ, h, nbdt, overlap, gradient)
+    GaussianSmoothing{T}(σ, h, nbdt, overlap, gradient, nodes)
 end
 
 """
@@ -135,6 +143,65 @@ end
     # `floor(v + 1/2)` et non `round` : Julia arrondit au pair le plus proche,
     # le Fortran tranche vers le haut.
     floor(Int, (x - knot + sm.spacing / 2) / sm.spacing * sm.nbdt + 0.5) + 1
+end
+
+"""
+    deposit_smoothed!(ρ, mesh, sm, positions; charge) -> nout
+
+Dépôt de charge **lissé** sur la grille fine (le `makerhog` du Fortran).
+
+Chaque pseudo-particule répand son poids sur les 8³ points de collocation
+voisins selon la gaussienne tabulée, au lieu des 2³ de l'interpolation
+trilinéaire de [`deposit!`](@ref).
+
+La densité est ensuite **renormalisée** pour que la charge totale vaille
+exactement celle des particules déposées. Ce n'est pas une coquetterie : le
+noyau tabulé n'est normalisé qu'à `3e-6` près, et sans cette correction
+l'erreur entrerait dans le potentiel.
+
+Une particule est rejetée si son pochoir de 8 points déborderait de la
+grille — d'où une marge d'une maille et demie au bord.
+"""
+function deposit_smoothed!(ρ::Array{T,3}, mesh::SplineMesh{3,T},
+                           sm::GaussianSmoothing{T}, positions; charge::T) where {T}
+    mx, my, mz = mesh.axes
+    size(ρ) == (nbasis(mx), nbasis(my), nbasis(mz)) ||
+        throw(DimensionMismatch("ρ doit couvrir toute la grille de collocation"))
+    fill!(ρ, zero(T))
+
+    knots = map(a -> a.knots, mesh.axes)
+    half = sm.spacing / 2
+    bounds = map(g -> (g[2] + half, g[end-1] - half), knots)
+
+    nout = 0
+    @inbounds for p in positions
+        if !all(d -> bounds[d][1] <= p[d] <= bounds[d][2], 1:3)
+            nout += 1
+            continue
+        end
+        ci = ntuple(d -> nearest_knot(knots[d], p[d]), 3)
+        col = ntuple(d -> table_column(sm, p[d], knots[d][ci[d]]), 3)
+        # `nodes[a]` est la gaussienne au point de collocation `colloc[a+1]`
+        # de la fenêtre de référence, dont le nœud central est le 3ᵉ : le
+        # pochoir couvre donc `2·ci−4 … 2·ci+3`.
+        base = ntuple(d -> 2 * ci[d] - 5, 3)
+
+        gx = @view sm.nodes[:, col[1]]
+        gy = @view sm.nodes[:, col[2]]
+        gz = @view sm.nodes[:, col[3]]
+        for kk in 1:8, jj in 1:8
+            c = gy[jj] * gz[kk]
+            j, k = base[2] + jj, base[3] + kk
+            for ii in 1:8
+                ρ[base[1]+ii, j, k] += gx[ii] * c
+            end
+        end
+    end
+
+    ρ .*= charge
+    # Renormalisation : la charge déposée doit être celle des particules.
+    ρ .*= (length(positions) - nout) * charge / total_charge(ρ, mesh)
+    nout
 end
 
 """

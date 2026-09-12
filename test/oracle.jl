@@ -222,5 +222,23 @@ reldiff(a, b) = norm(a - b) / norm(b)
             @test nout == 0
             @test reldiff(flat(cloud.forces), read_dump_vector("fg_fp.bin")) < 1e-11
         end
+
+        @testset "Dépôt lissé" begin
+            triplets(v) = [(v[3i-2], v[3i-1], v[3i]) for i in 1:length(v)÷3]
+
+            gx = read_dump_vector("rg_gx.bin")
+            ax = SplineAxis(gx, collocation_points(gx))
+            mesh = SplineMesh(ax, ax, ax)
+            sm = GaussianSmoothing(ax)
+            n = nbasis(ax)
+
+            @test reldiff(sm.nodes, reshape(read_dump_vector("rg_gtab.bin"), 8, :)) < 1e-11
+
+            qp = triplets(read_dump_vector("rg_qp.bin"))
+            ρ = Array{Float64,3}(undef, n, n, n)
+            nout = deposit_smoothed!(ρ, mesh, sm, qp; charge = 196.0 / length(qp))
+            @test nout == Int(read_dump_vector("rg_nout.bin")[1])
+            @test reldiff(ρ, reshape(read_dump_vector("rg_rho.bin"), n, n, n)) < 1e-12
+        end
     end
 end
