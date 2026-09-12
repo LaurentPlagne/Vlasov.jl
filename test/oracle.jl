@@ -44,6 +44,17 @@ const ORACLE_TOL = 1e-13
 reldiff(a, b) = norm(a - b) / norm(b)
 
 @testset "Oracle Fortran" begin
+    if oracle_available()
+        @testset "Générateur ran2" begin
+            # Le seul test bit-à-bit de la suite : la moindre différence dans
+            # l'arithmétique entière — y compris le débordement volontaire —
+            # décalerait toute la séquence, et avec elle le tirage initial.
+            ref = read_dump_vector("rand2.bin")
+            rng = Ran2(-1)
+            @test all(i -> Float64(next!(rng)) === ref[i], eachindex(ref))
+        end
+    end
+
     if !oracle_available()
         @info "oracle absent — `cd ref/fortran && make oracle` pour l'activer"
         @test_skip false

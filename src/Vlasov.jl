@@ -3,6 +3,7 @@ module Vlasov
 using LinearAlgebra
 using BandedMatrices
 
+include("random.jl")
 include("splines.jl")
 include("collocation.jl")
 include("tensorsolver.jl")
@@ -12,6 +13,7 @@ include("poisson.jl")
 include("particles.jl")
 include("fields.jl")
 
+export Ran2, next!
 export HermiteKind, Value, Slope, BasisIndex, linearindex
 export SplineAxis, nknots, nbasis, evaluate, value, derivative, curvature, support
 export uniform_axis, stretched_axis, stretch_ratio, collocation_points, moment, moments

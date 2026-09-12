@@ -48,3 +48,16 @@ c     Ecrit n reels consecutifs d'un tableau vu a plat (ordre colonne).
       write(79) v(1)
       close(79)
       end
+      subroutine dumpran2(n)
+c     Dump des n premieres valeurs de ran2, amorce a idum=-1.
+      implicit none
+      integer n,i,idum
+      real*4 ran2
+      external ran2
+      double precision v(20000)
+      idum=-1
+      do i=1,n
+         v(i)=dble(ran2(idum))
+      end do
+      call dumpflat('rand2.bin',v,n)
+      end

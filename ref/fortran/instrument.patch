@@ -1,6 +1,14 @@
 --- vlas.f	2026-09-12 15:01:37
-+++ vlas_dump.f	2026-09-12 15:44:18
-@@ -1183,6 +1183,24 @@
++++ vlas_dump.f	2026-09-12 15:45:40
+@@ -99,6 +99,7 @@
+       einterne=0.d0
+ c     ----------------------main-------------------------------------
+       print*,'programme TFD ***'
++      call dumpran2(20000)
+ c     ---   -- initialisation -- -- -- 
+       call litinput(n1xyz,xclu,xboite,
+      +     nbion,nbelec,npart,dltt,nbt,
+@@ -1183,6 +1184,24 @@
        call diagonal(nsx,dex,mx,mxi,lxr,lxi)
        call diagonal(nsy,dey,my,myi,lyr,lyi)
        call diagonal(nsz,dez,mz,mzi,lzr,lzi)
@@ -25,7 +33,7 @@
        call inverse1(nsx,mx,mxm1)
        call inverse1(nsy,my,mym1)
        call inverse1(nsz,mz,mzm1)
-@@ -1234,6 +1252,15 @@
+@@ -1234,6 +1253,15 @@
           call primx2(gz,nz,k/2,mod(k,2),gtz(ntz),primb)
           psz2(k)=primb-prima
        end do
@@ -41,7 +49,7 @@
        do i=1,nsx
           do j=1,nsy
              do k=1,nsz
-@@ -1264,6 +1291,8 @@
+@@ -1264,6 +1292,8 @@
        real*8 csol(0:NTXT,0:NTYT,0:NTZT)
        integer nsx,nsy,nsz
        integer i,j,k
@@ -50,7 +58,7 @@
        call tensrus(nsx,nsy,nsz,mxm1,mym1,mzm1,rhsl,ww)
        do i=1,nsx
           do j=1,nsy
-@@ -1282,6 +1311,15 @@
+@@ -1282,6 +1312,15 @@
        end do
        call tensrus2(nsx+1,nsy+1,nsz+1,sxm1,sym1,szm1,phi,csol)
        print*,'csol(1,1,1)',csol(1,1,1)
@@ -66,7 +74,7 @@
        end 
  c-------------------------------------------------
        subroutine tensrus(nsx,nsy,nsz,matx,maty,matz,vect,te)
-@@ -1930,6 +1968,12 @@
+@@ -1930,6 +1969,12 @@
        end do
  
        print*,'nb de pseudo part hors grille :',nbout
@@ -79,7 +87,7 @@
        end  
  c-----------------------------------------------------
        subroutine potensg(x,nx,gx,y,ny,gy,z,nz,gz,
-@@ -2794,6 +2838,9 @@
+@@ -2794,6 +2839,9 @@
           end do
        end do
        print*,'nb de pseudo part hors grille :',nbout
@@ -89,7 +97,7 @@
        end
  C-----------------------------------------------------
        subroutine sortietest(gx,gy,gz,gx2,gy2,gz2,nx,ny,nz,csol,csol2)
-@@ -2861,6 +2908,8 @@
+@@ -2861,6 +2909,8 @@
        integer a,b,c,i,j,k
        integer bord
        real*8 dumr,pot,x,y,z
@@ -98,7 +106,7 @@
        integer dumi,dumj
        dumi=0
        dumj=0
-@@ -2972,6 +3021,14 @@
+@@ -2972,6 +3022,14 @@
              end do
           end do
        end do
@@ -113,7 +121,7 @@
        end
  c--------------------------------------------------------------------
        subroutine makerh2(rho,dx,dy,dz,nsx,nsy,nsz,
-@@ -2996,6 +3053,8 @@
+@@ -2996,6 +3054,8 @@
        integer ntx,nty,ntz
        integer a,b,c,i,j,k,l,m
        integer bord
@@ -122,7 +130,7 @@
        ntx=nsx+1
        nty=nsy+1
        ntz=nsz+1
-@@ -3123,6 +3182,15 @@
+@@ -3123,6 +3183,15 @@
              end do
           end do
        end do
@@ -138,7 +146,7 @@
        end
  c-----------------------------------------------------------
        subroutine force2g(npart,nbelec,fp,qp,nx,ny,nz,
-@@ -3202,6 +3270,17 @@
+@@ -3202,6 +3271,17 @@
              fp(3,j)=csr3s2*z
           end if
        end do
@@ -156,7 +164,7 @@
        end
  c-----------------------------------------------------------
        subroutine enerele2g(npart,nbelec,qp,nx,ny,nz,
-@@ -3668,6 +3747,10 @@
+@@ -3668,6 +3748,10 @@
        ekin=0.d0
        ekinout=0.d0
        j=1
@@ -167,7 +175,7 @@
        lcix=0.d0
        lciy=0.d0
        lciz=0.d0
-@@ -3705,6 +3788,12 @@
+@@ -3705,6 +3789,12 @@
        lcine(1)=lcix
        lcine(2)=lciy
        lcine(3)=lciz

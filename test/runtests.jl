@@ -21,6 +21,32 @@ end
 
     include("oracle.jl")
 
+    @testset "Générateur ran2" begin
+        rng = Ran2(-1)
+        x = next!(rng)
+        @test x isa Float32                  # le Fortran déclarait REAL
+        @test 0 <= x < 1
+
+        # Déterminisme : même amorce, même suite.
+        @test [next!(Ran2(-1)) for _ in 1:50] == [next!(Ran2(-1)) for _ in 1:50]
+        @test [next!(Ran2(-7)) for _ in 1:50] != [next!(Ran2(-1)) for _ in 1:50]
+
+        # La variante de la thèse et la version corrigée divergent : c'est bien
+        # deux générateurs différents, pas un détail d'arrondi.
+        these = [next!(Ran2(-1)) for _ in 1:100]
+        juste = [next!(Ran2(-1; consistent = true)) for _ in 1:100]
+        @test these != juste
+
+        # Aucune des deux ne doit être manifestement biaisée.
+        for r in (Ran2(-3), Ran2(-3; consistent = true))
+            v = Float64[next!(r) for _ in 1:100_000]
+            m = sum(v) / length(v)
+            @test abs(m - 0.5) < 0.01
+            @test abs(sum(x -> (x - m)^2, v) / length(v) - 1 / 12) < 0.002
+            @test all(x -> 0 <= x < 1, v)
+        end
+    end
+
     @testset "BasisIndex" begin
         # Aller-retour indice linéaire ↔ (nœud, nature).
         for lin in 1:20
