@@ -1,0 +1,19 @@
+name = "Vlasov"
+uuid = "2b4e4dc6-bb65-44a8-9970-a8d90b7ff1a4"
+version = "0.1.0"
+authors = ["Laurent Plagne <laurent.plagne@gmail.com>"]
+
+[deps]
+BandedMatrices = "aae01518-5342-5314-be14-df237901396f"
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+
+[compat]
+BandedMatrices = "1.12.0"
+LinearAlgebra = "1.12.0"
+julia = "^1"
+
+[extras]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test"]
