@@ -135,6 +135,181 @@ end
 """Valeur de la fonction de base `b` en `x`."""
 @inline value(ax::SplineAxis, b::BasisIndex, x) = evaluate(ax, b, x, Val(0))[1]
 
+# ---------------------------------------------------------------------------
+# Construction d'un axe
+# ---------------------------------------------------------------------------
+
+"""
+Nœuds de Gauss-Legendre à 2 points ramenés sur `[0,1]`.
+
+C'est le choix de points de collocation du code d'origine : il rend la
+collocation par splines cubiques superconvergente.
+"""
+const GAUSS2_NODES = ((1 - 1 / sqrt(3)) / 2, (1 + 1 / sqrt(3)) / 2)
+
+"""
+    collocation_points(knots) -> Vector
+
+Points de collocation associés à des nœuds : les 2 points de Gauss de chaque
+intervalle, encadrés par les deux extrémités du domaine.
+
+Il y en a `2·length(knots)`, autant que de fonctions de base — c'est ce qui
+rend carrées les matrices de collocation.
+"""
+function collocation_points(knots::AbstractVector{T}) where {T}
+    n = length(knots) - 1
+    colloc = Vector{T}(undef, 2(n + 1))
+    colloc[1] = knots[1]
+    colloc[end] = knots[end]
+    for j in 1:n
+        a, h = knots[j], knots[j+1] - knots[j]
+        colloc[2j], colloc[2j+1] = a + h * GAUSS2_NODES[1], a + h * GAUSS2_NODES[2]
+    end
+    colloc
+end
+
+"""
+    uniform_axis(x0, xn, nintervals)
+
+Axe à pas constant sur `[x0, xn]` — la grille fine du code d'origine
+(`mkgri` avec une raison géométrique de 1).
+"""
+function uniform_axis(x0::T, xn::T, nintervals::Integer) where {T<:AbstractFloat}
+    knots = collect(range(x0, xn; length = nintervals + 1))
+    SplineAxis(knots, collocation_points(knots))
+end
+
+"""
+    stretch_ratio(h1, L, n) -> a
+
+Raison géométrique `a > 1` telle que `n` pas de raison `a` couvrent la
+longueur `L` en **démarrant** par un pas de longueur `h1` :
+
+    L·(1 − a) / (1 − aⁿ) = h1
+
+C'est ce qui raccorde la zone étirée à la zone à pas constant sans rupture de
+pas. Résolu par dichotomie jusqu'à épuisement des flottants.
+
+⚠️ Le Fortran (`findacc`) s'arrêtait à une tolérance de `1e-10` : la raison
+obtenue ici en diffère d'autant, et les nœuds étirés avec elle. C'est un écart
+*attendu*, pas une régression — voir `stretched_axis`.
+"""
+function stretch_ratio(h1::T, L::T, n::Integer) where {T<:AbstractFloat}
+    f(a) = L * (1 - a) / (1 - a^n) - h1
+    lo, hi = nextfloat(one(T)), T(10)
+    flo, fhi = f(lo), f(hi)
+    signbit(flo) == signbit(fhi) && throw(ArgumentError(
+        "pas de raison géométrique dans ]1, 10] pour h1=$h1, L=$L, n=$n"))
+    while nextfloat(lo) < hi
+        mid = (lo + hi) / 2
+        (mid == lo || mid == hi) && break
+        if signbit(f(mid)) == signbit(flo)
+            lo, flo = mid, f(mid)
+        else
+            hi = mid
+        end
+    end
+    (lo + hi) / 2
+end
+
+"""
+    stretched_axis(xinner, xouter, n_inner, n_outer)
+
+Axe symétrique à deux zones — la grille grossière du code d'origine
+(`mkgri2`) : pas constant sur `[0, xinner]`, puis pas géométriquement
+croissant jusqu'à `xouter`, le tout reflété autour de zéro.
+
+Le premier pas étiré vaut exactement le pas constant, ce qui évite une rupture
+de maillage à l'interface entre les deux zones.
+
+⚠️ **Ne pas utiliser cet axe pour comparer l'aval à l'oracle.** La raison
+géométrique est ici résolue à la précision machine, là où `findacc` s'arrêtait
+à `1e-10` : les nœuds diffèrent d'autant, et tout calcul en aval hériterait de
+cet écart, masquant les vraies régressions à `1e-15`. Pour valider un opérateur
+sur la grille étirée, construire le `SplineAxis` **à partir des nœuds dumpés
+par l'oracle**.
+"""
+function stretched_axis(xinner::T, xouter::T, n_inner::Integer,
+                        n_outer::Integer) where {T<:AbstractFloat}
+    h1 = xinner / (n_inner - 1)
+    m = n_inner + n_outer
+
+    # Demi-grille, de 0 vers l'extérieur.
+    half = Vector{T}(undef, m)
+    for i in 1:n_inner
+        half[i] = (i - 1) * h1
+    end
+    L = xouter - xinner
+    a = stretch_ratio(h1, L, n_outer)
+    step = L * (1 - a) / (1 - a^n_outer)
+    for i in 1:n_outer
+        half[n_inner+i] = half[n_inner+i-1] + step * a^(i - 1)
+    end
+
+    # Reflet : knots[m] = 0, croissant de -xouter à +xouter.
+    knots = Vector{T}(undef, 2m - 1)
+    for j in 1:m
+        knots[j] = -half[m-j+1]
+    end
+    for j in (m+1):(2m-1)
+        knots[j] = -knots[2m-j]
+    end
+    SplineAxis(knots, collocation_points(knots))
+end
+
+# ---------------------------------------------------------------------------
+# Moments ∫ xᵏ φ(x) dx
+#
+# Ils portent les conditions aux limites multipolaires (monopôle, dipôle,
+# quadrupôle) du solveur de Poisson.
+#
+# Le Fortran les obtenait par des primitives analytiques écrites à la main
+# (`prim`, `primx`, `primx2` et leurs `formp*`, ~290 lignes). On les intègre
+# ici par quadrature : `φ` est cubique, donc `x²φ` est de degré 5, et la
+# quadrature de Gauss-Legendre à 3 points est **exacte** jusqu'au degré 5.
+# Le résultat n'est donc pas une approximation.
+# ---------------------------------------------------------------------------
+
+const GAUSS3_NODES = (-sqrt(3 / 5), 0.0, sqrt(3 / 5))
+const GAUSS3_WEIGHTS = (5 / 9, 8 / 9, 5 / 9)
+
+"""Intègre `xᵏ φ_b(x)` sur `[a, c]` — exact car l'intégrande est de degré ≤ 5."""
+@inline function _gauss3(ax::SplineAxis{T}, b::BasisIndex, a, c, ::Val{k}) where {T,k}
+    mid, half = (a + c) / 2, (c - a) / 2
+    s = zero(T)
+    for (ξ, w) in zip(GAUSS3_NODES, GAUSS3_WEIGHTS)
+        x = mid + half * ξ
+        s += w * x^k * value(ax, b, x)
+    end
+    half * s
+end
+
+"""
+    moment(ax, b, Val(k)) -> T
+
+Moment d'ordre `k` de la fonction de base `b` : `∫ xᵏ φ_b(x) dx` sur tout son
+support. Exact pour `k ≤ 2`.
+
+Chaque demi-support est intégré séparément : `φ_b` y est un polynôme
+*différent*, une quadrature unique sur le support entier serait fausse.
+"""
+function moment(ax::SplineAxis{T}, b::BasisIndex, ::Val{k}) where {T,k}
+    g, n, kn = ax.knots, nknots(ax), b.knot
+    total = zero(T)
+    kn > 1 && (total += _gauss3(ax, b, g[kn-1], g[kn], Val(k)))
+    kn < n && (total += _gauss3(ax, b, g[kn], g[kn+1], Val(k)))
+    total
+end
+
+"""
+    moments(ax, Val(k)) -> Vector
+
+Moments d'ordre `k` de toutes les fonctions de base, dans l'ordre des indices
+linéaires (les `psx`, `psxx` et `psx2` du Fortran pour `k = 0, 1, 2`).
+"""
+moments(ax::SplineAxis, ::Val{k}) where {k} =
+    [moment(ax, BasisIndex(lin), Val(k)) for lin in 1:nbasis(ax)]
+
 """Dérivée première de `b` en `x`."""
 @inline derivative(ax::SplineAxis, b::BasisIndex, x) = evaluate(ax, b, x, Val(1))[2]
 

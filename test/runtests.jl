@@ -76,6 +76,72 @@ end
         end
     end
 
+    @testset "Construction d'axes" begin
+        ax = uniform_axis(-50.0, 50.0, 28)
+        @test nknots(ax) == 29
+        @test nbasis(ax) == 58
+        @test ax.knots[1] == -50.0
+        @test ax.knots[end] ≈ 50.0
+        @test maximum(diff(ax.knots)) - minimum(diff(ax.knots)) < 1e-12
+
+        # Les points de collocation sont les nœuds de Gauss à 2 points de chaque
+        # intervalle, bornés par les extrémités du domaine.
+        @test ax.colloc[1] == ax.knots[1]
+        @test ax.colloc[end] == ax.knots[end]
+        h = ax.knots[2] - ax.knots[1]
+        @test ax.colloc[2] ≈ ax.knots[1] + h * (1 - 1 / sqrt(3)) / 2
+        @test ax.colloc[3] ≈ ax.knots[1] + h * (1 + 1 / sqrt(3)) / 2
+
+        # Raison géométrique : elle doit vérifier son équation de définition.
+        h1, L, n = 50.0 / 6, 100.0, 8
+        a = stretch_ratio(h1, L, n)
+        @test a > 1
+        @test L * (1 - a) / (1 - a^n) ≈ h1 atol = 1e-13
+
+        axs = stretched_axis(50.0, 150.0, 7, 8)
+        @test nknots(axs) == 29
+        @test axs.knots[1] ≈ -150.0
+        @test axs.knots[end] ≈ 150.0
+        @test axs.knots[15] ≈ 0 atol = 1e-12          # nœud central
+        @test axs.knots ≈ -reverse(axs.knots)          # symétrie
+        # Raccord sans rupture : le premier pas étiré vaut le pas constant.
+        d = diff(axs.knots)
+        @test d[8] ≈ h1 rtol = 1e-9
+        @test issorted(axs.knots)
+    end
+
+    @testset "Moments" begin
+        # Identité exacte : l'interpolant d'Hermite d'un polynôme de degré ≤ 3
+        # étant ce polynôme lui-même, ∫xᵏp = Σ_b c_b·moment(b,k) où les c_b sont
+        # les valeurs et pentes de p aux nœuds. Vaut pour k = 0, 1, 2 et ne
+        # dépend d'aucune référence extérieure.
+        coeffs = (2.0, -0.7, 1.3, -0.4)                # p(x) = Σ coeffs[j+1]·xʲ
+        p(x)  = sum(c * x^(j - 1) for (j, c) in enumerate(coeffs))
+        p′(x) = sum((j - 1) * c * x^(j - 2) for (j, c) in enumerate(coeffs) if j > 1)
+        exact(k, x0, xn) = sum(c * (xn^(j - 1 + k + 1) - x0^(j - 1 + k + 1)) / (j - 1 + k + 1)
+                               for (j, c) in enumerate(coeffs))
+
+        for ax in (uniform_axis(-2.0, 3.0, 9), stretched_axis(1.0, 4.0, 5, 6), testaxis(11))
+            x0, xn = ax.knots[1], ax.knots[end]
+            for k in 0:2
+                m = moments(ax, Val(k))
+                got = sum(1:nknots(ax)) do kn
+                    g = ax.knots[kn]
+                    p(g) * m[linearindex(BasisIndex(kn, Value))] +
+                    p′(g) * m[linearindex(BasisIndex(kn, Slope))]
+                end
+                @test got ≈ exact(k, x0, xn) rtol = 1e-11
+            end
+        end
+
+        # Un moment ne dépend que du support de sa fonction de base.
+        ax = uniform_axis(0.0, 1.0, 6)
+        b = BasisIndex(3, Value)
+        lo, hi = support(ax, b)
+        @test moment(ax, b, Val(0)) > 0
+        @test moment(ax, b, Val(0)) < hi - lo
+    end
+
     @testset "Matrices de collocation" begin
         ax = testaxis(12)
         cm = CollocationMatrices(ax)
@@ -122,6 +188,55 @@ end
         λ = eigvals(D)
         @test maximum(abs, imag.(λ)) < 1e-10 * maximum(abs, real.(λ))
         @test all(<(0), real.(λ))
+    end
+
+    @testset "D est bien la dérivée seconde" begin
+        # L'interpolant d'Hermite d'un cubique étant exact, D·f doit rendre f″
+        # EXACTEMENT aux points de collocation intérieurs. Les deux lignes
+        # extrêmes encodent les conditions au bord, pas une dérivée : c'est ce
+        # que `laplacian1d` retire.
+        ax = uniform_axis(-2.0, 3.0, 10)
+        cm = CollocationMatrices(ax)
+        Dfull = Matrix(cm.S″) / lu(cm.S)
+        f(x) = 2.0 - 0.7x + 1.3x^2 - 0.4x^3
+        f″(x) = 2.6 - 2.4x
+        got = Dfull * f.(ax.colloc)
+        want = f″.(ax.colloc)
+        @test maximum(abs, got[2:end-1] - want[2:end-1]) < 1e-11
+    end
+
+    @testset "Poisson 3D" begin
+        L = 2.0
+        φex(x, y, z) = sinpi(x / L) * sinpi(y / L) * sinpi(z / L)
+
+        function erreur(n)
+            a = uniform_axis(0.0, L, n)
+            m = SplineMesh(a, a, a)
+            cx, cy, cz = collocation_axes(m)
+            Φ = [φex(x, y, z) for x in cx, y in cy, z in cz]
+            norm(solve((-3 * (pi / L)^2) .* Φ, m) - Φ) / norm(Φ)
+        end
+
+        a = uniform_axis(0.0, L, 8)
+        mesh = SplineMesh(a, a, a)
+        @test ndims(mesh) == 3
+        @test size(mesh) == (16, 16, 16)
+        @test all(length.(collocation_axes(mesh)) .== 16)
+
+        # L'opérateur direct doit être l'inverse du solveur.
+        ρ = randn(size(mesh))
+        Φ = solve(ρ, mesh)
+        @test norm(laplacian!(similar(Φ), Φ, mesh) - ρ) / norm(ρ) < 1e-10
+
+        # Solution manufacturée : convergence à l'ordre 4, propre à la
+        # collocation cubique aux points de Gauss. Un ordre plus faible
+        # signalerait une erreur de discrétisation, pas de précision.
+        errs = map(erreur, (4, 8, 16))
+        @test issorted(errs; rev = true)
+        for i in 1:(length(errs)-1)
+            @test log2(errs[i] / errs[i+1]) > 3.8
+        end
+        @test errs[end] < 1e-6
     end
 
     @testset "Produit mode-d" begin

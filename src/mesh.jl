@@ -1,0 +1,80 @@
+"""
+Maillage produit tensoriel et résolution de Poisson associée.
+
+Le code d'origine dupliquait à la main tout l'appareillage d'une grille à
+l'autre — 41 variables suffixées `big` dans le programme principal, et 47
+arguments passés à `static`. Ici une seule structure, instanciée une fois par
+niveau de grille.
+"""
+
+"""
+    SplineMesh(axes...)
+
+Maillage produit tensoriel de `N` axes de splines, avec tout ce que la
+résolution de Poisson en tire : matrices de collocation par direction,
+opérateur de dérivée seconde diagonalisé, et solveur tensoriel.
+
+Construire un maillage fait le gros du travail (assemblage, factorisations,
+diagonalisations) une fois pour toutes ; les résolutions qui suivent sont
+ensuite peu coûteuses. C'est ce qui rend la méthode intéressante pour une
+simulation où seul le second membre change à chaque pas de temps.
+"""
+struct SplineMesh{N,T,M}
+    axes::NTuple{N,SplineAxis{T}}
+    collocation::NTuple{N,CollocationMatrices{T,M}}
+    solver::TensorSolver{N,T}
+end
+
+function SplineMesh(axes::SplineAxis{T}...) where {T}
+    cms = map(CollocationMatrices, axes)
+    ops = map(cm -> DiagonalizedOperator(laplacian1d(cm)), cms)
+    SplineMesh(axes, cms, TensorSolver(ops...))
+end
+
+"""Nombre de dimensions du maillage."""
+Base.ndims(::SplineMesh{N}) where {N} = N
+
+"""
+Dimensions du problème **intérieur**, c'est-à-dire après retrait des fonctions
+de base portant les conditions de Dirichlet. C'est la taille des tableaux que
+[`solve!`](@ref) attend.
+"""
+Base.size(mesh::SplineMesh) = size(mesh.solver)
+
+"""
+    collocation_axes(mesh)
+
+Points de collocation de chaque direction, restreints à l'intérieur — les
+coordonnées auxquelles un second membre doit être échantillonné.
+"""
+collocation_axes(mesh::SplineMesh) = map(ax -> ax.colloc[2:end-1], mesh.axes)
+
+"""
+    solve!(φ, ρ, mesh)
+
+Résout `∇²φ = ρ` aux points de collocation intérieurs, avec conditions de
+Dirichlet homogènes. `φ` et `ρ` peuvent être le même tableau.
+"""
+solve!(φ::Array{T,N}, ρ::Array{T,N}, mesh::SplineMesh{N,T}) where {T,N} =
+    solve!(φ, ρ, mesh.solver)
+
+"""Version allouante de [`solve!`](@ref)."""
+solve(ρ::Array{T,N}, mesh::SplineMesh{N,T}) where {T,N} = solve!(similar(ρ), ρ, mesh)
+
+"""
+    laplacian!(dest, φ, mesh)
+
+Applique l'opérateur `∇² = Σ_d D_d` — l'opération directe, dont
+[`solve!`](@ref) est l'inverse. Sert à contrôler un résidu.
+"""
+function laplacian!(dest::Array{T,N}, φ::Array{T,N}, mesh::SplineMesh{N,T}) where {T,N}
+    fill!(dest, zero(T))
+    tmp = similar(dest)
+    for d in 1:N
+        # Reconstruit D_d à partir de sa diagonalisation : M Λ M⁻¹.
+        op = mesh.solver.ops[d]
+        apply_mode!(tmp, op.M * Diagonal(op.λ) * op.Minv, φ, d)
+        dest .+= tmp
+    end
+    dest
+end
