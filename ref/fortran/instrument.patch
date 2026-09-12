@@ -1,5 +1,5 @@
---- /private/tmp/claude-501/-Users-laurentplagne-Projects-Vlasov-jl/f3af2d36-7742-419c-b8bf-0104ce4e63fc/scratchpad/reftest/vlas.f	2026-09-12 14:17:13
-+++ /private/tmp/claude-501/-Users-laurentplagne-Projects-Vlasov-jl/f3af2d36-7742-419c-b8bf-0104ce4e63fc/scratchpad/reftest/vlas_dump.f	2026-09-12 14:57:18
+--- vlas.f	2026-09-12 15:01:37
++++ vlas_dump.f	2026-09-12 15:04:37
 @@ -1183,6 +1183,24 @@
        call diagonal(nsx,dex,mx,mxi,lxr,lxi)
        call diagonal(nsy,dey,my,myi,lyr,lyi)
@@ -41,3 +41,13 @@
        do i=1,nsx
           do j=1,nsy
              do k=1,nsz
+@@ -2794,6 +2821,9 @@
+          end do
+       end do
+       print*,'nb de pseudo part hors grille :',nbout
++      call dumpflat('dumpqp.bin ',qp,3*(npart-nbcap))
++      call dumpflat('dumprho.bin',rho,(NTXT+1)*(NTYT+1)*(NTZT+1))
++      print*,'DUMPED makerho npart=',npart-nbcap
+       end
+ C-----------------------------------------------------
+       subroutine sortietest(gx,gy,gz,gx2,gy2,gz2,nx,ny,nz,csol,csol2)

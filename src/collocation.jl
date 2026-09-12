@@ -25,6 +25,10 @@ struct CollocationMatrices{T,M<:AbstractMatrix{T}}
     S::M
     S′::M
     S″::M
+    "Inverse de `S` : passage des valeurs aux points de collocation aux
+     coefficients spline. Dense et matérialisé, car appliqué en produit
+     tensoriel à chaque pas de temps. `cond(S) ≈ 4`, l'inversion est sûre."
+    Sinv::Matrix{T}
 end
 
 function CollocationMatrices(ax::SplineAxis{T}) where {T}
@@ -49,7 +53,9 @@ function CollocationMatrices(ax::SplineAxis{T}) where {T}
     S[1, 1], S′[1, 1], S″[1, 1] = evaluate(ax, first_b, ax.colloc[1], Val(2))
     S[m, m-1], S′[m, m-1], S″[m, m-1] = evaluate(ax, last_b, ax.colloc[m], Val(2))
 
-    CollocationMatrices{T,typeof(S)}(ax, S, S′, S″)
+    # `inv(Matrix(S))` et non `inv(S)` : voir l'avertissement de `laplacian1d`
+    # sur les divisions de `BandedMatrix`.
+    CollocationMatrices{T,typeof(S)}(ax, S, S′, S″, inv(Matrix(S)))
 end
 
 """

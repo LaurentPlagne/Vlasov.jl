@@ -102,5 +102,28 @@ reldiff(a, b) = norm(a - b) / norm(b)
             axs = stretched_axis(50.0, 150.0, 7, 8)
             @test reldiff(axs.knots, read_dump_vector("dumpb_gx.bin")) < 1e-10
         end
+
+        @testset "Dépôt de charge" begin
+            # `makerho` dumpe les particules ET la densité de la même
+            # invocation : les deux restent donc cohérentes, quel que soit le
+            # moment de la simulation où le dump a été pris.
+            qp = read_dump_vector("dumpqp.bin")
+            npart = length(qp) ÷ 3
+            positions = [(qp[3i-2], qp[3i-1], qp[3i]) for i in 1:npart]
+
+            axb = SplineAxis(read_dump_vector("dumpb_gx.bin"),
+                             read_dump_vector("dumpbgtx.bin"))
+            mesh = SplineMesh(axb, axb, axb)
+            n = nbasis(axb)
+            ρref = reshape(read_dump_vector("dumprho.bin"), n, n, n)
+
+            ρ = similar(ρref)
+            nout = deposit!(ρ, mesh, positions; charge = 196.0 / npart)
+            @test nout == 0
+            @test reldiff(ρ, ρref) < ORACLE_TOL
+
+            # L'observable de contrôle du code d'origine : « somme des charges ».
+            @test total_charge(ρ, mesh) ≈ 196.0 rtol = 1e-12
+        end
     end
 end

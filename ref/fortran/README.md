@@ -26,6 +26,12 @@ des `Float64`). Convention de nommage : `dump_*` pour la **grille fine**,
 | `dump_dex.bin` | opérateur `S″·S⁻¹` après conditions de Dirichlet |
 | `dump_lxr.bin`, `dump_mx.bin` | valeurs et vecteurs propres |
 | `dump_psx.bin`, `dump_pxx.bin`, `dump_px2.bin` | moments `∫φ`, `∫xφ`, `∫x²φ` |
+| `dumpqp.bin`, `dumprho.bin` | positions des pseudo-particules et densité déposée |
+
+`dumpqp.bin` et `dumprho.bin` sont écrits par `makerho`, qui est appelée
+plusieurs fois : c'est la dernière invocation qui subsiste. Peu importe —
+les deux sont dumpés **ensemble**, donc toujours cohérents entre eux, et
+c'est tout ce que la comparaison demande.
 
 ⚠️ `static` est appelée **deux fois** (grille fine puis grossière). Sans la
 distinction `dump_`/`dumpb_`, le second appel écrase le premier — piège dans

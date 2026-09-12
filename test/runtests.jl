@@ -241,6 +241,62 @@ end
         @test errs[end] < 1e-6
     end
 
+    @testset "Dépôt de charge" begin
+        using Random
+        rng = Random.MersenneTwister(1234)
+
+        ax = uniform_axis(-50.0, 50.0, 28)
+        mesh = SplineMesh(ax, ax, ax)
+        n = nbasis(ax)
+
+        # Longueurs duales : leur somme doit recouvrir exactement le domaine.
+        l = dual_lengths(ax)
+        @test length(l) == n
+        @test all(>(0), l)
+        @test sum(l) ≈ ax.knots[end] - ax.knots[1]
+
+        # Repérage. Tomber exactement sur le nœud k rend `(k-1, 0)` : tout le
+        # poids va au nœud de droite, qui EST le nœud k. Convention du Fortran.
+        c, w = locate(ax, ax.colloc[5])
+        @test (c, w) == (4, 0.0)
+        # Au bord gauche, il n'y a pas de nœud à gauche : poids 1 sur le nœud 1.
+        @test locate(ax, ax.colloc[1]) == (1, 1.0)
+        @test locate(ax, -60.0) === nothing
+        @test locate(ax, 60.0) === nothing
+        c, w = locate(ax, (ax.colloc[7] + ax.colloc[8]) / 2)
+        @test c == 7 && w ≈ 0.5
+
+        # Conservation de la charge : c'est LE contrôle du dépôt. Déposer N
+        # électrons et réintégrer la densité doit rendre N, à l'arrondi près.
+        npart, nbelec = 50_000, 196.0
+        positions = [ntuple(_ -> 8.0 * randn(rng), 3) for _ in 1:npart]
+        ρ = zeros(n, n, n)
+        nout = deposit!(ρ, mesh, positions; charge = nbelec / npart)
+        @test nout == 0
+        @test total_charge(ρ, mesh) ≈ nbelec rtol = 1e-12
+
+        # Les particules hors domaine sont comptées et ignorées, pas repliées.
+        dehors = [(200.0, 0.0, 0.0), (0.0, -300.0, 0.0)]
+        ρ2 = zeros(n, n, n)
+        @test deposit!(ρ2, mesh, dehors; charge = 1.0) == 2
+        @test all(iszero, ρ2)
+
+        # Coefficients spline : S⁻¹ puis S doit rendre l'identité.
+        coefs = spline_coefficients(ρ, mesh)
+        back = similar(ρ)
+        src = coefs
+        for d in 1:3
+            dst = similar(ρ)
+            apply_mode!(dst, Matrix(mesh.collocation[d].S), src, d)
+            src = dst
+        end
+        @test norm(src - ρ) / norm(ρ) < 1e-10
+
+        # Une taille de tableau incohérente doit être refusée, pas tolérée.
+        @test_throws DimensionMismatch deposit!(zeros(n, n, n - 1), mesh,
+                                                positions; charge = 1.0)
+    end
+
     @testset "Produit mode-d" begin
         A = randn(4, 4)
         X = randn(4, 5, 6)
