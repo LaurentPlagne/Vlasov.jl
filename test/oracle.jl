@@ -252,6 +252,26 @@ reldiff(a, b) = norm(a - b) / norm(b)
             @test reldiff(ρ, reshape(read_dump_vector("rg_rho.bin"), n, n, n)) < 1e-12
         end
 
+        @testset "Tirage initial des pseudo-particules" begin
+            # `ran2` étant reproduit bit à bit, la comparaison se fait
+            # particule par particule et non sur des statistiques — seule
+            # façon de distinguer un bug d'un bruit d'échantillonnage.
+            flat(t) = collect(Iterators.flatten(t))
+            prof = read_radial_profile(joinpath(ORACLE_DIR, "data"))
+            @test length(prof.quantiles) == length(prof.density) == 1001
+            @test prof.rmax == 35.0
+
+            npart, nbelec = 20_000, 196.0
+            pos, mom = sample_thomas_fermi(prof, npart, nbelec / npart)
+
+            # ⚠️ Tolérance à 1e-11 et non 1e-13 : le Fortran déclare
+            # `pi = 3.141592653589d0`, tronqué de trois décimales, et les
+            # angles du tirage en héritent. Avec ce π-là l'accord tombe à
+            # 4e-17 — l'écart vient de là et de rien d'autre.
+            @test reldiff(flat(pos), read_dump_vector("in_rt.bin")) < 1e-11
+            @test reldiff(flat(mom), read_dump_vector("in_pt.bin")) < 1e-11
+        end
+
         @testset "Champ moyen : échange-corrélation et jellium" begin
             ax = SplineAxis(read_dump_vector("fg_gx.bin"), read_dump_vector("ps_gt.bin"))
             mesh = SplineMesh(ax, ax, ax)

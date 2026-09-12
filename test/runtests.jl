@@ -718,6 +718,55 @@ end
         @test csol2 ≈ 2 .* csol
     end
 
+    @testset "Tirage initial" begin
+        # Profil analytique : densité constante dans une boule de rayon R.
+        R, nq = 10.0, 1001
+        # r(q) pour une boule uniforme : q = (r/R)³, donc r = R·q^⅓.
+        quantiles = [R * cbrt((j - 1) / (nq - 1)) for j in 1:nq]
+        rmax = 12.0
+        density = [r <= R ? 1e-3 : 0.0 for r in range(0, rmax; length = nq)]
+        prof = RadialProfile(quantiles, density, rmax)
+
+        npart, nbelec = 20_000, 100.0
+        w = nbelec / npart
+        pos, mom = sample_thomas_fermi(prof, npart, w)
+        @test length(pos) == length(mom) == npart
+
+        # Les rayons doivent remplir la boule, et leur cube être uniforme —
+        # c'est la propriété que la transformée inverse doit garantir.
+        r = [sqrt(sum(abs2, p)) for p in pos]
+        @test maximum(r) <= R + 1e-9
+        @test abs(sum(x -> (x / R)^3, r) / npart - 0.5) < 0.02
+
+        # Directions uniformes sur la sphère : chaque composante réduite a une
+        # moyenne nulle, et le cosinus polaire est uniforme sur [−1, 1].
+        μ = [p[3] / sqrt(sum(abs2, p)) for p in pos]
+        @test abs(sum(μ) / npart) < 0.02
+        @test abs(sum(abs2, μ) / npart - 1 / 3) < 0.02
+
+        # Impulsions dans la sphère de Fermi locale, échelonnées par le poids.
+        pf = FERMI_COEFFICIENT * cbrt(1e-3)
+        pnorm = [sqrt(sum(abs2, p)) / w for p in mom]
+        @test maximum(pnorm) <= pf * (1 + 1e-9)
+        # Uniforme en volume : ⟨(p/p_F)³⟩ = 1/2.
+        @test abs(sum(x -> (x / pf)^3, pnorm) / npart - 0.5) < 0.02
+
+        # Reproductibilité : même graine, même nuage.
+        p2, m2 = sample_thomas_fermi(prof, 100, w; rng = Ran2(-1))
+        p3, m3 = sample_thomas_fermi(prof, 100, w; rng = Ran2(-1))
+        @test p2 == p3 && m2 == m3
+
+        # `initial_cloud` amorce le leapfrog d'un demi-pas en arrière.
+        dt = 0.5
+        cloud = initial_cloud(prof, 500, nbelec, dt)
+        @test length(cloud) == 500
+        @test cloud.weight ≈ nbelec / 500
+        M = mass(cloud)
+        pos4, mom4 = sample_thomas_fermi(prof, 500, nbelec / 500)
+        @test cloud.positions == pos4
+        @test all(i -> all(cloud.previous[i] .≈ pos4[i] .- (dt / 2M) .* mom4[i]), 1:500)
+    end
+
     @testset "Produit mode-d" begin
         A = randn(4, 4)
         X = randn(4, 5, 6)

@@ -24,6 +24,7 @@ prête à servir à cette mesure.
 | 4 | `initialise` | `rmax` entier lisant un réel | lecture de `rhoinit.dat` | corrigée (obligatoire) |
 | 5 | `force2gi` | appel avec un argument de trop | code mort | corrigée (obligatoire) |
 | 6 | `makerhsf` | multipôles calculés puis jetés | temps de calcul, bruit | — |
+| 7 | `ceq3d.f` | `π` tronqué à 12 décimales | ~1e-12 partout | non reproduite |
 
 Les points 4 et 5 sont corrigés dans `modernize.patch`, sans quoi le code ne
 compile pas ; voir [`ref/fortran/README.md`](../ref/fortran/README.md).
@@ -200,6 +201,36 @@ Ce n'est pas une erreur de résultat, mais :
 
 Le portage ne les calcule pas : `boundary_from_coarse!` pose les faces, un
 point c'est tout.
+
+---
+
+## 7. `ceq3d.f` — π tronqué
+
+```fortran
+parameter (pi=3.141592653589d0)
+```
+
+Il manque trois décimales : `π = 3.141592653589793…`. L'écart relatif est de
+`2.5e-13`, et il se propage partout où `pi` intervient — angles du tirage
+initial, normalisation gaussienne, facteur `−4π` du second membre.
+
+**C'est la seule anomalie que le portage ne reproduit pas.** Julia utilise `π`
+en pleine précision : la valeur tronquée n'apporte rien, et la recopier
+figerait une imprécision gratuite.
+
+**Conséquence sur les comparaisons.** Les grandeurs qui passent par `pi` ne
+collent donc à l'oracle qu'à ~`1e-12`, et non `1e-13` comme le reste. Vérifié
+sur le tirage initial :
+
+| | écart sur les positions |
+|---|---|
+| avec π de Julia | 7,5e−13 |
+| avec le π tronqué | **4,1e−17**, dont 95,5 % de valeurs bit-exactes |
+
+L'attribution est donc sans ambiguïté : tout l'écart vient de là, et le reste
+du tirage est exact. Même raisonnement que pour la tolérance de `findacc` dans
+`stretched_axis` — on garde la version juste, on desserre la comparaison, et
+on écrit pourquoi.
 
 ---
 
