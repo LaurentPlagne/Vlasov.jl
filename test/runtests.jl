@@ -672,6 +672,52 @@ end
         @test norm(rhs - rhs_raccord) / norm(rhs_raccord) > 1e-6   # bords différents
     end
 
+    @testset "Champ moyen" begin
+        N = 196.0
+        jel = Jellium(N)
+        r0 = jel.radius
+        @test r0 ≈ WIGNER_SEITZ_NA * cbrt(N)
+        @test Jellium(N; rs = 2.0).radius ≈ 2.0 * cbrt(N)
+
+        # Sphère uniformément chargée : potentiel et champ continus en r₀,
+        # fini au centre, coulombien au loin.
+        @test Vlasov.potential(jel, 0.0) ≈ -3N / 2r0
+        @test Vlasov.potential(jel, r0) ≈ -N / r0
+        @test Vlasov.potential(jel, nextfloat(r0)) ≈ -N / r0
+        @test Vlasov.potential(jel, 1e6) ≈ -N / 1e6
+        dr = 1e-6
+        dedans = (Vlasov.potential(jel, r0) - Vlasov.potential(jel, r0 - dr)) / dr
+        dehors = (Vlasov.potential(jel, r0 + dr) - Vlasov.potential(jel, r0)) / dr
+        @test dedans ≈ dehors rtol = 1e-4          # champ continu
+        @test all(r -> Vlasov.potential(jel, r) < 0, (0.0, 1.0, r0, 100.0))
+
+        # Échange-corrélation : attractif, et croissant en module avec la
+        # densité — c'est ce qui lie les électrons entre eux.
+        @test xc_potential(0.0) == 0
+        @test xc_potential(1e-3) < 0
+        @test xc_potential(1e-2) < xc_potential(1e-3)
+        # L'échange domine à forte densité : Vxc ~ −(3/π)^⅓ ρ^⅓.
+        @test xc_potential(1e3) / (-cbrt(3 / π) * cbrt(1e3)) ≈ 1 rtol = 0.2
+
+        # L'ajout se fait bien dans l'espace des coefficients.
+        ax = uniform_axis(-30.0, 30.0, 10)
+        mesh = SplineMesh(ax, ax, ax)
+        n = nbasis(ax)
+        g = ax.colloc
+        ρ = [1e-3 * exp(-(x^2 + y^2 + z^2) / 200) for x in g, y in g, z in g]
+        csol = zeros(n, n, n)
+        effective_potential!(csol, ρ, mesh, jel)
+        attendu = [xc_potential(ρ[i, j, k]) +
+                   Vlasov.potential(jel, sqrt(g[i]^2 + g[j]^2 + g[k]^2))
+                   for i in 1:n, j in 1:n, k in 1:n]
+        @test csol ≈ spline_coefficients(attendu, mesh)
+
+        # Appelé deux fois, il ajoute deux fois : c'est un `!` cumulatif.
+        csol2 = copy(csol)
+        effective_potential!(csol2, ρ, mesh, jel)
+        @test csol2 ≈ 2 .* csol
+    end
+
     @testset "Produit mode-d" begin
         A = randn(4, 4)
         X = randn(4, 5, 6)

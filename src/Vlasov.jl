@@ -12,6 +12,7 @@ include("deposition.jl")
 include("poisson.jl")
 include("particles.jl")
 include("fields.jl")
+include("meanfield.jl")
 
 export Ran2, next!
 export HermiteKind, Value, Slope, BasisIndex, linearindex
@@ -27,5 +28,6 @@ export ParticleCloud, ELECTRON_MASS, ELECTRON_CHARGE, mass, charge
 export step!, half_step_back, full_step_back
 export GaussianSmoothing, smoothed_field, spline_field, spline_potential, forces!, nearest_knot, cell_index
 export deposit_smoothed!
+export Jellium, WIGNER_SEITZ_NA, xc_potential, effective_potential!
 
 end # module

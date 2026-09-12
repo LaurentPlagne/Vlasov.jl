@@ -252,6 +252,29 @@ reldiff(a, b) = norm(a - b) / norm(b)
             @test reldiff(ρ, reshape(read_dump_vector("rg_rho.bin"), n, n, n)) < 1e-12
         end
 
+        @testset "Champ moyen : échange-corrélation et jellium" begin
+            ax = SplineAxis(read_dump_vector("fg_gx.bin"), read_dump_vector("ps_gt.bin"))
+            mesh = SplineMesh(ax, ax, ax)
+            n = nbasis(ax)
+            ρ = reshape(read_dump_vector("ps_rho.bin"), n, n, n)
+            jel = Jellium(read_dump_vector("ps_nbion.bin")[1])
+
+            # Le potentiel effectif aux points de collocation.
+            g = ax.colloc
+            ech = [xc_potential(ρ[i, j, k]) +
+                   Vlasov.potential(jel, sqrt(g[i]^2 + g[j]^2 + g[k]^2))
+                   for i in 1:n, j in 1:n, k in 1:n]
+            @test reldiff(ech, reshape(read_dump_vector("ps_ech.bin"), n, n, n)) < 1e-13
+
+            # Puis son ajout au potentiel de Hartree, en coefficients.
+            csol = reshape(read_dump_vector("ps_csol0.bin"), n, n, n)
+            avant = copy(csol)
+            effective_potential!(csol, ρ, mesh, jel)
+            @test reldiff(csol, reshape(read_dump_vector("ps_csol.bin"), n, n, n)) < 1e-11
+            # Ce terme n'est pas une correction : il pèse autant que Hartree.
+            @test norm(csol - avant) / norm(avant) > 0.5
+        end
+
         @testset "Raccord entre grilles" begin
             gxf = read_dump_vector("fg_gx.bin")
             gxc = read_dump_vector("sf_gxc.bin")
