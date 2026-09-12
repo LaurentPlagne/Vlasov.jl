@@ -1,0 +1,43 @@
+nb de point de grille fine
+28
+nb de points grille coarse 1er domaine (pair)
+14
+nb de points grille coarse 2em domaine (pair)
+14
+xpremier domaine (grille fine)
+50.d0
+xsecond domaine (fin grille coarse)
+150.d0
+nb d'ion utilises pour le Jellium
+196.d0
+nb d'electron
+196.d0
+nb de pseudo particule
+20000
+nb de timestep
+2
+longueur d'un timestep
+1.d0
+Masse du projectile (UA) (mp=1836)
+1836.154d0
+Energie du projectile (UA (1eV=0.0367490 UA))
+73.498
+Parametre d'impact (UA)
+0.d0
+Rayon de coupure de l'inter projectile <-> electrons (U.A)
+1.d0
+Position (x0) initiale du proj (UA)
+-70.d0
+Charge du projectile (UA)
+1.d0
+Rayon de coupure e<->e
+0.1d0
+courbure max
+0.1d0
+
+
+
+
+
+
+

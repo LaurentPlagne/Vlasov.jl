@@ -1,0 +1,11 @@
+# Artefacts de construction et de production de l'oracle
+*.o
+vlas
+vlas_dump
+vlas_dump.f
+*.bin
+*.log
+/Eloss/
+/out/
+# Copies de travail des fichiers de data/ (le Makefile les recopie à la racine)
+/*.dat

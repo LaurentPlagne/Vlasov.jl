@@ -1,0 +1,43 @@
+--- /private/tmp/claude-501/-Users-laurentplagne-Projects-Vlasov-jl/f3af2d36-7742-419c-b8bf-0104ce4e63fc/scratchpad/reftest/vlas.f	2026-09-12 14:17:13
++++ /private/tmp/claude-501/-Users-laurentplagne-Projects-Vlasov-jl/f3af2d36-7742-419c-b8bf-0104ce4e63fc/scratchpad/reftest/vlas_dump.f	2026-09-12 14:57:18
+@@ -1183,6 +1183,24 @@
+       call diagonal(nsx,dex,mx,mxi,lxr,lxi)
+       call diagonal(nsy,dey,my,myi,lyr,lyi)
+       call diagonal(nsz,dez,mz,mzi,lzr,lzi)
++      if (gx(0).gt.-100.d0) then
++      call dumpmat('dump_sx.bin ',sx,NTXT+1,ntx+1)
++      call dumpmat('dump_s2x.bin',s2x,NTXT+1,ntx+1)
++      call dumpmat('dump_dex.bin',dex,NXS,nsx)
++      call dumpvec('dump_lxr.bin',lxr,nsx)
++      call dumpmat('dump_mx.bin ',mx,NXS,nsx)
++      call dumpvec('dump_gx.bin ',gx,nx+1)
++      call dumpvec('dump_gtx.bin',gtx,ntx+1)
++      print*,'DUMPED FINE nsx,ntx=',nsx,ntx
++      else
++      call dumpmat('dumpb_sx.bin',sx,NTXT+1,ntx+1)
++      call dumpmat('dumpbs2x.bin',s2x,NTXT+1,ntx+1)
++      call dumpmat('dumpbdex.bin',dex,NXS,nsx)
++      call dumpvec('dumpblxr.bin',lxr,nsx)
++      call dumpvec('dumpb_gx.bin',gx,nx+1)
++      call dumpvec('dumpbgtx.bin',gtx,ntx+1)
++      print*,'DUMPED BIG nsx,ntx=',nsx,ntx
++      end if
+       call inverse1(nsx,mx,mxm1)
+       call inverse1(nsy,my,mym1)
+       call inverse1(nsz,mz,mzm1)
+@@ -1234,6 +1252,15 @@
+          call primx2(gz,nz,k/2,mod(k,2),gtz(ntz),primb)
+          psz2(k)=primb-prima
+       end do
++      if (gx(0).gt.-100.d0) then
++      call dumpvec('dump_psx.bin',psx,ntx+1)
++      call dumpvec('dump_pxx.bin',psxx,ntx+1)
++      call dumpvec('dump_px2.bin',psx2,ntx+1)
++      else
++      call dumpvec('dumpbpsx.bin',psx,ntx+1)
++      call dumpvec('dumpbpxx.bin',psxx,ntx+1)
++      call dumpvec('dumpbpx2.bin',psx2,ntx+1)
++      end if
+       do i=1,nsx
+          do j=1,nsy
+             do k=1,nsz

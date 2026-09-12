@@ -1,0 +1,69 @@
+--- /Users/laurentplagne/these_postdoc/these/arkonnen/vlasov/vlas.f	2025-01-18 15:38:34
++++ vlas.f.modernise	2026-09-12 14:17:13
+@@ -879,7 +879,7 @@
+          r2=dsqrt(r2/(npart-nbcap-out))
+          rc2=dsqrt(rc2/(npart-nbcap))
+          open (3,file='moye.dat',status='unknown')
+-         write (3,'(I,3e15.7)') nb,r2,rc2,spill
++         write (3,'(I10,3e15.7)') nb,r2,rc2,spill
+          close(3)
+       else
+          do k=1,10
+@@ -914,9 +914,9 @@
+          rc2=dsqrt(rc2/(npart-nbcap))
+          open (3,file='moye.dat',status='old')
+          do j=1,nb-1
+-            read(3,'(I,3e15.7)')
++            read(3,'(I10,3e15.7)')
+          end do
+-         write (3,'(I,3e15.7)') nb,r2,rc2,spill
++         write (3,'(I10,3e15.7)') nb,r2,rc2,spill
+          close(3)
+       end if
+       end 
+@@ -1504,7 +1504,7 @@
+       dumr=0.d0
+       do i=0,nx
+       end do
+-      titrec='/home/tempo3/plagne/'//titre 
++      titrec='out/                '//titre 
+       open (2,file=titrec,status='unknown')
+       print*,'trec=',titrec
+ c      print*,'plot x=0 => entrez 1'
+@@ -1608,7 +1608,7 @@
+       real*8 rmax,pmax,rhorp(nrmax,npmax),dumx,dumy
+       integer nr,np,dumi,i,j
+       open (1,file='frp.d',status='unknown')
+-      read(1,'(3I)') nr,np,dumi
++      read(1,'(3I10)') nr,np,dumi
+       print*,'dumi',dumi
+       do i=1,nr
+          do j=1,np
+@@ -2174,7 +2174,7 @@
+       dumi=0
+       dumj=0
+       dumr=0.d0
+-      titrec='/home/tempo3/plagne/'//titre 
++      titrec='out/                '//titre 
+       open (2,file=titrec,status='unknown')
+       print*,'trec=',titrec
+       eps=1.d-5
+@@ -3596,7 +3596,8 @@
+       real*8 x(6),nbelec
+       real*4 ran2
+       real*8 hm1(nbtdmax),rel(nbtdmax)
+-      integer i,npart,nbgrid,nbgrid2,rmax
++      integer i,npart,nbgrid,nbgrid2
++      real*8 rmax
+       real*8 r,p,rhor,rk1,rk2,xj1,xj2,coef,pf
+       integer idum,nbi,j,k
+       real*8 stheta,ee
+@@ -3950,7 +3951,7 @@
+                call force2gi(npart,nbelec,fpi,qpco,nx,ny,nz,
+      +              csolbig,gxbig,gybig,gzbig,nboutbig,
+      +              csol,gx,gy,gz,
+-     +              inttab1,inttab2,nbdt,pasgrid,nbcap,liste2)               
++     +              inttab1,inttab2,nbdt,pasgrid,nbcap)               
+                call forceproji(pospro,qpco,fppi,cutoff,
+      +              nbion,nbelec,npart,chapro,elproi)
+                fpi(1)=fpi(1)+fppi(1)

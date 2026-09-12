@@ -19,6 +19,8 @@ end
 
 @testset "Vlasov.jl" begin
 
+    include("oracle.jl")
+
     @testset "BasisIndex" begin
         # Aller-retour indice linéaire ↔ (nœud, nature).
         for lin in 1:20
