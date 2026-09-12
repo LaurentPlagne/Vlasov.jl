@@ -261,8 +261,13 @@ Employé sur la grille grossière, où les particules sont loin de la zone dense
 et où le lissage n'a plus d'objet.
 """
 function spline_field(axes::NTuple{3,SplineAxis{T}}, csol::Array{T,3}, p) where {T}
-    cells = ntuple(d -> cell_index(axes[d].knots, p[d]), 3)
-    any(isnothing, cells) && return nothing
+    # Même précaution que dans `spline_potential` : écarter le `nothing` avant
+    # de construire quoi que ce soit, sous peine d'instabilité de type.
+    cx = cell_index(axes[1].knots, p[1])
+    cy = cell_index(axes[2].knots, p[2])
+    cz = cell_index(axes[3].knots, p[3])
+    (cx === nothing || cy === nothing || cz === nothing) && return nothing
+    cells = (cx, cy, cz)
 
     # Les 4 fonctions de base non nulles dans la maille, valeur et dérivée.
     vals = ntuple(3) do d
@@ -338,8 +343,15 @@ Sert au raccord entre grilles : les valeurs de bord de la grille fine sont
 lues dans la solution de la grille grossière.
 """
 function spline_potential(axes::NTuple{3,SplineAxis{T}}, csol::Array{T,3}, p) where {T}
-    cells = ntuple(d -> cell_index(axes[d].knots, p[d]), 3)
-    any(isnothing, cells) && return nothing
+    # ⚠️ Les trois tests de débordement viennent AVANT toute construction :
+    # `cell_index` rend `Union{Nothing,Int}`, et laisser cette union entrer
+    # dans un `ntuple` la propage à tout ce qui suit. L'inférence échoue, les
+    # tuples sont boxés, et l'évaluation d'un point passe de 20 ns à 20 µs.
+    cx = cell_index(axes[1].knots, p[1])
+    cy = cell_index(axes[2].knots, p[2])
+    cz = cell_index(axes[3].knots, p[3])
+    (cx === nothing || cy === nothing || cz === nothing) && return nothing
+    cells = (cx, cy, cz)
 
     vals = ntuple(3) do d
         c = cells[d]

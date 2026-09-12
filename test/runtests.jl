@@ -515,6 +515,19 @@ end
             @test all(E .≈ (-1.0, 0.0, 0.0)) || maximum(abs, E .- (-1.0, 0.0, 0.0)) < 1e-13
         end
         @test spline_field(axes3, csol, (200.0, 0.0, 0.0)) === nothing
+        @test spline_potential(axes3, csol, (200.0, 0.0, 0.0)) === nothing
+
+        # ⚠️ Non-régression de performance. `cell_index` rend
+        # `Union{Nothing,Int}` ; laisser cette union entrer dans la
+        # construction des tuples en propage l'instabilité, boxe tout et
+        # multiplie le coût par cent. Ces deux fonctions doivent rester
+        # frugales : le test échoue si l'union reparaît.
+        q = (2.3, -1.7, 4.1)
+        spline_potential(axes3, csol, q); spline_field(axes3, csol, q)
+        boucle(f, k) = for _ in 1:k; f(axes3, csol, q); end
+        boucle(spline_potential, 10); boucle(spline_field, 10)
+        @test @allocated(boucle(spline_potential, 1000)) < 100_000
+        @test @allocated(boucle(spline_field, 1000)) < 100_000
 
         # Le champ lissé ne l'est PAS : le noyau tabulé n'est pas exactement
         # normalisé (voir `GaussianSmoothing`). On borne l'erreur connue —
