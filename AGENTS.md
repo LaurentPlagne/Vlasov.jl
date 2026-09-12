@@ -225,6 +225,20 @@ résoudre (`‖A·X − B‖`), jamais sur sa seule absence d'erreur.
    pseudo-particules, quelques pas de temps) plutôt que la simulation complète.
 2. **Zéro hypothèse non mesurée** : ne jamais affirmer qu'une étape est un goulet sans
    profilage chiffré (`@time`, chronométrage pas à pas).
+3. ⚠️ **Relever la charge machine AVANT de chronométrer** (`uptime`). Cette machine
+   sert aussi à autre chose : à `load 14` pour 10 cœurs, les temps absolus ne valent
+   rien. Une conclusion de perf a déjà dû être retirée pour cette raison.
+   - **Préférer ce qui ne dépend pas de la charge.** Un compteur d'allocations
+     (`@allocated`), un décompte de passes mémoire, un nombre d'opérations : ces
+     preuves-là tiennent quelle que soit la charge, et c'est ainsi qu'a été établi le
+     facteur 11 de l'instabilité de type.
+   - **Quand il faut du temps, l'A/B entrelacé** : alterner les deux variantes au même
+     instant et prendre le minimum de chacune, ce qui annule les dérives lentes.
+     `Vlasov.PARALLEL[]` existe pour ça.
+   - **Chercher une corroboration structurelle.** « Paralléliser les contractions
+     ralentit » ne vaut que parce qu'un second argument, indépendant du chronomètre,
+     l'explique : dix lectures concurrentes du même tableau saturent la bande passante.
+     Un chiffre seul, sur machine chargée, ne prouve rien.
 3. **Zéro spéculation sur le code de référence** : ne rien affirmer sur ce que fait le
    Fortran sans vérification. Si la lecture ne suffit pas à trancher, **instrumenter et
    recompiler** plutôt que spéculer — l'oracle est reconstructible.
