@@ -602,6 +602,36 @@ end
         @test count(!iszero, ρ1) == 8^3
         @test count(!iszero, ρtri) == 2^3
 
+        # ⚠️ Non-régression : le dépôt parallèle doit rendre EXACTEMENT ce que
+        # rend le séquentiel, à l'arrondi près, et être déterministe. Un
+        # dépôt est une diffusion ; si deux fils partagent une case, l'erreur
+        # est silencieuse et croît avec le nombre de fils.
+        for k in (1, 2, 4, Threads.nthreads())
+            buffers = ScatterBuffers(mesh; nslots = k)
+            runs = map(1:3) do _
+                q = zeros(n, n, n)
+                deposit_smoothed!(q, mesh, sm, positions; charge = nbelec / npart,
+                                  buffers = buffers)
+                q
+            end
+            @test all(r -> r == runs[1], runs)          # déterministe
+            @test norm(runs[1] - ρ) / norm(ρ) < 1e-13   # identique au séquentiel
+        end
+
+        # Même contrôle pour le dépôt trilinéaire, qui portait le défaut.
+        for k in (1, 2, Threads.nthreads())
+            buffers = ScatterBuffers(mesh; nslots = k)
+            ref = zeros(n, n, n)
+            deposit!(ref, mesh, positions; charge = nbelec / npart)
+            runs = map(1:3) do _
+                q = zeros(n, n, n)
+                deposit!(q, mesh, positions; charge = nbelec / npart, buffers = buffers)
+                q
+            end
+            @test all(r -> r == runs[1], runs)
+            @test norm(runs[1] - ref) / norm(ref) < 1e-13
+        end
+
         # Les particules trop près du bord sont rejetées : leur pochoir de 8
         # points déborderait.
         h = ax.knots[2] - ax.knots[1]

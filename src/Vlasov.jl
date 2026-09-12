@@ -28,6 +28,7 @@ export knots_from_collocation, axis_from_collocation
 export CollocationMatrices, laplacian1d, laplacian1d_full, COLLOCATION_BANDWIDTH
 export DiagonalizedOperator, TensorSolver, apply_mode!, apply_rotating!, apply_all_rotating!, solve!, solve
 export SplineMesh, NestedMeshes, finest, coarsest, collocation_axes, laplacian!
+export ScatterBuffers, scatter!, scatter_reduce!
 export dual_lengths, locate, deposit!, spline_coefficients, spline_coefficients!, total_charge
 export Multipole, multipole, potential, boundary_potential!, poisson_rhs, poisson_rhs!
 export poisson, poisson!, solve_interior!, boundary_from_coarse!

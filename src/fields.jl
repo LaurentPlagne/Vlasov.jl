@@ -163,22 +163,14 @@ Une particule est rejetée si son pochoir de 8 points déborderait de la
 grille — d'où une marge d'une maille et demie au bord.
 """
 function deposit_smoothed!(ρ::Array{T,3}, mesh::SplineMesh{3,T},
-                           sm::GaussianSmoothing{T}, positions; charge::T) where {T}
-    mx, my, mz = mesh.axes
-    size(ρ) == (nbasis(mx), nbasis(my), nbasis(mz)) ||
-        throw(DimensionMismatch("ρ doit couvrir toute la grille de collocation"))
-    fill!(ρ, zero(T))
-
+                           sm::GaussianSmoothing{T}, positions;
+                           charge::T, buffers = nothing) where {T}
     knots = map(a -> a.knots, mesh.axes)
     half = sm.spacing / 2
     bounds = map(g -> (g[2] + half, g[end-1] - half), knots)
 
-    nout = 0
-    @inbounds for p in positions
-        if !all(d -> bounds[d][1] <= p[d] <= bounds[d][2], 1:3)
-            nout += 1
-            continue
-        end
+    nout = scatter!(ρ, mesh, positions, buffers) do dest, _, _, _, p
+        all(d -> bounds[d][1] <= p[d] <= bounds[d][2], 1:3) || return false
         ci = ntuple(d -> nearest_knot(knots[d], p[d]), 3)
         col = ntuple(d -> table_column(sm, p[d], knots[d][ci[d]]), 3)
         # `nodes[a]` est la gaussienne au point de collocation `colloc[a+1]`
@@ -189,13 +181,14 @@ function deposit_smoothed!(ρ::Array{T,3}, mesh::SplineMesh{3,T},
         gx = @view sm.nodes[:, col[1]]
         gy = @view sm.nodes[:, col[2]]
         gz = @view sm.nodes[:, col[3]]
-        for kk in 1:8, jj in 1:8
+        @inbounds for kk in 1:8, jj in 1:8
             c = gy[jj] * gz[kk]
             j, k = base[2] + jj, base[3] + kk
             for ii in 1:8
-                ρ[base[1]+ii, j, k] += gx[ii] * c
+                dest[base[1]+ii, j, k] += gx[ii] * c
             end
         end
+        true
     end
 
     ρ .*= charge

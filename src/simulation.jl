@@ -81,6 +81,11 @@ struct Simulation{T<:AbstractFloat,P}
        d'un pas entier : leur donner des tampons propres évite 2,8 Mo
        d'allocations par pas, et le ramasse-miettes qui va avec."""
     csol::NTuple{2,Array{T,3}}
+    """Tampons de diffusion, un par fil et par niveau, pour le dépôt parallèle.
+       Voir `ScatterBuffers` : leur coût mémoire croît comme le cube de la
+       grille, d'où leur présence explicite ici plutôt qu'une création en
+       douce à chaque dépôt."""
+    scatter::NTuple{2,ScatterBuffers{T,3}}
 end
 
 function Simulation(p::SimulationParameters{T}, profile::RadialProfile{T};
@@ -98,7 +103,8 @@ function Simulation(p::SimulationParameters{T}, profile::RadialProfile{T};
                      ParticleCloud(positions, weight), projectile,
                      (zeros(T, n, n, n), zeros(T, n, n, n)),
                      (zeros(T, n, n, n), zeros(T, n, n, n)),
-                     (zeros(T, n, n, n), zeros(T, n, n, n)))
+                     (zeros(T, n, n, n), zeros(T, n, n, n)),
+                     (ScatterBuffers(meshes[1]), ScatterBuffers(meshes[2])))
     prime_leapfrog!(sim, positions, momenta; consistent = consistent_startup)
 end
 
@@ -151,8 +157,9 @@ function update_forces!(sim::Simulation{T}; advance::Bool = true) where {T}
     ρf, ρc = sim.ρ
     w = sim.cloud.weight
 
-    deposit_smoothed!(ρf, fine, sim.smoothing, sim.cloud.positions; charge = w)
-    deposit!(ρc, coarse, sim.cloud.positions; charge = w)
+    deposit_smoothed!(ρf, fine, sim.smoothing, sim.cloud.positions;
+                      charge = w, buffers = sim.scatter[1])
+    deposit!(ρc, coarse, sim.cloud.positions; charge = w, buffers = sim.scatter[2])
     poisson!(sim.φ, sim.ρ, sim.meshes)
 
     csolf = spline_coefficients!(sim.csol[1], sim.φ[1], fine)

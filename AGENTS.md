@@ -96,6 +96,18 @@ plusieurs graines. Sur l'arbitrage des coquilles 1 et 2, les effets valaient 0,0
 0,71 σ — indiscernables du bruit, ce qu'aucune comparaison à une seule graine n'aurait
 pu dire.
 
+⚠️ **Un nom réutilisé entre une fermeture et sa fonction englobante devient UNE SEULE
+variable, boxée — donc partagée par tous les fils.** Constaté, et coûteux à trouver :
+`deposit!` nommait `lx, ly, lz` les résultats de `locate` dans son `do`-block, et les
+longueurs duales dans la fonction. Les huit fils écrivaient dans la même case. Le
+symptôme est sournois — résultat **juste à un fil**, faux à deux, de plus en plus faux à
+huit, **somme totale conservée** (rien n'est perdu, tout est redistribué), et **non
+déterministe** d'une exécution à l'autre.
+
+Deux réflexes : vérifier qu'un résultat parallèle est **déterministe** sur plusieurs
+exécutions, et qu'il **coïncide avec le séquentiel** — c'est le seul test qui distingue
+une course d'une erreur de calcul. Un test par valeur attendue ne l'aurait pas vu.
+
 ⚠️ **Une bibliothèque tierce n'est pas un oracle.** Constaté sur `BandedMatrices` v1.12.0 :
 la division à droite entre deux `BandedMatrix` rend un résultat **faux sans rien signaler**
 (résidu ≈ 0.3 pour `cond(S) ≈ 4`), et `BandedMatrix / BandedLU` **ne termine pas**. Seul
