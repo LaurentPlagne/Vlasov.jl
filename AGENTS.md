@@ -69,6 +69,11 @@ pas du bruit.
 ou erreur de portage ? Le Fortran contient des bugs latents que les compilateurs de 1996
 toléraient (un `integer` relisant un réel, un appel avec un argument de trop en code mort).
 
+📋 **La validation sur une trajectoire complète est dans
+[`docs/validation-chapitre6.md`](docs/validation-chapitre6.md)** : le portage suit le
+Fortran sur 600 pas, `dE/dx` à 0,5 %. Les comparaisons ponctuelles à `1e-13` ne disaient
+rien de l'accord après des centaines de pas enchaînés ; celle-ci le dit.
+
 📋 **Les coquilles constatées sont relevées dans
 [`docs/coquilles-fortran.md`](docs/coquilles-fortran.md)** — à consulter avant de
 s'étonner d'un résultat, et à compléter dès qu'une nouvelle apparaît. Aucune n'est
