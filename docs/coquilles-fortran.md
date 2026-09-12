@@ -1,0 +1,210 @@
+# Coquilles et anomalies du code Fortran d'origine
+
+Relevé des écarts constatés dans `vlas.f` pendant le portage. **Aucun n'est
+corrigé** : le portage les reproduit à l'identique, faute de quoi la
+comparaison à l'oracle perdrait sa valeur — c'est elle qui détecte les erreurs
+de portage, et elle ne le peut que si les deux codes calculent la même chose.
+
+Ils seront arbitrés **quand les runs de la thèse seront reproductibles**, un à
+un, en mesurant ce que chaque correction change sur les observables. Deux
+d'entre eux ont déjà leur variante corrigée derrière un `consistent = true`,
+prête à servir à cette mesure.
+
+> ⚠️ Un écart entre l'oracle et le portage doit toujours être arbitré — bug
+> d'origine, ou erreur de portage ? — jamais corrigé en silence. Ce fichier
+> est la trace de cet arbitrage.
+
+## Vue d'ensemble
+
+| # | Où | Nature | Portée | Correction disponible |
+|---|---|---|---|---|
+| 1 | `moveback2` | `dltt*2` pour `dltt**2` | amorçage du leapfrog | `consistent = true` |
+| 2 | `ran2` | `IQ1 = 3668` pour `53668` | tout le tirage initial | `consistent = true` |
+| 3 | `maketaint` | supports d'intégration tronqués | champ lissé, ~1e-5 | — |
+| 4 | `initialise` | `rmax` entier lisant un réel | lecture de `rhoinit.dat` | corrigée (obligatoire) |
+| 5 | `force2gi` | appel avec un argument de trop | code mort | corrigée (obligatoire) |
+| 6 | `makerhsf` | multipôles calculés puis jetés | temps de calcul, bruit | — |
+
+Les points 4 et 5 sont corrigés dans `modernize.patch`, sans quoi le code ne
+compile pas ; voir [`ref/fortran/README.md`](../ref/fortran/README.md).
+
+Les points 1, 2 et 3 sont présents **à l'identique dans les cinq versions** du
+code de la thèse (`arkonnen/vlasov`, `lu`, `pghpf`, `pghpf2`, `t3e/new`,
+`lindhard`). Ce ne sont donc pas des accidents de copie : ils ont traversé tout
+le développement sans être vus.
+
+---
+
+## 1. `moveback2` — formule non homogène
+
+```fortran
+coef2 = 0.5d0*dltt*2*dfloat(npart)/(mel*nbelec)      ! = dt/M
+qpold(1,i) = -qp(1,i) + 2.d0*qpold(1,i) + coef2*fp(1,i)
+```
+
+**Le problème.** `coef2·F` a la dimension d'une *vitesse*, ajoutée à des
+longueurs. Un développement de Taylor donne `dt²/4M` :
+
+```
+q(−dt) = 2·q(−dt/2) − q(0) + (dt²/4M)·F
+```
+
+Tout indique une coquille `dltt*2` pour `dltt**2` — d'autant que la routine
+voisine `move`, qui fait le même genre de calcul, écrit bien `dltt**2`. Même
+ainsi, il resterait un facteur 2 d'écart avec Taylor.
+
+**Portée.** L'amorçage seul. `moveback2` ne sert qu'une fois, pour fabriquer
+la position à `t = −dt` qui démarre le schéma de Verlet. L'effet est celui
+d'une erreur sur la vitesse initiale, pas d'un biais entretenu. Avec
+`dt = 1 u.a.`, le coefficient vaut `1/M` au lieu de `0.25/M`, soit un facteur
+4.
+
+**Ce que fait le portage.** `full_step_back` reproduit `dt/M`.
+`full_step_back(…; consistent = true)` applique `dt²/4M`, et un test vérifie
+que cette variante-là reproduit exactement le mouvement uniformément accéléré.
+
+**Comment trancher.** Lancer la même simulation avec les deux coefficients et
+comparer les observables du chapitre 6. Si l'écart est sous le bruit
+statistique du tirage, la question est close.
+
+---
+
+## 2. `ran2` — débordement entier dans le générateur
+
+```fortran
+PARAMETER (IM1=2147483563, IA1=40014, IQ1=3668, IR1=12211, …)
+```
+
+**Le problème.** *Numerical Recipes* donne `IQ1 = 53668` : un chiffre a été
+perdu. La méthode de Schrage n'évite le débordement qu'à la condition
+`IR1 < IQ1` ; ici `12211 > 3668`, et le produit `k*IR1` atteint **7,1e9** pour
+une limite entière 32 bits à **2,1e9**.
+
+Ce n'est donc pas le générateur de L'Ecuyer, mais une variante repliée par le
+débordement — et c'est elle qui a tiré toutes les pseudo-particules de la
+thèse.
+
+**Portée.** Toute l'initialisation de l'espace des phases.
+
+**Ce que fait le portage.** `Ran2` reproduit la suite exacte, débordement
+compris : 20 000 valeurs sur 20 000 identiques bit à bit. `Ran2(seed;
+consistent = true)` rétablit `IQ1 = 53668`.
+
+**Ce qui a déjà été mesuré.** Sur 10⁶ tirages, rien d'alarmant :
+
+| | thèse | corrigé | attendu |
+|---|---|---|---|
+| moyenne | 0,50021 | 0,50023 | 0,5 |
+| variance | 0,08338 | 0,08328 | 1/12 ≈ 0,08333 |
+| corrélation lag-1 | 3,5e−4 | 1,3e−3 | 0 |
+| khi², 100 casiers | 110 | 92 | ≈ 99 ± 14 |
+
+La variante buggée se comporte aussi bien que la correcte sur ces tests. Ils
+restent **faibles** : ils ne verraient pas une corrélation à longue portée ni
+une période raccourcie. Une batterie sérieuse (TestU01) serait nécessaire
+pour conclure.
+
+---
+
+## 3. `maketaint` — noyau de lissage non normalisé
+
+Les tables de convolution intègrent chaque fonction de base contre une
+gaussienne, sur des bornes fixées à la main :
+
+```fortran
+call intvg1(gx,nx,gx(0),gx(1),0,…)   ! nœud 0 : support [g0, g1]
+…
+call intvg1(gx,nx,gx(3),gx(4),8,…)   ! nœud 4 : support [g3, g4]
+```
+
+**Le problème.** Ces bornes sont celles des fonctions de base **du bord**, pas
+d'un nœud intérieur générique. Or la table est ensuite appliquée par
+translation autour de n'importe quel nœud, où les fonctions ont leur support
+complet `[g(k−1), g(k+1)]`. Les deux fonctions extrêmes de la fenêtre sont
+donc intégrées sur un support tronqué. S'y ajoute le fait qu'une fenêtre de
+10 fonctions ne capte pas toute la gaussienne.
+
+**Conséquence, mesurée.**
+
+| grandeur | valeur attendue | valeur obtenue |
+|---|---|---|
+| `Σ recouvrements` | 1 | 1 à 3,4e−6 près |
+| dérivée d'une constante | 0 | jusqu'à 1,3e−5 |
+
+Le champ lissé porte donc une erreur relative de l'ordre de **1e-5**, avec une
+composante **transverse** : un potentiel ne dépendant que de `x` produit un
+champ en `y` non nul. Vérifié sur `Φ = x`, où le champ non lissé est exact à
+1e−15 et le lissé se trompe de 2,2e−5.
+
+**À noter — la méthode se protège pour la densité, pas pour le champ.**
+`makerhog` renormalise explicitement la densité déposée après coup :
+
+```fortran
+coef = dfloat(npart-nbout)*charge/qtot
+```
+
+L'oracle en donne la mesure : `qtot = 196,080` avant correction pour 196
+attendus, soit **4e-4**. Rien d'équivalent ne protège `champsg`.
+
+**Ce que fait le portage.** Reproduit les tables à l'identique (1,3e−13 contre
+l'oracle), documente la limite dans `GaussianSmoothing`, et **borne l'erreur
+par un test** qui échouerait si elle s'aggravait.
+
+**Piste de correction.** Intégrer chaque fonction de base sur son support
+réel, élargir la fenêtre, ou normaliser les tables après coup comme le fait
+`makerhog` pour la densité. Les trois changent les valeurs de l'oracle : à ne
+faire qu'une fois les runs de référence reproduits.
+
+---
+
+## 4. `initialise` — un entier pour lire un réel
+
+```fortran
+integer i,npart,nbgrid,nbgrid2,rmax
+…
+read (2,*) rmax          ! rhoinit.dat contient « 35.0000000000000 »
+```
+
+`rmax` n'est ensuite utilisé que dans des divisions réelles. Les compilateurs
+de 1996 toléraient la lecture ; gfortran la refuse
+(*Bad integer for item 1 in list input*). **Corrigé** en `real*8` dans
+`modernize.patch` — sans quoi le code ne tourne pas.
+
+C'est le rappel le plus net que d'autres bugs latents dorment peut-être :
+celui-ci n'a été révélé que par un compilateur plus strict, trente ans après.
+
+---
+
+## 5. `force2gi` — appel avec un argument de trop
+
+`incproj2` appelle `force2gi` avec `liste2` en plus de sa signature. gfortran
+le refuse. Le code est **mort** : tous les appels à `incproj2` sont commentés
+dans le programme principal. **Corrigé** dans `modernize.patch` par retrait de
+l'argument surnuméraire.
+
+---
+
+## 6. `makerhsf` — quarante lignes de calcul inutilisé
+
+`makerhsf` calcule charge totale, barycentre et tenseur quadrupolaire de la
+densité — puis **ne s'en sert pas** : les valeurs de bord viennent de
+`potentiel`, c'est-à-dire de l'interpolation de la grille grossière. Les
+multipôles ne sont qu'imprimés.
+
+Ce n'est pas une erreur de résultat, mais :
+
+* un coût inutile — 10 contractions sur 195 000 points, deux fois par pas de
+  temps ;
+* du bruit en sortie — la boucle d'impression du quadrupôle, commentée dans
+  `makerh2`, est restée **active** ici : 9 lignes par appel.
+
+Le portage ne les calcule pas : `boundary_from_coarse!` pose les faces, un
+point c'est tout.
+
+---
+
+## Ce qui reste à examiner
+
+Le portage n'a couvert que 60 % du code vivant. Les étages non encore lus en
+détail — initialisation Thomas-Fermi, projectile, observables — n'ont pas été
+audités. Ce fichier est à compléter au fur et à mesure.

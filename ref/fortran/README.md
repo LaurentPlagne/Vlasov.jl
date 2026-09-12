@@ -69,6 +69,11 @@ avec l'original de la thèse.
 D'autres dorment sans doute encore : tout écart oracle/Julia doit être arbitré
 — bug d'origine, ou erreur de portage ? — jamais corrigé en silence.
 
+📋 Ces deux-là sont corrigés ici parce que le code ne compile pas sinon. Les
+autres coquilles constatées ne le sont **pas** : elles sont relevées dans
+[`docs/coquilles-fortran.md`](../../docs/coquilles-fortran.md), et le portage
+Julia les reproduit à l'identique.
+
 ### `f02agf_shim.f` — la seule dépendance NAG
 
 Le code liait `f047.a`, un extrait de la bibliothèque NAG. Une seule routine

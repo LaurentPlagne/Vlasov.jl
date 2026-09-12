@@ -69,6 +69,14 @@ pas du bruit.
 ou erreur de portage ? Le Fortran contient des bugs latents que les compilateurs de 1996
 toléraient (un `integer` relisant un réel, un appel avec un argument de trop en code mort).
 
+📋 **Les coquilles constatées sont relevées dans
+[`docs/coquilles-fortran.md`](docs/coquilles-fortran.md)** — à consulter avant de
+s'étonner d'un résultat, et à compléter dès qu'une nouvelle apparaît. Aucune n'est
+corrigée : le portage les reproduit, sans quoi la comparaison à l'oracle perdrait sa
+valeur. Elles seront arbitrées une fois les runs de la thèse reproductibles, en mesurant
+ce que chaque correction change. Deux ont déjà leur variante corrigée derrière un
+`consistent = true`, prête pour cette mesure.
+
 ⚠️ **Une bibliothèque tierce n'est pas un oracle.** Constaté sur `BandedMatrices` v1.12.0 :
 la division à droite entre deux `BandedMatrix` rend un résultat **faux sans rien signaler**
 (résidu ≈ 0.3 pour `cond(S) ≈ 4`), et `BandedMatrix / BandedLU` **ne termine pas**. Seul
