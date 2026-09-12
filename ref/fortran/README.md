@@ -37,6 +37,7 @@ des `Float64`). Convention de nommage : `dump_*` pour la **grille fine**,
 | `rand2.bin` | 20 000 premières valeurs de `ran2`, amorcé à `idum = -1` |
 | `ps_*.bin` | densité, potentiel effectif et coefficients avant/après `pspech` |
 | `in_rt.bin`, `in_pt.bin` | positions et impulsions du tirage initial |
+| `et_*.bin` | toutes les entrées et sorties de `enertot2g`, dumpées à son entrée |
 
 `dumpqp.bin` et `dumprho.bin` sont écrits par `makerho`, qui est appelée
 plusieurs fois : c'est la dernière invocation qui subsiste. Peu importe —

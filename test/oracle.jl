@@ -272,6 +272,34 @@ reldiff(a, b) = norm(a - b) / norm(b)
             @test reldiff(flat(mom), read_dump_vector("in_pt.bin")) < 1e-11
         end
 
+        @testset "Bilan d'énergie" begin
+            # `enertot2g` n'est appelée qu'un pas sur dix : tout ce dont elle a
+            # besoin est dumpé À SON ENTRÉE, sinon les instantanés viendraient
+            # d'itérations différentes et ne seraient pas comparables.
+            triplets(v) = [(v[3i-2], v[3i-1], v[3i]) for i in 1:length(v)÷3]
+            gxf, gxb = read_dump_vector("et_gx.bin"), read_dump_vector("et_gxb.bin")
+            axf = SplineAxis(gxf, collocation_points(gxf))
+            axb = SplineAxis(gxb, collocation_points(gxb))
+            sm = GaussianSmoothing(axf)
+            n = nbasis(axf)
+
+            nbelec = read_dump_vector("et_nbelec.bin")[1]
+            npart = Int(read_dump_vector("et_np.bin")[1])
+            cloud = ParticleCloud(triplets(read_dump_vector("et_qp.bin")), nbelec / npart)
+            jel = Jellium(read_dump_vector("et_nbion.bin")[1])
+
+            potel = interaction_energy(cloud,
+                                       (axf, axf, axf), reshape(read_dump_vector("et_csol.bin"), n, n, n),
+                                       (axb, axb, axb), reshape(read_dump_vector("et_csolb.bin"), n, n, n),
+                                       sm)
+            budget = energy_budget(jel, read_dump_vector("et_ekin.bin")[1],
+                                   read_dump_vector("et_in.bin")[1], potel)
+
+            @test budget.meanfield ≈ read_dump_vector("et_ejel.bin")[1] rtol = 1e-12
+            @test budget.total ≈ read_dump_vector("et_out.bin")[1] rtol = 1e-11
+            @test budget.ions ≈ 3 * 196.0^2 / (5 * jel.radius)
+        end
+
         @testset "Champ moyen : échange-corrélation et jellium" begin
             ax = SplineAxis(read_dump_vector("fg_gx.bin"), read_dump_vector("ps_gt.bin"))
             mesh = SplineMesh(ax, ax, ax)

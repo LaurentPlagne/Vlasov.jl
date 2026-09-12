@@ -767,6 +767,37 @@ end
         @test all(i -> all(cloud.previous[i] .≈ pos4[i] .- (dt / 2M) .* mom4[i]), 1:500)
     end
 
+    @testset "Bilan d'énergie" begin
+        jel = Jellium(196.0)
+
+        # Énergie propre d'une boule uniformément chargée : 3Q²/5R.
+        @test ion_self_energy(jel) ≈ 3 * 196.0^2 / (5 * jel.radius)
+        @test ion_self_energy(Jellium(1.0; rs = 1.0)) ≈ 0.6
+
+        # Le champ moyen s'obtient par différence, et le total est la somme.
+        b = energy_budget(jel, 10.0, 100.0, -500.0)
+        @test b.meanfield ≈ -500.0 - 200.0
+        @test b.kinetic == 10.0 && b.hartree == 100.0
+        @test b.total ≈ b.ions + b.kinetic + b.hartree + b.meanfield
+
+        # Un potentiel constant Φ₀ donne Σ w·Φ₀ = N_elec·Φ₀ : contrôle direct
+        # de l'échantillonnage, indépendant de toute référence.
+        ax = uniform_axis(-50.0, 50.0, 28)
+        sm = GaussianSmoothing(ax; nbdt = 100, quadrature = 100)
+        n = nbasis(ax)
+        mesh = SplineMesh(ax, ax, ax)
+        φ0 = 2.5
+        csol = spline_coefficients(fill(φ0, n, n, n), mesh)
+
+        nbelec, npart = 196.0, 500
+        pos = [(3.0 * cos(i), 3.0 * sin(i), 0.1i % 7 - 3) for i in 1:npart]
+        cloud = ParticleCloud(pos, nbelec / npart)
+        e = interaction_energy(cloud, (ax, ax, ax), csol, (ax, ax, ax), csol, sm)
+        # ⚠️ 1e-4 et non 1e-12 : le noyau de lissage n'est pas exactement
+        # normalisé (voir `GaussianSmoothing`), et cela se voit ici.
+        @test e ≈ nbelec * φ0 rtol = 1e-4
+    end
+
     @testset "Produit mode-d" begin
         A = randn(4, 4)
         X = randn(4, 5, 6)

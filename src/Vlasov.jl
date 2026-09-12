@@ -14,6 +14,7 @@ include("particles.jl")
 include("fields.jl")
 include("meanfield.jl")
 include("initial.jl")
+include("energy.jl")
 
 export Ran2, next!
 export HermiteKind, Value, Slope, BasisIndex, linearindex
@@ -27,9 +28,10 @@ export Multipole, multipole, potential, boundary_potential!, poisson_rhs, poisso
 export poisson, poisson!, solve_interior!, boundary_from_coarse!
 export ParticleCloud, ELECTRON_MASS, ELECTRON_CHARGE, mass, charge
 export step!, half_step_back, full_step_back
-export GaussianSmoothing, smoothed_field, spline_field, spline_potential, forces!, nearest_knot, cell_index
+export GaussianSmoothing, smoothed_field, smoothed_potential, spline_field, spline_potential, forces!, nearest_knot, cell_index
 export deposit_smoothed!
 export Jellium, WIGNER_SEITZ_NA, xc_potential, effective_potential!
 export RadialProfile, read_radial_profile, sample_thomas_fermi, initial_cloud, FERMI_COEFFICIENT
+export EnergyBudget, energy_budget, interaction_energy, hartree_energy, ion_self_energy
 
 end # module

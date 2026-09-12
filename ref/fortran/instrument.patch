@@ -1,5 +1,5 @@
 --- vlas.f	2026-09-12 15:01:37
-+++ vlas_dump.f	2026-09-12 15:57:35
++++ vlas_dump.f	2026-09-12 16:04:23
 @@ -99,6 +99,7 @@
        einterne=0.d0
  c     ----------------------main-------------------------------------
@@ -185,7 +185,37 @@
        end
  c-----------------------------------------------------------
        subroutine enerele2g(npart,nbelec,qp,nx,ny,nz,
-@@ -3647,6 +3734,9 @@
+@@ -3335,6 +3422,18 @@
+       integer dumi,dumj,nbtour
+       integer i,j
+       logical first
++      call dumpflat('et_csol.bin',csol,(NTXT+1)*(NTYT+1)*(NTZT+1))
++      call dumpflat('et_csolb.bin',csolbig,(NTXT+1)*(NTYT+1)*(NTZT+1))
++      call dumpflat('et_gx.bin',gx,NHFX+1)
++      call dumpflat('et_gxb.bin',gxbig,NHFX+1)
++      call dumpint('et_nb.bin',nboutbig+nbcap)
++      call dumpint('et_np.bin',npart-nbcap)
++      call dumpflat('et_nbion.bin',nbion,1)
++      call dumpflat('et_nbelec.bin',nbelec,1)
++      call dumpflat('et_qp.bin',qp,3*(npart-nbcap))
++      call dumpflat('et_in.bin',enele,1)
++      call dumpflat('et_elin.bin',elin,1)
++      call dumpflat('et_ekin.bin',ekin,1)
+       dumi=0
+       dumj=0
+       dumr=0.d0
+@@ -3432,6 +3531,10 @@
+       end if
+       print*,'enele,enejel,ekin,enetot,ekinout'
+       print*, enele,enejel,ekin,enetot,ekinout
++      call dumpflat('et_out.bin',enetot,1)
++      call dumpflat('et_ejel.bin',enejel,1)
++      call dumpflat('et_enele.bin',enele,1)
++      print*,'DUMPED enertot2g enetot=',enetot
+       end
+ c----------------------------------------------------------
+       subroutine capture(npart,qp,pospro,nbelec,nbcap)
+@@ -3647,6 +3750,9 @@
  c         rt(1,i)=rt(1,i)+40.d0
  c         rt(2,i+1)=rt(2,i+1)+40.d0
  c      end do
@@ -195,7 +225,7 @@
        end           
  c-----------------------------------------------------------------
        subroutine move(qp,qpold,fp,nbelec,npart,dltt,ekin,ekinout,
-@@ -3668,6 +3758,10 @@
+@@ -3668,6 +3774,10 @@
        ekin=0.d0
        ekinout=0.d0
        j=1
@@ -206,7 +236,7 @@
        lcix=0.d0
        lciy=0.d0
        lciz=0.d0
-@@ -3705,6 +3799,12 @@
+@@ -3705,6 +3815,12 @@
        lcine(1)=lcix
        lcine(2)=lciy
        lcine(3)=lciz

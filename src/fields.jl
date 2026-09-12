@@ -293,6 +293,42 @@ function spline_field(axes::NTuple{3,SplineAxis{T}}, csol::Array{T,3}, p) where 
 end
 
 """
+    smoothed_potential(axes, csol, sm, p) -> T
+
+Potentiel **lissé** au point `p` (le `potensg` du Fortran) : la valeur du
+potentiel convoluée par la gaussienne de la pseudo-particule.
+
+C'est à [`smoothed_field`](@ref) ce que la valeur est au gradient — mêmes
+tables, mais `overlap` dans les trois directions au lieu d'en dériver une.
+Sert au bilan d'énergie, qui doit voir le même potentiel que les forces.
+"""
+function smoothed_potential(axes::NTuple{3,SplineAxis{T}}, csol::Array{T,3},
+                            sm::GaussianSmoothing{T}, p) where {T}
+    ci = ntuple(d -> nearest_knot(axes[d].knots, p[d]), 3)
+    base = ntuple(d -> 2 * ci[d] - 5, 3)
+    col = ntuple(d -> table_column(sm, p[d], axes[d].knots[ci[d]]), 3)
+
+    ox = @view sm.overlap[:, col[1]]
+    oy = @view sm.overlap[:, col[2]]
+    oz = @view sm.overlap[:, col[3]]
+
+    φ = zero(T)
+    @inbounds for kk in 1:10
+        k = base[3] + kk - 1
+        for jj in 1:10
+            j = base[2] + jj - 1
+            w = oy[jj] * oz[kk]
+            s = zero(T)
+            for ii in 1:10
+                s += csol[base[1]+ii-1, j, k] * ox[ii]
+            end
+            φ += s * w
+        end
+    end
+    φ
+end
+
+"""
     spline_potential(axes, csol, p) -> T ou `nothing`
 
 Valeur de l'interpolant spline au point `p` (le `potentiel` du Fortran).
