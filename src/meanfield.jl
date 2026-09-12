@@ -36,18 +36,30 @@ function Jellium(nions::Real; rs::Real = WIGNER_SEITZ_NA)
 end
 
 """
+    uniform_sphere_potential(Q, R, r) -> T
+
+Potentiel créé par une boule de rayon `R` portant uniformément la charge `Q`,
+à la distance `r` de son centre — au signe près, celui que ressent une charge
+opposée.
+
+    r ≥ R :  −Q/r                      (comme une charge ponctuelle)
+    r < R :  −Q·(3 − (r/R)²) / 2R      (parabolique, finie au centre)
+
+Deux objets du modèle ont cette forme, et ce n'est pas une coïncidence : le
+fond de jellium, et le **projectile adouci**, dont la charge est délibérément
+étalée sur une boule de rayon `cutoff` pour que les collisions frontales ne
+soient pas singulières.
+"""
+@inline function uniform_sphere_potential(Q, R, r)
+    r < R ? -Q * (3 - (r / R)^2) / 2R : -Q / r
+end
+
+"""
     potential(jel, r) -> T
 
 Potentiel du fond de jellium à la distance `r` du centre.
-
-À l'extérieur, c'est celui d'une charge ponctuelle `−N/r` ; à l'intérieur, la
-parabole classique d'une boule uniformément chargée, qui reste finie au
-centre.
 """
-@inline function potential(jel::Jellium{T}, r) where {T}
-    r0 = jel.radius
-    r < r0 ? -jel.nions * (3 - (r / r0)^2) / 2r0 : -jel.nions / r
-end
+@inline potential(jel::Jellium, r) = uniform_sphere_potential(jel.nions, jel.radius, r)
 
 # Constantes du potentiel d'échange-corrélation LDA, en unités atomiques.
 # Échange de Dirac : Vx = −(3/π)^⅓ ρ^⅓.

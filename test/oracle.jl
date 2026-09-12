@@ -274,6 +274,37 @@ reldiff(a, b) = norm(a - b) / norm(b)
             @test reldiff(flat(mom), read_dump_vector("in_pt.bin")) < 1e-11
         end
 
+        @testset "Projectile" begin
+            trip(v) = [(v[3i-2], v[3i-1], v[3i]) for i in 1:length(v)÷3]
+            flat(t) = collect(Iterators.flatten(t))
+            scal(f) = read_dump_vector(f)[1]
+
+            npart = Int(scal("ip_np.bin"))
+            cloud = ParticleCloud(trip(read_dump_vector("ip_qp.bin")),
+                                  scal("ip_nbelec.bin") / npart)
+            copyto!(cloud.forces, trip(read_dump_vector("ip_fp0.bin")))
+
+            dt, cutoff = scal("ip_dt.bin"), scal("ip_cut.bin")
+            pos0 = trip(read_dump_vector("ip_pos0.bin"))[1]
+            proj = Projectile(; mass = scal("ip_par.bin"), charge = scal("ip_cha.bin"),
+                              energy = 73.498, x0 = pos0[1], impact = pos0[2], dt, cutoff)
+            # L'état réel du dump, et non celui qu'aurait construit `initpro` :
+            # le dump peut venir de n'importe quel pas de la trajectoire.
+            proj.position = pos0
+            proj.previous = trip(read_dump_vector("ip_old0.bin"))[1]
+
+            force, eel, ejel = projectile_forces!(cloud, proj, Jellium(scal("ip_nbion.bin")))
+            @test eel ≈ scal("ip_eel.bin") rtol = 1e-13
+            @test ejel ≈ scal("ip_ejel.bin") rtol = 1e-13
+            # La réaction sur les pseudo-particules, souvent oubliée.
+            @test reldiff(flat(cloud.forces), read_dump_vector("ip_fp1.bin")) < 1e-13
+
+            step!(proj, force, dt)
+            @test reldiff(collect(proj.position), read_dump_vector("ip_pos1.bin")) < 1e-13
+            @test reldiff(collect(proj.velocity), read_dump_vector("ip_v.bin")) < 1e-13
+            @test kinetic_energy(proj) ≈ scal("ip_ekin.bin") rtol = 1e-13
+        end
+
         @testset "Bilan d'énergie" begin
             # `enertot2g` n'est appelée qu'un pas sur dix : tout ce dont elle a
             # besoin est dumpé À SON ENTRÉE, sinon les instantanés viendraient

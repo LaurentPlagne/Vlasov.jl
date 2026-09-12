@@ -39,6 +39,7 @@ des `Float64`). Convention de nommage : `dump_*` pour la **grille fine**,
 | `in_rt.bin`, `in_pt.bin` | positions et impulsions du tirage initial |
 | `et_*.bin` | toutes les entrées et sorties de `enertot2g`, dumpées à son entrée |
 | `dumprho_gt.bin` | grille de collocation de `makerho`, pour rendre son dump autonome |
+| `ip_*.bin` | état, forces et énergies du projectile, autour d'un appel à `incproj` |
 
 `dumpqp.bin` et `dumprho.bin` sont écrits par `makerho`, qui est appelée
 plusieurs fois : c'est la dernière invocation qui subsiste. Peu importe —

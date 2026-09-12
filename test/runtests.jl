@@ -866,6 +866,72 @@ end
         end
     end
 
+    @testset "Sphère uniformément chargée" begin
+        Q, R = 3.0, 2.0
+        # Continuité de la valeur et du champ à la surface.
+        @test uniform_sphere_potential(Q, R, R) ≈ -Q / R
+        @test uniform_sphere_potential(Q, R, nextfloat(R)) ≈ -Q / R
+        @test uniform_sphere_potential(Q, R, 0.0) ≈ -3Q / 2R
+        @test uniform_sphere_potential(Q, R, 100.0) ≈ -Q / 100
+        h = 1e-6
+        dedans = (uniform_sphere_potential(Q, R, R) - uniform_sphere_potential(Q, R, R - h)) / h
+        dehors = (uniform_sphere_potential(Q, R, R + h) - uniform_sphere_potential(Q, R, R)) / h
+        @test dedans ≈ dehors rtol = 1e-4
+
+        # Le jellium en est un cas particulier.
+        jel = Jellium(196.0)
+        @test Vlasov.potential(jel, 5.0) == uniform_sphere_potential(196.0, jel.radius, 5.0)
+    end
+
+    @testset "Projectile" begin
+        dt = 1.0
+        E0 = 73.498
+        proj = Projectile(; mass = 1836.154, charge = 1.0, energy = E0,
+                          impact = 0.0, x0 = -70.0, dt = dt, cutoff = 1.0)
+        @test proj.position == (-70.0, 0.0, 0.0)
+        # ⚠️ `2E0` est le littéral 2.0 en Julia, pas `2*E0` : écrire le produit.
+        @test proj.velocity[1] ≈ sqrt(2 * E0 / 1836.154)
+        @test kinetic_energy(proj) ≈ E0
+        @test energy_loss(proj) ≈ 0 atol = 1e-12
+        # Le pas précédent est bien en arrière sur la trajectoire.
+        @test proj.previous[1] < proj.position[1]
+
+        # Force nulle : mouvement rectiligne uniforme, énergie conservée.
+        libre = Projectile(; mass = 1836.154, charge = 1.0, energy = E0,
+                           x0 = -70.0, dt = dt, cutoff = 1.0)
+        v0 = libre.velocity[1]
+        for _ in 1:50
+            step!(libre, (0.0, 0.0, 0.0), dt)
+        end
+        @test libre.position[1] ≈ -70.0 + 50 * dt * v0
+        @test kinetic_energy(libre) ≈ E0
+        @test energy_loss(libre) ≈ 0 atol = 1e-10
+
+        # Réaction : la force rendue au projectile est l'opposée de la somme
+        # de celles ajoutées aux particules, à la part du jellium près.
+        w = 0.01
+        cloud = ParticleCloud([(0.0, 0.0, 0.0), (2.0, 1.0, -1.0), (-3.0, 0.0, 2.0)], w)
+        jel = Jellium(196.0)
+        avant = copy(cloud.forces)
+        f, eel, ejel = projectile_forces!(cloud, proj, jel)
+        # `sum` ne sait pas additionner des tuples : réduire explicitement.
+        ajouté = reduce((a, b) -> a .+ b, map((x, y) -> x .- y, cloud.forces, avant))
+        jellium_seul = jel.nions * proj.charge / sum(abs2, proj.position)^1.5 .* proj.position
+        @test all(isapprox.(f .+ ajouté, jellium_seul; rtol = 1e-10))
+
+        # L'adoucissement borne la force : au contact, elle ne diverge pas.
+        contact = ParticleCloud([proj.position], w)
+        fc, _, _ = projectile_forces!(contact, proj, jel)
+        @test all(isfinite, fc)
+        @test all(isfinite, contact.forces[1])
+        @test all(iszero, contact.forces[1])       # force nulle au centre exact
+
+        # …et l'énergie d'interaction y reste finie, égale à celle du centre
+        # d'une boule uniformément chargée.
+        _, e_contact, _ = projectile_forces!(ParticleCloud([proj.position], w), proj, jel)
+        @test e_contact ≈ w * (-3 * proj.charge / (2 * proj.cutoff))
+    end
+
     @testset "Produit mode-d" begin
         A = randn(4, 4)
         X = randn(4, 5, 6)

@@ -1,5 +1,5 @@
 --- vlas.f	2026-09-12 15:01:37
-+++ vlas_dump.f	2026-09-12 16:24:41
++++ vlas_dump.f	2026-09-12 16:27:05
 @@ -99,6 +99,7 @@
        einterne=0.d0
  c     ----------------------main-------------------------------------
@@ -147,7 +147,39 @@
        end  
  c-----------------------------------------------------
        subroutine potensg(x,nx,gx,y,ny,gy,z,nz,gz,
-@@ -2794,6 +2853,10 @@
+@@ -2280,6 +2339,17 @@
+      +     'q'//chch//'e'//chen//'i'//chim//'.dat'
+       titreq='Eloss/'//'Fm'//chma//
+      +     'q'//chch//'e'//chen//'i'//chim//'.dat'
++      call dumpflat('ip_pos0.bin',pospro,3)
++      call dumpflat('ip_old0.bin',posprold,3)
++      call dumpflat('ip_qp.bin',qp,3*(npart-nbcap))
++      call dumpflat('ip_fp0.bin',fp,3*(npart-nbcap))
++      call dumpflat('ip_par.bin',mpro,1)
++      call dumpflat('ip_cha.bin',chapro,1)
++      call dumpflat('ip_cut.bin',cutoff,1)
++      call dumpflat('ip_dt.bin',dltt,1)
++      call dumpflat('ip_nbion.bin',nbion,1)
++      call dumpflat('ip_nbelec.bin',nbelec,1)
++      call dumpint('ip_np.bin',npart-nbcap)
+       k=0
+       x=pospro(1)
+       y=pospro(2)
+@@ -2403,6 +2473,13 @@
+             close(1)
+          end if
+          end if
++      call dumpflat('ip_pos1.bin',pospro,3)
++      call dumpflat('ip_fp1.bin',fp,3*(npart-nbcap))
++      call dumpflat('ip_v.bin',vpro,3)
++      call dumpflat('ip_eel.bin',Eelpro,1)
++      call dumpflat('ip_ejel.bin',Ejelpro,1)
++      call dumpflat('ip_ekin.bin',ekinp,1)
++      print*,'DUMPED incproj ekinp=',ekinp
+       end
+ c-----------------------------------------------------------------
+       subroutine incproj3(mpro,pospro,posprold,vpro,dltt,qp,fp,cutoff,
+@@ -2794,6 +2871,10 @@
           end do
        end do
        print*,'nb de pseudo part hors grille :',nbout
@@ -158,7 +190,7 @@
        end
  C-----------------------------------------------------
        subroutine sortietest(gx,gy,gz,gx2,gy2,gz2,nx,ny,nz,csol,csol2)
-@@ -2861,6 +2924,8 @@
+@@ -2861,6 +2942,8 @@
        integer a,b,c,i,j,k
        integer bord
        real*8 dumr,pot,x,y,z
@@ -167,7 +199,7 @@
        integer dumi,dumj
        dumi=0
        dumj=0
-@@ -2972,6 +3037,14 @@
+@@ -2972,6 +3055,14 @@
              end do
           end do
        end do
@@ -182,7 +214,7 @@
        end
  c--------------------------------------------------------------------
        subroutine makerh2(rho,dx,dy,dz,nsx,nsy,nsz,
-@@ -2996,6 +3069,8 @@
+@@ -2996,6 +3087,8 @@
        integer ntx,nty,ntz
        integer a,b,c,i,j,k,l,m
        integer bord
@@ -191,7 +223,7 @@
        ntx=nsx+1
        nty=nsy+1
        ntz=nsz+1
-@@ -3123,6 +3198,15 @@
+@@ -3123,6 +3216,15 @@
              end do
           end do
        end do
@@ -207,7 +239,7 @@
        end
  c-----------------------------------------------------------
        subroutine force2g(npart,nbelec,fp,qp,nx,ny,nz,
-@@ -3202,6 +3286,17 @@
+@@ -3202,6 +3304,17 @@
              fp(3,j)=csr3s2*z
           end if
        end do
@@ -225,7 +257,7 @@
        end
  c-----------------------------------------------------------
        subroutine enerele2g(npart,nbelec,qp,nx,ny,nz,
-@@ -3335,6 +3430,18 @@
+@@ -3335,6 +3448,18 @@
        integer dumi,dumj,nbtour
        integer i,j
        logical first
@@ -244,7 +276,7 @@
        dumi=0
        dumj=0
        dumr=0.d0
-@@ -3432,6 +3539,10 @@
+@@ -3432,6 +3557,10 @@
        end if
        print*,'enele,enejel,ekin,enetot,ekinout'
        print*, enele,enejel,ekin,enetot,ekinout
@@ -255,7 +287,7 @@
        end
  c----------------------------------------------------------
        subroutine capture(npart,qp,pospro,nbelec,nbcap)
-@@ -3552,6 +3663,8 @@
+@@ -3552,6 +3681,8 @@
              end do
           end do
        end do
@@ -264,7 +296,7 @@
        call tensrus2(ntx,nty,ntz,sxm1,sym1,szm1,ech,echsol)
        do k=0,ntz
           do j=0,nty
-@@ -3647,6 +3760,9 @@
+@@ -3647,6 +3778,9 @@
  c         rt(1,i)=rt(1,i)+40.d0
  c         rt(2,i+1)=rt(2,i+1)+40.d0
  c      end do
@@ -274,7 +306,7 @@
        end           
  c-----------------------------------------------------------------
        subroutine move(qp,qpold,fp,nbelec,npart,dltt,ekin,ekinout,
-@@ -3668,6 +3784,10 @@
+@@ -3668,6 +3802,10 @@
        ekin=0.d0
        ekinout=0.d0
        j=1
@@ -285,7 +317,7 @@
        lcix=0.d0
        lciy=0.d0
        lciz=0.d0
-@@ -3705,6 +3825,12 @@
+@@ -3705,6 +3843,12 @@
        lcine(1)=lcix
        lcine(2)=lciy
        lcine(3)=lciz
