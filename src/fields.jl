@@ -293,6 +293,38 @@ function spline_field(axes::NTuple{3,SplineAxis{T}}, csol::Array{T,3}, p) where 
 end
 
 """
+    spline_potential(axes, csol, p) -> T ou `nothing`
+
+Valeur de l'interpolant spline au point `p` (le `potentiel` du Fortran).
+Renvoie `nothing` hors du domaine.
+
+Sert au raccord entre grilles : les valeurs de bord de la grille fine sont
+lues dans la solution de la grille grossière.
+"""
+function spline_potential(axes::NTuple{3,SplineAxis{T}}, csol::Array{T,3}, p) where {T}
+    cells = ntuple(d -> cell_index(axes[d].knots, p[d]), 3)
+    any(isnothing, cells) && return nothing
+
+    vals = ntuple(3) do d
+        c = cells[d]
+        ntuple(a -> value(axes[d], BasisIndex(2 * (c - 1) + a), p[d]), 4)
+    end
+
+    φ = zero(T)
+    @inbounds for ak in 1:4
+        k = 2 * (cells[3] - 1) + ak
+        for aj in 1:4
+            j = 2 * (cells[2] - 1) + aj
+            w = vals[2][aj] * vals[3][ak]
+            for ai in 1:4
+                φ += csol[2*(cells[1]-1)+ai, j, k] * vals[1][ai] * w
+            end
+        end
+    end
+    φ
+end
+
+"""
     forces!(cloud, fine, csol_fine, coarse, csol_coarse, sm; escaped) -> Int
 
 Remplit les forces du nuage (le `force2g` du Fortran), et renvoie le nombre

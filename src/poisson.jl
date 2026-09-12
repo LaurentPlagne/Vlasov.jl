@@ -179,11 +179,73 @@ chaîne complète densité → potentiel, et le `makerh2` + `solve` du Fortran.
 """
 function poisson!(φ::Array{T,3}, ρ::Array{T,3}, mesh::SplineMesh{3,T}) where {T}
     boundary_potential!(φ, mesh, multipole(ρ, mesh))
+    solve_interior!(φ, ρ, mesh)
+end
+
+"""
+    solve_interior!(φ, ρ, mesh) -> φ
+
+Résout l'intérieur en prenant pour conditions de Dirichlet les valeurs **déjà
+présentes** sur les faces de `φ`.
+
+C'est la moitié commune à [`poisson!`](@ref), qui pose ces valeurs par
+développement multipolaire, et au raccord entre grilles, qui les lit dans la
+solution du niveau plus grossier.
+"""
+function solve_interior!(φ::Array{T,3}, ρ::Array{T,3}, mesh::SplineMesh{3,T}) where {T}
     rhs = poisson_rhs!(Array{T,3}(undef, size(mesh)), ρ, mesh, φ)
     solve!(rhs, rhs, mesh.solver)
     @views φ[2:end-1, 2:end-1, 2:end-1] .= rhs
     φ
 end
 
+"""
+    boundary_from_coarse!(φ, mesh, coarse, csol_coarse) -> φ
+
+Pose sur les faces de `φ` les valeurs lues dans la solution d'une grille plus
+grossière (le `makerhsf` du Fortran).
+
+C'est tout le raccord entre niveaux : la grille fine ne voit du monde
+extérieur que ce que la grossière lui dit à sa frontière.
+"""
+function boundary_from_coarse!(φ::Array{T,3}, mesh::SplineMesh{3,T},
+                               coarse::SplineMesh{3,T}, csol_coarse::Array{T,3}) where {T}
+    gx, gy, gz = map(ax -> ax.colloc, mesh.axes)
+    nx, ny, nz = length(gx), length(gy), length(gz)
+    fill!(φ, zero(T))
+    for k in 1:nz, j in 1:ny, i in 1:nx
+        surface = i == 1 || i == nx || j == 1 || j == ny || k == 1 || k == nz
+        surface || continue
+        p = spline_potential(coarse.axes, csol_coarse, (gx[i], gy[j], gz[k]))
+        p === nothing && throw(ArgumentError(
+            "le point de bord ($(gx[i]), $(gy[j]), $(gz[k])) sort de la grille " *
+            "grossière : les niveaux ne sont pas emboîtés"))
+        φ[i, j, k] = p
+    end
+    φ
+end
+
 """Version allouante de [`poisson!`](@ref)."""
 poisson(ρ::Array{T,3}, mesh::SplineMesh{3,T}) where {T} = poisson!(similar(ρ), ρ, mesh)
+
+"""
+    poisson!(φs, ρs, nested) -> φs
+
+Résout Poisson sur une hiérarchie de grilles emboîtées, du plus grossier au
+plus fin.
+
+Le niveau le plus grossier prend ses conditions du développement multipolaire
+de sa propre densité ; chaque niveau plus fin lit les siennes dans la solution
+du niveau au-dessus. `φs` et `ρs` sont ordonnés comme les niveaux, du plus fin
+au plus grossier.
+"""
+function poisson!(φs::NTuple{L,Array{T,3}}, ρs::NTuple{L,Array{T,3}},
+                  nested::NestedMeshes{L,3,T}) where {L,T}
+    poisson!(φs[L], ρs[L], nested[L])
+    for l in (L-1):-1:1
+        coefs = spline_coefficients(φs[l+1], nested[l+1])
+        boundary_from_coarse!(φs[l], nested[l], nested[l+1], coefs)
+        solve_interior!(φs[l], ρs[l], nested[l])
+    end
+    φs
+end

@@ -240,5 +240,39 @@ reldiff(a, b) = norm(a - b) / norm(b)
             @test nout == Int(read_dump_vector("rg_nout.bin")[1])
             @test reldiff(ρ, reshape(read_dump_vector("rg_rho.bin"), n, n, n)) < 1e-12
         end
+
+        @testset "Raccord entre grilles" begin
+            gxf = read_dump_vector("fg_gx.bin")
+            gxc = read_dump_vector("sf_gxc.bin")
+            axf = SplineAxis(gxf, read_dump_vector("sf_gt.bin"))
+            axc = SplineAxis(gxc, collocation_points(gxc))
+            fine = SplineMesh(axf, axf, axf)
+            coarse = SplineMesh(axc, axc, axc)
+            nested = NestedMeshes(fine, coarse)
+            n = nbasis(axf)
+
+            ρf = reshape(read_dump_vector("sf_rho.bin"), n, n, n)
+            csolc = reshape(read_dump_vector("sf_csolc.bin"), n, n, n)
+
+            # Les valeurs de bord lues dans la solution grossière.
+            φ = Array{Float64,3}(undef, n, n, n)
+            boundary_from_coarse!(φ, fine, coarse, csolc)
+            φref = reshape(read_dump_vector("sf_phi.bin"), n, n, n)
+            faces = falses(n, n, n)
+            faces[1, :, :] .= true; faces[end, :, :] .= true
+            faces[:, 1, :] .= true; faces[:, end, :] .= true
+            faces[:, :, 1] .= true; faces[:, :, end] .= true
+            @test reldiff(φ[faces], φref[faces]) < 1e-13
+
+            @test reldiff(poisson_rhs!(Array{Float64,3}(undef, size(fine)), ρf, fine, φ),
+                          reshape(read_dump_vector("sf_rhs.bin"), size(fine)...)) < 1e-12
+
+            # La chaîne complète à deux niveaux, depuis les deux densités.
+            ρc = reshape(read_dump_vector("dumprh2.bin"), n, n, n)
+            φs = (Array{Float64,3}(undef, n, n, n), Array{Float64,3}(undef, n, n, n))
+            poisson!(φs, (ρf, ρc), nested)
+            @test reldiff(φs[1], reshape(read_dump_vector("sf_phi2.bin"), n, n, n)) < 1e-11
+            @test reldiff(φs[2], reshape(read_dump_vector("dumpphi2.bin"), n, n, n)) < 1e-11
+        end
     end
 end

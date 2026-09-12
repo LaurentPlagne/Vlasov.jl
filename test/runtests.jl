@@ -600,6 +600,52 @@ end
         @test maximum(abs, diag.angular) < 1e3
     end
 
+    @testset "Grilles emboîtées" begin
+        fine = uniform_axis(-10.0, 10.0, 8)
+        coarse = uniform_axis(-30.0, 30.0, 8)
+        mf = SplineMesh(fine, fine, fine)
+        mc = SplineMesh(coarse, coarse, coarse)
+
+        nested = NestedMeshes(mf, mc)
+        @test length(nested) == 2
+        @test finest(nested) === mf
+        @test coarsest(nested) === mc
+        @test nested[1] === mf
+        @test collect(nested) == [mf, mc]
+
+        # L'emboîtement est une condition, pas une convention d'appel : une
+        # grille fine qui déborde n'aurait pas de valeurs de bord à lire.
+        @test_throws ArgumentError NestedMeshes(mc, mf)
+
+        # Un seul niveau reste licite : c'est le cas mono-grille.
+        @test length(NestedMeshes(mf)) == 1
+
+        # Résolution à deux niveaux. Une densité concentrée au centre doit
+        # produire un potentiel continu au passage d'une grille à l'autre.
+        cx, cy, cz = map(a -> a.colloc, mf.axes)
+        ρf = [exp(-(x^2 + y^2 + z^2) / 2) for x in cx, y in cy, z in cz]
+        gx, gy, gz = map(a -> a.colloc, mc.axes)
+        ρc = [exp(-(x^2 + y^2 + z^2) / 2) for x in gx, y in gy, z in gz]
+
+        φs = (similar(ρf), similar(ρc))
+        poisson!(φs, (ρf, ρc), nested)
+        @test all(isfinite, φs[1])
+
+        # Les faces de la grille fine doivent valoir l'interpolation de la
+        # solution grossière — c'est la définition du raccord.
+        coefs = spline_coefficients(φs[2], mc)
+        @test φs[1][1, 4, 6] ≈ spline_potential(mc.axes, coefs, (cx[1], cy[4], cz[6]))
+        @test φs[1][end, 2, 3] ≈ spline_potential(mc.axes, coefs, (cx[end], cy[2], cz[3]))
+
+        # Et l'intérieur reste solution de son propre système.
+        rhs = poisson_rhs(ρf, mf)   # bords multipolaires : autre problème
+        inner = φs[1][2:end-1, 2:end-1, 2:end-1]
+        lap = laplacian!(similar(inner), inner, mf)
+        rhs_raccord = poisson_rhs!(similar(rhs), ρf, mf, φs[1])
+        @test norm(lap - rhs_raccord) / norm(rhs_raccord) < 1e-10
+        @test norm(rhs - rhs_raccord) / norm(rhs_raccord) > 1e-6   # bords différents
+    end
+
     @testset "Produit mode-d" begin
         A = randn(4, 4)
         X = randn(4, 5, 6)

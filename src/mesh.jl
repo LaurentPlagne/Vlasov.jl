@@ -35,6 +35,45 @@ function SplineMesh(axes::SplineAxis{T}...) where {T}
     SplineMesh(axes, cms, full, TensorSolver(ops...))
 end
 
+"""
+    NestedMeshes(levels...)
+
+Hiérarchie de grilles emboîtées, **de la plus fine à la plus grossière**.
+
+Chaque niveau doit être strictement contenu dans le suivant : la grille fine
+résout l'agrégat, la grossière porte les conditions au loin, et les valeurs de
+bord de l'une sont lues dans la solution de l'autre.
+
+C'est ce type qui remplace les 41 variables suffixées `big` du programme
+principal. Le nombre de niveaux étant un paramètre, la version à trois grilles
+du code d'origine n'exige aucune structure de plus.
+"""
+struct NestedMeshes{L,N,T,M}
+    levels::NTuple{L,SplineMesh{N,T,M}}
+
+    function NestedMeshes(levels::SplineMesh{N,T,M}...) where {N,T,M}
+        L = length(levels)
+        L >= 1 || throw(ArgumentError("il faut au moins une grille"))
+        for l in 1:(L-1), d in 1:N
+            inner, outer = levels[l].axes[d], levels[l+1].axes[d]
+            outer.knots[1] <= inner.knots[1] && inner.knots[end] <= outer.knots[end] ||
+                throw(ArgumentError(
+                    "le niveau $l déborde du niveau $(l+1) dans la direction $d"))
+        end
+        new{L,N,T,M}(levels)
+    end
+end
+
+Base.length(::NestedMeshes{L}) where {L} = L
+Base.getindex(n::NestedMeshes, l::Integer) = n.levels[l]
+Base.iterate(n::NestedMeshes, s = 1) = s > length(n) ? nothing : (n.levels[s], s + 1)
+
+"""Le niveau le plus fin."""
+finest(n::NestedMeshes) = n.levels[1]
+
+"""Le niveau le plus grossier, celui qui porte les conditions au loin."""
+coarsest(n::NestedMeshes) = n.levels[end]
+
 """Nombre de dimensions du maillage."""
 Base.ndims(::SplineMesh{N}) where {N} = N
 
