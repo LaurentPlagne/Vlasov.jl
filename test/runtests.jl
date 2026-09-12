@@ -126,7 +126,17 @@ end
         @test a > 1
         @test L * (1 - a) / (1 - a^n) ≈ h1 atol = 1e-13
 
+        # Les nœuds se déduisent des points de collocation : deux points de
+        # Gauss déterminent leur intervalle sans ambiguïté. C'est ce qui rend
+        # un dump portant sa collocation exploitable seul.
+        for a in (uniform_axis(-50.0, 50.0, 28), uniform_axis(0.0, 1.0, 5))
+            @test knots_from_collocation(a.colloc) ≈ a.knots
+            b = axis_from_collocation(a.colloc)
+            @test b.knots ≈ a.knots && b.colloc == a.colloc
+        end
+
         axs = stretched_axis(50.0, 150.0, 7, 8)
+        @test knots_from_collocation(axs.colloc) ≈ axs.knots   # même étiré
         @test nknots(axs) == 29
         @test axs.knots[1] ≈ -150.0
         @test axs.knots[end] ≈ 150.0

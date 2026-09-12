@@ -163,6 +163,43 @@ collocation_points(knots::AbstractVector) =
      knots[end]]
 
 """
+    knots_from_collocation(colloc) -> Vector
+
+Reconstruit les nœuds à partir des seuls points de collocation.
+
+Les deux points de Gauss d'un intervalle déterminent celui-ci sans ambiguïté :
+de `c₁ = a + h·u₁` et `c₂ = a + h·u₂` on tire `h = (c₂−c₁)/(u₂−u₁)` puis
+`a = c₁ − h·u₁`.
+
+Utile pour rejouer un dump de l'oracle qui ne porte que sa grille de
+collocation : l'axe s'en déduit, sans avoir à deviner de quelle autre routine
+emprunter les nœuds.
+"""
+function knots_from_collocation(colloc::AbstractVector{T}) where {T}
+    n = length(colloc) ÷ 2 - 1                     # nombre d'intervalles
+    u1, u2 = GAUSS2_NODES
+    knots = Vector{T}(undef, n + 1)
+    knots[1] = colloc[1]
+    for j in 1:n
+        c1, c2 = colloc[2j], colloc[2j+1]
+        h = (c2 - c1) / (u2 - u1)
+        knots[j] = c1 - h * u1
+        knots[j+1] = knots[j] + h
+    end
+    knots[1] = colloc[1]                            # borne exacte du domaine
+    knots[end] = colloc[end]
+    knots
+end
+
+"""
+    axis_from_collocation(colloc) -> SplineAxis
+
+Axe reconstruit depuis ses seuls points de collocation.
+"""
+axis_from_collocation(colloc::AbstractVector) =
+    SplineAxis(knots_from_collocation(colloc), collect(colloc))
+
+"""
     uniform_axis(x0, xn, nintervals)
 
 Axe à pas constant sur `[x0, xn]` — la grille fine du code d'origine

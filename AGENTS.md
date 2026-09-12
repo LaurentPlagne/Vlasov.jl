@@ -77,6 +77,25 @@ valeur. Elles seront arbitrées une fois les runs de la thèse reproductibles, e
 ce que chaque correction change. Deux ont déjà leur variante corrigée derrière un
 `consistent = true`, prête pour cette mesure.
 
+⚠️ **Dumper les entrées à l'entrée de la routine testée, jamais ailleurs.** Ce piège a
+coûté trois fois : une routine appelée **deux fois** sur deux grilles (`static`), une
+appelée **un pas sur dix** quand ses voisines tournent à chaque pas (`enertot2g`), une
+appelée **avant et après** une transformation du même tableau (`solve`). À chaque fois
+les instantanés venaient d'instants différents et la comparaison ne voulait rien dire —
+avec des écarts de 26 %, 38 % et 4105 % qui ressemblaient à des bugs de portage.
+
+Trois parades, dans cet ordre : dumper **tout** ce que la routine consomme, à son entrée,
+y compris sa grille ; apparier deux routines par un drapeau en `COMMON` quand l'une
+produit ce que l'autre consomme ; et reconstruire ce qui est reconstructible —
+[`axis_from_collocation`](src/splines.jl) retrouve les nœuds depuis les seuls points de
+collocation, ce qui dispense d'emprunter une grille à une autre routine.
+
+⚠️ **Comparer deux configurations sans barre de bruit ne prouve rien.** Avant de conclure
+qu'une correction change quelque chose, mesurer la dispersion de l'observable sur
+plusieurs graines. Sur l'arbitrage des coquilles 1 et 2, les effets valaient 0,06 à
+0,71 σ — indiscernables du bruit, ce qu'aucune comparaison à une seule graine n'aurait
+pu dire.
+
 ⚠️ **Une bibliothèque tierce n'est pas un oracle.** Constaté sur `BandedMatrices` v1.12.0 :
 la division à droite entre deux `BandedMatrix` rend un résultat **faux sans rien signaler**
 (résidu ≈ 0.3 pour `cond(S) ≈ 4`), et `BandedMatrix / BandedLU` **ne termine pas**. Seul

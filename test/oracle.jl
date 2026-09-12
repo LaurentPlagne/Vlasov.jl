@@ -122,8 +122,10 @@ reldiff(a, b) = norm(a - b) / norm(b)
             npart = length(qp) ÷ 3
             positions = [(qp[3i-2], qp[3i-1], qp[3i]) for i in 1:npart]
 
-            axb = SplineAxis(read_dump_vector("dumpb_gx.bin"),
-                             read_dump_vector("dumpbgtx.bin"))
+            # L'axe est reconstruit depuis la collocation dumpée par `makerho`
+            # elle-même, et non empruntée à une autre routine : c'est ce qui
+            # rend la comparaison indépendante de l'ordre des appels.
+            axb = axis_from_collocation(read_dump_vector("dumprho_gt.bin"))
             mesh = SplineMesh(axb, axb, axb)
             n = nbasis(axb)
             ρref = reshape(read_dump_vector("dumprho.bin"), n, n, n)
@@ -301,7 +303,7 @@ reldiff(a, b) = norm(a - b) / norm(b)
         end
 
         @testset "Champ moyen : échange-corrélation et jellium" begin
-            ax = SplineAxis(read_dump_vector("fg_gx.bin"), read_dump_vector("ps_gt.bin"))
+            ax = axis_from_collocation(read_dump_vector("ps_gt.bin"))
             mesh = SplineMesh(ax, ax, ax)
             n = nbasis(ax)
             ρ = reshape(read_dump_vector("ps_rho.bin"), n, n, n)
@@ -326,7 +328,7 @@ reldiff(a, b) = norm(a - b) / norm(b)
         @testset "Raccord entre grilles" begin
             gxf = read_dump_vector("fg_gx.bin")
             gxc = read_dump_vector("sf_gxc.bin")
-            axf = SplineAxis(gxf, read_dump_vector("sf_gt.bin"))
+            axf = axis_from_collocation(read_dump_vector("sf_gt.bin"))
             axc = SplineAxis(gxc, collocation_points(gxc))
             fine = SplineMesh(axf, axf, axf)
             coarse = SplineMesh(axc, axc, axc)

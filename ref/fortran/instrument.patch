@@ -1,5 +1,5 @@
 --- vlas.f	2026-09-12 15:01:37
-+++ vlas_dump.f	2026-09-12 16:04:23
++++ vlas_dump.f	2026-09-12 16:24:41
 @@ -99,6 +99,7 @@
        einterne=0.d0
  c     ----------------------main-------------------------------------
@@ -8,17 +8,47 @@
  c     ---   -- initialisation -- -- -- 
        call litinput(n1xyz,xclu,xboite,
       +     nbion,nbelec,npart,dltt,nbt,
-@@ -1183,6 +1184,24 @@
+@@ -274,6 +275,7 @@
+          call solve(mx,my,mz,mxm1,mym1,mzm1,nsx,nsy,nsz,
+      +        rev,rhsl,phi,csol,sxm1,sym1,szm1)
+          if (mod(i-1,10).eq.0) then
++      call chks('avant-enerele',csol,(NTXT+1)*(NTYT+1)*(NTZT+1))
+          call enerele2g(npart,nbelec,qp,nx,ny,nz,
+      +     csolbig,gxbig,gybig,gzbig,nbout,
+      +     csol,gx,gy,gz,inttab1,nbdt,pasgrid,
+@@ -284,6 +286,7 @@
+          call pspech(ntx,nty,ntz,gtx,gty,gtz,
+      +        rho,csol,sxm1,sym1,szm1,nbion)
+          print*,'entree ds forceg,nbout',nbout
++      call chks('avant-force  ',csol,(NTXT+1)*(NTYT+1)*(NTZT+1))
+          call force2g(npart,nbelec,fp,qp,nx,ny,nz,
+      +      csolbig,gxbig,gybig,gzbig,nbout,
+      +      csol,gx,gy,gz,
+@@ -305,10 +308,13 @@
+ c         epoti=epotip1
+ c         if ((mod(i,20).eq.0).or.(i.eq.nbt)) then
+          if (mod(i-1,10).eq.0) then    
++      call chks('avant-pspech2',csol,(NTXT+1)*(NTYT+1)*(NTZT+1))
+          call pspech2(ntx,nty,ntz,gtxbig,gtybig,gtzbig,
+      +     rhobig,csolbig,sxm1big,sym1big,szm1big,nbion)
++      call chks('avant-pspech2',csol,(NTXT+1)*(NTYT+1)*(NTZT+1))
+          call pspech2(ntx,nty,ntz,gtx,gty,gtz,
+      +        rho,csol,sxm1,sym1,szm1,nbion)
++      call chks('avant-enertot',csol,(NTXT+1)*(NTYT+1)*(NTZT+1))
+          call enertot2g(npart,nbion,nbelec,qp,nx,ny,nz,
+      +     csolbig,gxbig,gybig,gzbig,nbout,
+      +     csol,gx,gy,gz,inttab1,nbdt,pasgrid,
+@@ -1183,6 +1189,24 @@
        call diagonal(nsx,dex,mx,mxi,lxr,lxi)
        call diagonal(nsy,dey,my,myi,lyr,lyi)
        call diagonal(nsz,dez,mz,mzi,lzr,lzi)
 +      if (gx(0).gt.-100.d0) then
-+      call dumpmat('dump_sx.bin ',sx,NTXT+1,ntx+1)
++      call dumpmat('dump_sx.bin',sx,NTXT+1,ntx+1)
 +      call dumpmat('dump_s2x.bin',s2x,NTXT+1,ntx+1)
 +      call dumpmat('dump_dex.bin',dex,NXS,nsx)
 +      call dumpvec('dump_lxr.bin',lxr,nsx)
-+      call dumpmat('dump_mx.bin ',mx,NXS,nsx)
-+      call dumpvec('dump_gx.bin ',gx,nx+1)
++      call dumpmat('dump_mx.bin',mx,NXS,nsx)
++      call dumpvec('dump_gx.bin',gx,nx+1)
 +      call dumpvec('dump_gtx.bin',gtx,ntx+1)
 +      print*,'DUMPED FINE nsx,ntx=',nsx,ntx
 +      else
@@ -33,7 +63,7 @@
        call inverse1(nsx,mx,mxm1)
        call inverse1(nsy,my,mym1)
        call inverse1(nsz,mz,mzm1)
-@@ -1234,6 +1253,15 @@
+@@ -1234,6 +1258,15 @@
           call primx2(gz,nz,k/2,mod(k,2),gtz(ntz),primb)
           psz2(k)=primb-prima
        end do
@@ -49,7 +79,7 @@
        do i=1,nsx
           do j=1,nsy
              do k=1,nsz
-@@ -1264,6 +1292,8 @@
+@@ -1264,6 +1297,8 @@
        real*8 csol(0:NTXT,0:NTYT,0:NTZT)
        integer nsx,nsy,nsz
        integer i,j,k
@@ -58,7 +88,7 @@
        call tensrus(nsx,nsy,nsz,mxm1,mym1,mzm1,rhsl,ww)
        do i=1,nsx
           do j=1,nsy
-@@ -1282,6 +1312,15 @@
+@@ -1282,6 +1317,15 @@
        end do
        call tensrus2(nsx+1,nsy+1,nsz+1,sxm1,sym1,szm1,phi,csol)
        print*,'csol(1,1,1)',csol(1,1,1)
@@ -74,7 +104,7 @@
        end 
  c-------------------------------------------------
        subroutine tensrus(nsx,nsy,nsz,matx,maty,matz,vect,te)
-@@ -1578,6 +1617,7 @@
+@@ -1578,6 +1622,7 @@
        integer ntx,nty,ntz
        integer i,j,k
        real*8 us3,coefech,coffcor,cfc2,rsrm1
@@ -82,7 +112,16 @@
        us3=1.d0/3.d0
        coefech=-((3.d0/PI)**us3)
        coffcor=-0.0333d0
-@@ -1601,6 +1641,12 @@
+@@ -1593,6 +1638,8 @@
+             end do
+          end do
+       end do
++      call chks('ech-pspech ',ech,(NTXT+1)*(NTYT+1)*(NTZT+1))
++      call chks('rho-pspech',rho,(NTXT+1)*(NTYT+1)*(NTZT+1))
+       call tensrus2(ntx,nty,ntz,sxm1,sym1,szm1,ech,echsol)
+       do k=0,ntz
+          do j=0,nty
+@@ -1601,6 +1648,12 @@
              end do
           end do
        end do
@@ -95,7 +134,7 @@
        end
  c---------------- subroutine readfrp ------------------------------
        subroutine readfrp(rhorp,rmax,pmax,nr,np)
-@@ -1930,6 +1976,12 @@
+@@ -1930,6 +1983,12 @@
        end do
  
        print*,'nb de pseudo part hors grille :',nbout
@@ -108,17 +147,18 @@
        end  
  c-----------------------------------------------------
        subroutine potensg(x,nx,gx,y,ny,gy,z,nz,gz,
-@@ -2794,6 +2846,9 @@
+@@ -2794,6 +2853,10 @@
           end do
        end do
        print*,'nb de pseudo part hors grille :',nbout
-+      call dumpflat('dumpqp.bin ',qp,3*(npart-nbcap))
++      call dumpflat('dumprho_gt.bin',gtx,NTXT+1)
++      call dumpflat('dumpqp.bin',qp,3*(npart-nbcap))
 +      call dumpflat('dumprho.bin',rho,(NTXT+1)*(NTYT+1)*(NTZT+1))
 +      print*,'DUMPED makerho npart=',npart-nbcap
        end
  C-----------------------------------------------------
        subroutine sortietest(gx,gy,gz,gx2,gy2,gz2,nx,ny,nz,csol,csol2)
-@@ -2861,6 +2916,8 @@
+@@ -2861,6 +2924,8 @@
        integer a,b,c,i,j,k
        integer bord
        real*8 dumr,pot,x,y,z
@@ -127,7 +167,7 @@
        integer dumi,dumj
        dumi=0
        dumj=0
-@@ -2972,6 +3029,14 @@
+@@ -2972,6 +3037,14 @@
              end do
           end do
        end do
@@ -142,7 +182,7 @@
        end
  c--------------------------------------------------------------------
        subroutine makerh2(rho,dx,dy,dz,nsx,nsy,nsz,
-@@ -2996,6 +3061,8 @@
+@@ -2996,6 +3069,8 @@
        integer ntx,nty,ntz
        integer a,b,c,i,j,k,l,m
        integer bord
@@ -151,7 +191,7 @@
        ntx=nsx+1
        nty=nsy+1
        ntz=nsz+1
-@@ -3123,6 +3190,15 @@
+@@ -3123,6 +3198,15 @@
              end do
           end do
        end do
@@ -167,7 +207,7 @@
        end
  c-----------------------------------------------------------
        subroutine force2g(npart,nbelec,fp,qp,nx,ny,nz,
-@@ -3202,6 +3278,17 @@
+@@ -3202,6 +3286,17 @@
              fp(3,j)=csr3s2*z
           end if
        end do
@@ -185,7 +225,7 @@
        end
  c-----------------------------------------------------------
        subroutine enerele2g(npart,nbelec,qp,nx,ny,nz,
-@@ -3335,6 +3422,18 @@
+@@ -3335,6 +3430,18 @@
        integer dumi,dumj,nbtour
        integer i,j
        logical first
@@ -204,7 +244,7 @@
        dumi=0
        dumj=0
        dumr=0.d0
-@@ -3432,6 +3531,10 @@
+@@ -3432,6 +3539,10 @@
        end if
        print*,'enele,enejel,ekin,enetot,ekinout'
        print*, enele,enejel,ekin,enetot,ekinout
@@ -215,7 +255,16 @@
        end
  c----------------------------------------------------------
        subroutine capture(npart,qp,pospro,nbelec,nbcap)
-@@ -3647,6 +3750,9 @@
+@@ -3552,6 +3663,8 @@
+             end do
+          end do
+       end do
++      call chks('ech-pspech2',ech,(NTXT+1)*(NTYT+1)*(NTZT+1))
++      call chks('rho-pspech2',rho,(NTXT+1)*(NTYT+1)*(NTZT+1))
+       call tensrus2(ntx,nty,ntz,sxm1,sym1,szm1,ech,echsol)
+       do k=0,ntz
+          do j=0,nty
+@@ -3647,6 +3760,9 @@
  c         rt(1,i)=rt(1,i)+40.d0
  c         rt(2,i+1)=rt(2,i+1)+40.d0
  c      end do
@@ -225,7 +274,7 @@
        end           
  c-----------------------------------------------------------------
        subroutine move(qp,qpold,fp,nbelec,npart,dltt,ekin,ekinout,
-@@ -3668,6 +3774,10 @@
+@@ -3668,6 +3784,10 @@
        ekin=0.d0
        ekinout=0.d0
        j=1
@@ -236,7 +285,7 @@
        lcix=0.d0
        lciy=0.d0
        lciz=0.d0
-@@ -3705,6 +3815,12 @@
+@@ -3705,6 +3825,12 @@
        lcine(1)=lcix
        lcine(2)=lciy
        lcine(3)=lciz

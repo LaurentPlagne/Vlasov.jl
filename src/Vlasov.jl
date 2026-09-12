@@ -21,6 +21,7 @@ export Ran2, next!
 export HermiteKind, Value, Slope, BasisIndex, linearindex
 export SplineAxis, nknots, nbasis, evaluate, value, derivative, curvature, support
 export uniform_axis, stretched_axis, stretch_ratio, collocation_points, moment, moments
+export knots_from_collocation, axis_from_collocation
 export CollocationMatrices, laplacian1d, laplacian1d_full, COLLOCATION_BANDWIDTH
 export DiagonalizedOperator, TensorSolver, apply_mode!, solve!, solve
 export SplineMesh, NestedMeshes, finest, coarsest, collocation_axes, laplacian!

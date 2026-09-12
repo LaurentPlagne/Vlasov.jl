@@ -38,6 +38,7 @@ des `Float64`). Convention de nommage : `dump_*` pour la **grille fine**,
 | `ps_*.bin` | densité, potentiel effectif et coefficients avant/après `pspech` |
 | `in_rt.bin`, `in_pt.bin` | positions et impulsions du tirage initial |
 | `et_*.bin` | toutes les entrées et sorties de `enertot2g`, dumpées à son entrée |
+| `dumprho_gt.bin` | grille de collocation de `makerho`, pour rendre son dump autonome |
 
 `dumpqp.bin` et `dumprho.bin` sont écrits par `makerho`, qui est appelée
 plusieurs fois : c'est la dernière invocation qui subsiste. Peu importe —
@@ -53,6 +54,21 @@ correspondrait donc pas à la densité dumpée. Un drapeau en `COMMON`
 ⚠️ `static` est appelée **deux fois** (grille fine puis grossière). Sans la
 distinction `dump_`/`dumpb_`, le second appel écrase le premier — piège dans
 lequel ce portage est tombé une fois.
+
+## Règle : dumper à l'entrée de la routine testée
+
+Les trois pièges ci-dessus sont le même : des instantanés pris à des instants
+différents, comparés comme s'ils étaient contemporains. La parade est
+systématique — **une routine instrumentée dumpe tout ce qu'elle consomme, à
+son entrée, sa grille comprise.** La comparaison devient alors autonome, quel
+que soit le moment de la simulation où le dump a été pris.
+
+Deux compléments quand ça ne suffit pas :
+
+* un drapeau en `COMMON` apparie deux routines dont l'une produit ce que
+  l'autre consomme (`makerh2` → `solve`) ;
+* ce qui est reconstructible n'a pas besoin d'être dumpé — `axis_from_collocation`
+  retrouve les nœuds depuis les seuls points de collocation.
 
 ## Ce qui a été changé, et pourquoi
 
