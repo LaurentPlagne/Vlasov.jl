@@ -81,7 +81,16 @@ dernière fonction de base (c'était `extract` en Fortran).
 c'est ce qui rend licite la diagonalisation réelle utilisée par le solveur
 tensoriel.
 """
-function laplacian1d(cm::CollocationMatrices)
-    D = Matrix(cm.S″) / lu(cm.S)
-    D[2:end-1, 2:end-1]
-end
+laplacian1d(cm::CollocationMatrices) = laplacian1d_full(cm)[2:end-1, 2:end-1]
+
+"""
+    laplacian1d_full(cm) -> Matrix
+
+L'opérateur avant retrait des fonctions de base du bord.
+
+Ses deux colonnes extrêmes sont ce qui permet de **relever** des conditions de
+Dirichlet non homogènes : elles disent ce que vaut l'opérateur appliqué aux
+deux fonctions de base retirées, dont la valeur est imposée. Les deux lignes
+extrêmes, elles, n'approchent aucune dérivée seconde.
+"""
+laplacian1d_full(cm::CollocationMatrices) = Matrix(cm.S″) / lu(cm.S)

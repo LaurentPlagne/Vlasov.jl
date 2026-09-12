@@ -27,11 +27,20 @@ des `Float64`). Convention de nommage : `dump_*` pour la **grille fine**,
 | `dump_lxr.bin`, `dump_mx.bin` | valeurs et vecteurs propres |
 | `dump_psx.bin`, `dump_pxx.bin`, `dump_px2.bin` | moments `∫φ`, `∫xφ`, `∫x²φ` |
 | `dumpqp.bin`, `dumprho.bin` | positions des pseudo-particules et densité déposée |
+| `dumpq.bin`, `dumpbari.bin`, `dumpquad.bin` | charge, barycentre, tenseur quadrupolaire |
+| `dumprh2.bin`, `dumprh2gt.bin`, `dumpphi.bin`, `dumprhs.bin` | densité, grille, potentiel de bord et second membre de `makerh2` |
+| `dumpcsol.bin`, `dumpphi2.bin` | potentiel résolu et ses coefficients spline |
 
 `dumpqp.bin` et `dumprho.bin` sont écrits par `makerho`, qui est appelée
 plusieurs fois : c'est la dernière invocation qui subsiste. Peu importe —
 les deux sont dumpés **ensemble**, donc toujours cohérents entre eux, et
 c'est tout ce que la comparaison demande.
+
+⚠️ Même précaution pour `makerh2` et `solve`, mais elle ne suffisait pas :
+`solve` est appelée **deux fois** par pas de temps, après `makerh2` sur la
+grille grossière puis après `makerhsf` sur la fine. Son dernier `csol` ne
+correspondrait donc pas à la densité dumpée. Un drapeau en `COMMON`
+(`/dumpflag/`) armé par `makerh2` apparie les deux.
 
 ⚠️ `static` est appelée **deux fois** (grille fine puis grossière). Sans la
 distinction `dump_`/`dumpb_`, le second appel écrase le premier — piège dans

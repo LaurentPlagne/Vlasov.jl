@@ -125,5 +125,47 @@ reldiff(a, b) = norm(a - b) / norm(b)
             # L'observable de contrôle du code d'origine : « somme des charges ».
             @test total_charge(ρ, mesh) ≈ 196.0 rtol = 1e-12
         end
+
+        @testset "Poisson : densité → potentiel" begin
+            # `makerh2` dumpe sa densité, sa grille et son second membre ; le
+            # `solve` qui la suit dumpe le potentiel, apparié par un drapeau en
+            # COMMON (`solve` est aussi appelée après `makerhsf`, sur l'autre
+            # grille, et son csol ne correspondrait pas à cette densité-ci).
+            axb = SplineAxis(read_dump_vector("dumpb_gx.bin"),
+                             read_dump_vector("dumpbgtx.bin"))
+            @test read_dump_vector("dumprh2gt.bin") ≈ axb.colloc
+
+            mesh = SplineMesh(axb, axb, axb)
+            n = nbasis(axb)
+            ρ = reshape(read_dump_vector("dumprh2.bin"), n, n, n)
+
+            # Moments multipolaires. Le quadrupôle tolère un peu plus : sa
+            # forme sans trace (2∫x² − ∫y² − ∫z²) compense de grands nombres.
+            mp = multipole(ρ, mesh)
+            @test mp.charge ≈ read_dump_vector("dumpq.bin")[1] rtol = 1e-12
+            @test reldiff(collect(mp.center), read_dump_vector("dumpbari.bin")) < 1e-11
+            Q = reshape(read_dump_vector("dumpquad.bin"), 3, 3)
+            @test reldiff(collect(mp.quadrupole[1:3]), [Q[1, 1], Q[2, 2], Q[3, 3]]) < 1e-11
+            @test reldiff(collect(mp.quadrupole[4:6]), [Q[1, 2], Q[1, 3], Q[2, 3]]) < 1e-11
+
+            # Potentiel de bord : seules les faces sont écrites par `makerh2`,
+            # l'intérieur du tableau `phi` sert de tampon à `solve`.
+            φbord = boundary_potential!(similar(ρ), mesh, mp)
+            φref = reshape(read_dump_vector("dumpphi.bin"), n, n, n)
+            faces = falses(n, n, n)
+            faces[1, :, :] .= true; faces[end, :, :] .= true
+            faces[:, 1, :] .= true; faces[:, end, :] .= true
+            faces[:, :, 1] .= true; faces[:, :, end] .= true
+            @test reldiff(φbord[faces], φref[faces]) < 1e-12
+
+            @test reldiff(poisson_rhs(ρ, mesh),
+                          reshape(read_dump_vector("dumprhs.bin"), size(mesh)...)) < 1e-11
+
+            # La chaîne complète, et ses coefficients spline (`csol`).
+            φ = poisson(ρ, mesh)
+            @test reldiff(φ, reshape(read_dump_vector("dumpphi2.bin"), n, n, n)) < 1e-11
+            @test reldiff(spline_coefficients(φ, mesh),
+                          reshape(read_dump_vector("dumpcsol.bin"), n, n, n)) < 1e-11
+        end
     end
 end

@@ -22,13 +22,17 @@ simulation où seul le second membre change à chaque pas de temps.
 struct SplineMesh{N,T,M}
     axes::NTuple{N,SplineAxis{T}}
     collocation::NTuple{N,CollocationMatrices{T,M}}
+    "Opérateurs de dérivée seconde **complets**, bords compris : leurs colonnes
+     extrêmes servent au relèvement des conditions de Dirichlet."
+    laplacians::NTuple{N,Matrix{T}}
     solver::TensorSolver{N,T}
 end
 
 function SplineMesh(axes::SplineAxis{T}...) where {T}
     cms = map(CollocationMatrices, axes)
-    ops = map(cm -> DiagonalizedOperator(laplacian1d(cm)), cms)
-    SplineMesh(axes, cms, TensorSolver(ops...))
+    full = map(laplacian1d_full, cms)
+    ops = map(D -> DiagonalizedOperator(D[2:end-1, 2:end-1]), full)
+    SplineMesh(axes, cms, full, TensorSolver(ops...))
 end
 
 """Nombre de dimensions du maillage."""
@@ -40,6 +44,7 @@ de base portant les conditions de Dirichlet. C'est la taille des tableaux que
 [`solve!`](@ref) attend.
 """
 Base.size(mesh::SplineMesh) = size(mesh.solver)
+Base.size(mesh::SplineMesh, d::Integer) = size(mesh)[d]
 
 """
     collocation_axes(mesh)
@@ -71,9 +76,7 @@ function laplacian!(dest::Array{T,N}, φ::Array{T,N}, mesh::SplineMesh{N,T}) whe
     fill!(dest, zero(T))
     tmp = similar(dest)
     for d in 1:N
-        # Reconstruit D_d à partir de sa diagonalisation : M Λ M⁻¹.
-        op = mesh.solver.ops[d]
-        apply_mode!(tmp, op.M * Diagonal(op.λ) * op.Minv, φ, d)
+        @views apply_mode!(tmp, mesh.laplacians[d][2:end-1, 2:end-1], φ, d)
         dest .+= tmp
     end
     dest

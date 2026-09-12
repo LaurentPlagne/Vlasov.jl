@@ -297,6 +297,67 @@ end
                                                 positions; charge = 1.0)
     end
 
+    @testset "Développement multipolaire" begin
+        ax = uniform_axis(-20.0, 20.0, 16)
+        mesh = SplineMesh(ax, ax, ax)
+        n = nbasis(ax)
+
+        # Une distribution à symétrie sphérique centrée n'a ni dipôle ni
+        # quadrupôle : c'est ce qui rend le contrôle discriminant.
+        cx, cy, cz = map(a -> a.colloc, mesh.axes)
+        σ = 3.0
+        ρ = [exp(-(x^2 + y^2 + z^2) / 2σ^2) for x in cx, y in cy, z in cz]
+        ρ .*= 10.0 / total_charge(ρ, mesh)      # normalisée à 10 unités
+
+        mp = multipole(ρ, mesh)
+        @test mp.charge ≈ 10.0 rtol = 1e-10
+        @test all(c -> abs(c) < 1e-8, mp.center)
+        @test all(q -> abs(q) < 1e-6, mp.quadrupole)
+
+        # Loin de la source, le potentiel tend vers celui d'une charge ponctuelle.
+        for r in (1e3, 1e4)
+            @test potential(mp, r, 0.0, 0.0) ≈ 10.0 / r rtol = 1e-6
+        end
+
+        # Décentrer la distribution doit déplacer le barycentre d'autant.
+        shifted = [exp(-((x - 4)^2 + y^2 + z^2) / 2σ^2) for x in cx, y in cy, z in cz]
+        mps = multipole(shifted, mesh)
+        @test mps.center[1] ≈ 4.0 rtol = 1e-6
+        @test abs(mps.center[2]) < 1e-8
+    end
+
+    @testset "Poisson avec bords multipolaires" begin
+        ax = uniform_axis(-20.0, 20.0, 16)
+        mesh = SplineMesh(ax, ax, ax)
+        cx, cy, cz = map(a -> a.colloc, mesh.axes)
+        ρ = [exp(-((x - 1)^2 + (y + 2)^2 + z^2) / 8) for x in cx, y in cy, z in cz]
+
+        φ = poisson(ρ, mesh)
+        @test size(φ) == size(ρ)
+
+        # Sur les faces, le potentiel EST le développement multipolaire.
+        mp = multipole(ρ, mesh)
+        @test φ[1, 5, 7] ≈ potential(mp, cx[1], cy[5], cz[7])
+        @test φ[end, 3, 9] ≈ potential(mp, cx[end], cy[3], cz[9])
+
+        # À l'intérieur, l'opérateur appliqué à la solution doit rendre le
+        # second membre — relèvement des bords compris.
+        rhs = poisson_rhs(ρ, mesh)
+        inner = φ[2:end-1, 2:end-1, 2:end-1]
+        @test norm(laplacian!(similar(inner), inner, mesh) - rhs) / norm(rhs) < 1e-10
+
+        # Le second membre est −4πρ plus le relèvement des bords. Celui-ci
+        # décroît vers l'intérieur mais ne s'annule pas exactement : l'opérateur
+        # complet n'est pas à support strictement local (largeur de bande 19
+        # sur 56 mesurée, et des entrées ténues au-delà).
+        releve = rhs .+ 4π .* @view ρ[2:end-1, 2:end-1, 2:end-1]
+        c = size(mesh, 1) ÷ 2
+        @test abs(releve[c, c, c]) < abs(releve[1, c, c])
+        @test rhs[c, c, c] ≈ -4π * ρ[c+1, c+1, c+1] rtol = 1e-6
+
+        @test_throws DimensionMismatch poisson_rhs!(zeros(3, 3, 3), ρ, mesh)
+    end
+
     @testset "Produit mode-d" begin
         A = randn(4, 4)
         X = randn(4, 5, 6)

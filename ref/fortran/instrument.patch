@@ -1,5 +1,5 @@
 --- vlas.f	2026-09-12 15:01:37
-+++ vlas_dump.f	2026-09-12 15:04:37
++++ vlas_dump.f	2026-09-12 15:16:07
 @@ -1183,6 +1183,24 @@
        call diagonal(nsx,dex,mx,mxi,lxr,lxi)
        call diagonal(nsy,dey,my,myi,lyr,lyi)
@@ -41,7 +41,28 @@
        do i=1,nsx
           do j=1,nsy
              do k=1,nsz
-@@ -2794,6 +2821,9 @@
+@@ -1264,6 +1291,8 @@
+       real*8 csol(0:NTXT,0:NTYT,0:NTZT)
+       integer nsx,nsy,nsz
+       integer i,j,k
++      integer idump
++      common /dumpflag/ idump
+       call tensrus(nsx,nsy,nsz,mxm1,mym1,mzm1,rhsl,ww)
+       do i=1,nsx
+          do j=1,nsy
+@@ -1282,6 +1311,11 @@
+       end do
+       call tensrus2(nsx+1,nsy+1,nsz+1,sxm1,sym1,szm1,phi,csol)
+       print*,'csol(1,1,1)',csol(1,1,1)
++      if (idump.eq.1) then
++         call dumpflat('dumpcsol.bin',csol,(NTXT+1)*(NTYT+1)*(NTZT+1))
++         call dumpflat('dumpphi2.bin',phi,(NTXT+1)*(NTYT+1)*(NTZT+1))
++         idump=0
++      end if
+       end 
+ c-------------------------------------------------
+       subroutine tensrus(nsx,nsy,nsz,matx,maty,matz,vect,te)
+@@ -2794,6 +2828,9 @@
           end do
        end do
        print*,'nb de pseudo part hors grille :',nbout
@@ -51,3 +72,28 @@
        end
  C-----------------------------------------------------
        subroutine sortietest(gx,gy,gz,gx2,gy2,gz2,nx,ny,nz,csol,csol2)
+@@ -2996,6 +3033,8 @@
+       integer ntx,nty,ntz
+       integer a,b,c,i,j,k,l,m
+       integer bord
++      integer idump
++      common /dumpflag/ idump
+       ntx=nsx+1
+       nty=nsy+1
+       ntz=nsz+1
+@@ -3123,6 +3162,15 @@
+             end do
+          end do
+       end do
++      call dumpflat('dumpq.bin',qtot,1)
++      call dumpflat('dumpbari.bin',bari,3)
++      call dumpflat('dumpquad.bin',quad,9)
++      call dumpflat('dumpphi.bin',phi,(NTXT+1)*(NTYT+1)*(NTZT+1))
++      call dumpflat('dumprhs.bin',rhsl,NXS*NYS*NZS)
++      call dumpflat('dumprh2.bin',rho,(NTXT+1)*(NTYT+1)*(NTZT+1))
++      idump=1
++      call dumpflat('dumprh2gt.bin',gtx,NTXT+1)
++      print*,'DUMPED makerh2 qtot=',qtot
+       end
+ c-----------------------------------------------------------
+       subroutine force2g(npart,nbelec,fp,qp,nx,ny,nz,
