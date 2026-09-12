@@ -798,6 +798,64 @@ end
         @test e ≈ nbelec * φ0 rtol = 1e-4
     end
 
+    @testset "Simulation d'un agrégat isolé" begin
+        oracle = joinpath(@__DIR__, "..", "ref", "fortran")
+        if !isdir(joinpath(oracle, "data"))
+            @info "profil radial absent — simulation non testée"
+            @test_skip false
+        else
+            prof = read_radial_profile(joinpath(oracle, "data"))
+
+            p = SimulationParameters(; nparticles = 2_000, nsteps = 6, dt = 1.0)
+            sim = Simulation(p, prof)
+            @test length(sim.cloud) == 2_000
+            @test sim.jellium.radius ≈ WIGNER_SEITZ_NA * cbrt(196.0)
+
+            # L'amorçage a bien eu lieu : `previous` n'est ni vide ni égal aux
+            # positions, et les forces ont été évaluées.
+            @test sim.cloud.previous != sim.cloud.positions
+            @test any(f -> any(!iszero, f), sim.cloud.forces)
+
+            hist = run!(sim; nsteps = 6)
+            @test length(hist) == 6
+            @test all(b -> isfinite(b.total), hist)
+
+            # L'énergie totale est une petite différence de grands termes : la
+            # mesurer par rapport à elle-même exagérerait la dérive. On la
+            # rapporte à l'échelle des termes qui la composent.
+            b1 = hist[1]
+            échelle = abs(b1.hartree) + abs(b1.meanfield) + b1.ions
+            tot = [b.total for b in hist]
+            @test (maximum(tot) - minimum(tot)) / échelle < 1e-3
+
+            # Schéma symplectique : l'énergie oscille, elle ne dérive pas.
+            @test !all(diff(tot) .< 0) && !all(diff(tot) .> 0)
+
+            # La charge déposée reste celle des électrons, pas à pas.
+            @test total_charge(sim.ρ[1], sim.meshes[1]) ≈ 196.0 rtol = 1e-10
+        end
+    end
+
+    @testset "Paramètres de simulation" begin
+        p = SimulationParameters()
+        @test p.nfine == 28 && p.nelectrons == 196.0
+
+        # Lecture d'un `vlas.inp` : commentaire, valeur, en alternance.
+        chemin = joinpath(@__DIR__, "..", "ref", "fortran", "vlas.inp")
+        if isfile(chemin)
+            q = read_parameters(chemin)
+            @test q.nfine == 28
+            @test q.rcluster == 50.0 && q.rbox == 150.0
+            @test q.nions == 196.0 && q.nelectrons == 196.0
+        end
+
+        mktemp() do path, io
+            write(io, "commentaire\n3\nautre\n4\n")
+            close(io)
+            @test_throws ArgumentError read_parameters(path)
+        end
+    end
+
     @testset "Produit mode-d" begin
         A = randn(4, 4)
         X = randn(4, 5, 6)

@@ -61,3 +61,14 @@ c     Dump des n premieres valeurs de ran2, amorce a idum=-1.
       end do
       call dumpflat('rand2.bin',v,n)
       end
+      subroutine chks(tag,a,n)
+      implicit none
+      character*(*) tag
+      integer n,i
+      double precision a(*),s
+      s=0.d0
+      do i=1,n
+         s=s+a(i)*a(i)
+      end do
+      print*,'CHK ',tag,dsqrt(s)
+      end

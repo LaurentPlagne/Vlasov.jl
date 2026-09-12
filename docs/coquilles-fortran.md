@@ -25,6 +25,7 @@ prête à servir à cette mesure.
 | 5 | `force2gi` | appel avec un argument de trop | code mort | corrigée (obligatoire) |
 | 6 | `makerhsf` | multipôles calculés puis jetés | temps de calcul, bruit | — |
 | 7 | `ceq3d.f` | `π` tronqué à 12 décimales | ~1e-12 partout | non reproduite |
+| 8 | `pspech2` / `enertot2g` | potentiel incohérent au bilan ? | à élucider | — |
 
 Les points 4 et 5 sont corrigés dans `modernize.patch`, sans quoi le code ne
 compile pas ; voir [`ref/fortran/README.md`](../ref/fortran/README.md).
@@ -231,6 +232,42 @@ L'attribution est donc sans ambiguïté : tout l'écart vient de là, et le rest
 du tirage est exact. Même raisonnement que pour la tolérance de `findacc` dans
 `stretched_axis` — on garde la version juste, on desserre la comparaison, et
 on écrit pourquoi.
+
+---
+
+## 8. `pspech2` / `enertot2g` — quel potentiel voit le bilan ?
+
+**Constat, non élucidé.** `pspech2` est l'exacte opposée de `pspech`
+(`ech = −ech`), et la boucle en temps l'appelle juste avant `enertot2g`. Le
+potentiel devrait donc être revenu à Hartree seul. En traçant la norme de
+`csol` sur une itération :
+
+| point de la boucle | ‖csol‖ |
+|---|---|
+| avant `enerele2g` (Hartree seul) | 737,4 |
+| avant `force2g` (après `pspech`) | 7,8 |
+| avant `enertot2g` (après `pspech2`) | **322,2** |
+
+`pspech2` ne restitue donc pas 737,4. Et 322,2 ne correspond **ni** à Hartree
+**ni** au potentiel total — alors que la valeur `potel = −30,5` qu'en tire
+`enertot2g` est, elle, cohérente avec le potentiel **total** (‖·‖ = 7,8) et
+non avec Hartree (qui donnerait ≈ 1979).
+
+Vérifié au passage : `ech` est rigoureusement **identique** entre les deux
+routines — même `rho` (norme 0,095344877106496542 des deux côtés), même `ech`
+(911,00264890247547). La différence ne vient donc pas de l'intégrande.
+
+**Ce que le portage fait.** `energy_budget` reproduit les nombres de l'oracle
+au chiffre près à partir de ses propres entrées (champ moyen à `6e-15`, total
+à `8e-13`), et la boucle Julia alimente le bilan avec ce que la physique
+demande sans ambiguïté : `½∫ρΦ_H` pour Hartree, `∫ρΦ_total` pour
+l'interaction. Les deux coïncident avec les valeurs publiées par le Fortran.
+
+**À faire.** Compter et ordonner tous les appels à `pspech`/`pspech2` — le
+tracé en montre plus que la lecture de la boucle n'en laissait attendre, et
+dans un ordre inattendu. Tant que ce n'est pas élucidé, ne rien conclure de
+physique à partir des énergies **du Fortran** ; celles du portage reposent,
+elles, sur une définition explicite.
 
 ---
 

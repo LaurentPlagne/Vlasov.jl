@@ -15,6 +15,7 @@ include("fields.jl")
 include("meanfield.jl")
 include("initial.jl")
 include("energy.jl")
+include("simulation.jl")
 
 export Ran2, next!
 export HermiteKind, Value, Slope, BasisIndex, linearindex
@@ -33,5 +34,6 @@ export deposit_smoothed!
 export Jellium, WIGNER_SEITZ_NA, xc_potential, effective_potential!
 export RadialProfile, read_radial_profile, sample_thomas_fermi, initial_cloud, FERMI_COEFFICIENT
 export EnergyBudget, energy_budget, interaction_energy, hartree_energy, ion_self_energy
+export SimulationParameters, read_parameters, Simulation, run!
 
 end # module
