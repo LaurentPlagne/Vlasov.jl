@@ -5,10 +5,14 @@ corrigé** : le portage les reproduit à l'identique, faute de quoi la
 comparaison à l'oracle perdrait sa valeur — c'est elle qui détecte les erreurs
 de portage, et elle ne le peut que si les deux codes calculent la même chose.
 
-Ils seront arbitrés **quand les runs de la thèse seront reproductibles**, un à
-un, en mesurant ce que chaque correction change sur les observables. Deux
-d'entre eux ont déjà leur variante corrigée derrière un `consistent = true`,
-prête à servir à cette mesure.
+Ils sont arbitrés **au fur et à mesure que les runs deviennent
+reproductibles**, en mesurant ce que chaque correction change sur les
+observables — jamais en discutant ce qu'elle devrait changer.
+
+**État de l'arbitrage :** les anomalies 1 et 2 sont tranchées, sur l'agrégat
+isolé (voir la section suivante) — aucune n'est distinguable du bruit
+d'échantillonnage. Les 3, 6 et 8 restent ouvertes ; la 8 demande d'abord
+d'élucider l'enchaînement des appels du Fortran.
 
 > ⚠️ Un écart entre l'oracle et le portage doit toujours être arbitré — bug
 > d'origine, ou erreur de portage ? — jamais corrigé en silence. Ce fichier
