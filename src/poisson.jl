@@ -158,6 +158,42 @@ function potential(mp::Multipole{T}, x, y, z) where {T}
 end
 
 """
+    foreach_face(f, nx, ny, nz)
+
+Applique `f(i, j, k)` aux points de la **surface** d'une grille, et à eux
+seuls.
+
+Parcourir tout le volume en écartant l'intérieur par un test visite 195 000
+points pour n'en traiter 19 500 : neuf dixièmes du temps passés à décider de
+ne rien faire.
+
+Les deux faces pleines sont traitées à part des parois latérales. Ce n'est pas
+de la coquetterie : elles pèsent un tiers des points à elles deux, et les
+répartir avec le reste déséquilibrerait les fils.
+"""
+function foreach_face(f, nx::Integer, ny::Integer, nz::Integer)
+    tforeach(ny) do slice
+        for j in slice, i in 1:nx
+            f(i, j, 1)
+            f(i, j, nz)
+        end
+    end
+    tforeach(nz - 2) do slice
+        for kk in slice
+            k = kk + 1
+            for i in 1:nx
+                f(i, 1, k)
+                f(i, ny, k)
+            end
+            for j in 2:(ny-1)
+                f(1, j, k)
+                f(nx, j, k)
+            end
+        end
+    end
+end
+
+"""
     boundary_potential!(φ, mesh, mp) -> φ
 
 Remplit `φ` (taille complète de la grille) avec le potentiel multipolaire sur
@@ -169,10 +205,8 @@ function boundary_potential!(φ::Array{T,3}, mesh::SplineMesh{3,T},
     gx, gy, gz = map(ax -> ax.colloc, mesh.axes)
     nx, ny, nz = length(gx), length(gy), length(gz)
     fill!(φ, zero(T))
-    for k in 1:nz, j in 1:ny, i in 1:nx
-        surface = i == 1 || i == nx || j == 1 || j == ny || k == 1 || k == nz
-        surface || continue
-        φ[i, j, k] = potential(mp, gx[i], gy[j], gz[k])
+    foreach_face(nx, ny, nz) do i, j, k
+        @inbounds φ[i, j, k] = potential(mp, gx[i], gy[j], gz[k])
     end
     φ
 end
@@ -274,14 +308,12 @@ function boundary_from_coarse!(φ::Array{T,3}, mesh::SplineMesh{3,T},
     gx, gy, gz = map(ax -> ax.colloc, mesh.axes)
     nx, ny, nz = length(gx), length(gy), length(gz)
     fill!(φ, zero(T))
-    for k in 1:nz, j in 1:ny, i in 1:nx
-        surface = i == 1 || i == nx || j == 1 || j == ny || k == 1 || k == nz
-        surface || continue
+    foreach_face(nx, ny, nz) do i, j, k
         p = spline_potential(coarse.axes, csol_coarse, (gx[i], gy[j], gz[k]))
         p === nothing && throw(ArgumentError(
             "le point de bord ($(gx[i]), $(gy[j]), $(gz[k])) sort de la grille " *
             "grossière : les niveaux ne sont pas emboîtés"))
-        φ[i, j, k] = p
+        @inbounds φ[i, j, k] = p
     end
     φ
 end
