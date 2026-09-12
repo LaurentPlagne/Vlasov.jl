@@ -207,14 +207,23 @@ résoudre (`‖A·X − B‖`), jamais sur sa seule absence d'erreur.
   (`f = cond ? g : h ; f(x)`) échappent à toute analyse statique.
 - **Suppression de sortie verbeuse** : point-virgule **systématique** en fin
   d'expression/bloc envoyé à `ex` (sauf résultat ciblé explicitement voulu avec `q=false`).
-- **Tests** : `run_tests()` (sous-processus, résultats en continu), ou en shell
+- **Tests** : les exécuter **dans la session vivante**, pas via `run_tests` :
 
-      julia --project=. test/runtests.jl
+      using Test
+      ts = include(joinpath(pkgdir(Vlasov), "test", "runtests.jl"))
 
-  ⚠️ `run_tests(pattern=…)` **n'a aucun effet ici** : le filtre passe par `ARGS` et n'est
-  honoré que par les suites ReTest. `test/runtests.jl` est du `Test.jl` simple, donc toute
-  la suite tourne. (`test/retest.jl` est un vestige du template : il appelle `Retest`, qui
-  n'est pas dans `Project.toml`.)
+  `run_tests` lance un sous-processus qui **recompile tout** — 35 s par tour contre 16 s
+  en session, où le code est déjà chaud. Sur une boucle correction/vérification la
+  différence est celle entre deux essais et cinq.
+
+  ⚠️ La sortie du testset est dépouillée comme tout `println` : récupérer l'objet rendu
+  par `include` et le résumer (`Test.get_test_counts`), ou attraper la
+  `Test.TestSetException` que `@testset` lève en cas d'échec.
+
+  ⚠️ `run_tests(pattern=…)` n'a de toute façon aucun effet ici : le filtre passe par
+  `ARGS` et n'est honoré que par les suites ReTest. `test/runtests.jl` est du `Test.jl`
+  simple. (`test/retest.jl` est un vestige du template : il appelle `Retest`, qui n'est
+  pas dans `Project.toml`.)
 
 - **Vérification de type** : `@code_warntype ma_fonction(args...)` dans `ex`
   (`using InteractiveUtils`).
