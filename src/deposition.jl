@@ -19,18 +19,16 @@ domaine qu'il « possède ». Sert à normaliser un dépôt en densité.
 Les quatre points extrêmes sont traités à part — leur cellule est bornée par
 le bord du domaine, pas par un point de collocation voisin.
 """
-function dual_lengths(ax::SplineAxis{T}) where {T}
+function dual_lengths(ax::SplineAxis)
     gt, g = ax.colloc, ax.knots
     m = length(gt)
-    l = Vector{T}(undef, m)
-    l[1] = (gt[2] - g[1]) / 2
-    l[2] = (gt[3] - g[1]) / 2
-    l[m] = (g[end] - gt[m-1]) / 2
-    l[m-1] = (g[end] - gt[m-2]) / 2
-    for j in 3:(m-2)
-        l[j] = (gt[j+1] - gt[j-1]) / 2
+    map(1:m) do j
+        j == 1     ? (gt[2] - g[1]) / 2 :
+        j == 2     ? (gt[3] - g[1]) / 2 :
+        j == m     ? (g[end] - gt[m-1]) / 2 :
+        j == m - 1 ? (g[end] - gt[m-2]) / 2 :
+                     (gt[j+1] - gt[j-1]) / 2
     end
-    l
 end
 
 """
@@ -88,12 +86,11 @@ function deposit!(ρ::Array{T,3}, mesh::SplineMesh{3,T},
         end
     end
 
-    # Normalisation en densité : le volume dual est le produit extérieur des
-    # longueurs duales, jamais matérialisé en 3D (58³ flottants pour rien).
-    lx, ly, lz = dual_lengths(mx), dual_lengths(my), dual_lengths(mz)
-    @inbounds for k in axes(ρ, 3), j in axes(ρ, 2), i in axes(ρ, 1)
-        ρ[i, j, k] *= charge / (lx[i] * ly[j] * lz[k])
-    end
+    # Normalisation en densité. Le volume dual est le produit extérieur des
+    # trois longueurs duales : le broadcast le parcourt sans jamais le
+    # matérialiser en 3D, là où le Fortran en gardait 58³ flottants (`volm1`).
+    lx, ly, lz = map(dual_lengths, (mx, my, mz))
+    ρ .*= charge ./ (lx .* ly' .* reshape(lz, 1, 1, :))
     nout
 end
 
@@ -130,9 +127,6 @@ C'est le contrôle de conservation du dépôt : déposer `N` électrons doit ren
 function total_charge(ρ::Array{T,3}, mesh::SplineMesh{3,T}) where {T}
     c = spline_coefficients(ρ, mesh)
     px, py, pz = map(ax -> moments(ax, Val(0)), mesh.axes)
-    q = zero(T)
-    @inbounds for k in eachindex(pz), j in eachindex(py), i in eachindex(px)
-        q += c[i, j, k] * px[i] * py[j] * pz[k]
-    end
-    q
+    sum(c[i, j, k] * px[i] * py[j] * pz[k]
+        for i in eachindex(px), j in eachindex(py), k in eachindex(pz))
 end

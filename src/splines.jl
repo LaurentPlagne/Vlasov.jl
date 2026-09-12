@@ -156,17 +156,11 @@ intervalle, encadrés par les deux extrémités du domaine.
 Il y en a `2·length(knots)`, autant que de fonctions de base — c'est ce qui
 rend carrées les matrices de collocation.
 """
-function collocation_points(knots::AbstractVector{T}) where {T}
-    n = length(knots) - 1
-    colloc = Vector{T}(undef, 2(n + 1))
-    colloc[1] = knots[1]
-    colloc[end] = knots[end]
-    for j in 1:n
-        a, h = knots[j], knots[j+1] - knots[j]
-        colloc[2j], colloc[2j+1] = a + h * GAUSS2_NODES[1], a + h * GAUSS2_NODES[2]
-    end
-    colloc
-end
+collocation_points(knots::AbstractVector) =
+    [knots[1];
+     [knots[j] + (knots[j+1] - knots[j]) * u
+      for j in 1:(length(knots)-1) for u in GAUSS2_NODES];
+     knots[end]]
 
 """
     uniform_axis(x0, xn, nintervals)
@@ -197,17 +191,15 @@ obtenue ici en diffère d'autant, et les nœuds étirés avec elle. C'est un éc
 function stretch_ratio(h1::T, L::T, n::Integer) where {T<:AbstractFloat}
     f(a) = L * (1 - a) / (1 - a^n) - h1
     lo, hi = nextfloat(one(T)), T(10)
-    flo, fhi = f(lo), f(hi)
-    signbit(flo) == signbit(fhi) && throw(ArgumentError(
+    flo = f(lo)
+    signbit(flo) == signbit(f(hi)) && throw(ArgumentError(
         "pas de raison géométrique dans ]1, 10] pour h1=$h1, L=$L, n=$n"))
+    # Dichotomie jusqu'à épuisement des flottants : l'encadrement est réduit
+    # tant qu'il reste un flottant strictement entre les deux bornes.
     while nextfloat(lo) < hi
         mid = (lo + hi) / 2
         (mid == lo || mid == hi) && break
-        if signbit(f(mid)) == signbit(flo)
-            lo, flo = mid, f(mid)
-        else
-            hi = mid
-        end
+        signbit(f(mid)) == signbit(flo) ? (lo = mid) : (hi = mid)
     end
     (lo + hi) / 2
 end
@@ -232,28 +224,17 @@ par l'oracle**.
 function stretched_axis(xinner::T, xouter::T, n_inner::Integer,
                         n_outer::Integer) where {T<:AbstractFloat}
     h1 = xinner / (n_inner - 1)
-    m = n_inner + n_outer
-
-    # Demi-grille, de 0 vers l'extérieur.
-    half = Vector{T}(undef, m)
-    for i in 1:n_inner
-        half[i] = (i - 1) * h1
-    end
     L = xouter - xinner
     a = stretch_ratio(h1, L, n_outer)
     step = L * (1 - a) / (1 - a^n_outer)
-    for i in 1:n_outer
-        half[n_inner+i] = half[n_inner+i-1] + step * a^(i - 1)
-    end
 
-    # Reflet : knots[m] = 0, croissant de -xouter à +xouter.
-    knots = Vector{T}(undef, 2m - 1)
-    for j in 1:m
-        knots[j] = -half[m-j+1]
-    end
-    for j in (m+1):(2m-1)
-        knots[j] = -knots[2m-j]
-    end
+    # Demi-grille de 0 vers l'extérieur : la zone à pas constant, puis les pas
+    # géométriques cumulés.
+    half = [range(0, xinner; length = n_inner);
+            xinner .+ cumsum(step .* a .^ (0:n_outer-1))]
+
+    # Reflet autour de zéro, le nœud central n'étant pas repris deux fois.
+    knots = [-reverse(half[2:end]); half]
     SplineAxis(knots, collocation_points(knots))
 end
 
@@ -276,12 +257,12 @@ const GAUSS3_WEIGHTS = (5 / 9, 8 / 9, 5 / 9)
 """Intègre `xᵏ φ_b(x)` sur `[a, c]` — exact car l'intégrande est de degré ≤ 5."""
 @inline function _gauss3(ax::SplineAxis{T}, b::BasisIndex, a, c, ::Val{k}) where {T,k}
     mid, half = (a + c) / 2, (c - a) / 2
-    s = zero(T)
-    for (ξ, w) in zip(GAUSS3_NODES, GAUSS3_WEIGHTS)
+    # `map` sur deux tuples est déplié à la compilation : pas d'itérateur, pas
+    # d'accumulateur boxé.
+    half * sum(map(GAUSS3_NODES, GAUSS3_WEIGHTS) do ξ, w
         x = mid + half * ξ
-        s += w * x^k * value(ax, b, x)
-    end
-    half * s
+        w * x^k * value(ax, b, x)
+    end)
 end
 
 """

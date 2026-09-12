@@ -65,15 +65,12 @@ function TensorSolver(ops::DiagonalizedOperator{T}...) where {T}
     N = length(ops)
     dims = ntuple(d -> size(ops[d]), N)
 
-    invλsum = Array{T,N}(undef, dims)
-    for I in CartesianIndices(invλsum)
-        s = sum(ops[d].λ[I[d]] for d in 1:N)
-        iszero(s) && throw(ArgumentError(
-            "somme de valeurs propres nulle en $(Tuple(I)) : opérateur singulier"))
-        invλsum[I] = inv(s)
-    end
+    λsum = [sum(ops[d].λ[I[d]] for d in 1:N) for I in CartesianIndices(dims)]
+    singulier = findfirst(iszero, λsum)
+    singulier === nothing || throw(ArgumentError(
+        "somme de valeurs propres nulle en $(Tuple(singulier)) : opérateur singulier"))
 
-    TensorSolver{N,T}(ops, invλsum,
+    TensorSolver{N,T}(ops, inv.(λsum),
                       Array{T,N}(undef, dims), Array{T,N}(undef, dims))
 end
 

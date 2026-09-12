@@ -38,14 +38,9 @@ function CollocationMatrices(ax::SplineAxis{T}) where {T}
     # Un intervalle `j` relie les nœuds j et j+1 ; il porte les points de
     # collocation 2j et 2j+1, et les 4 fonctions de base d'indices linéaires
     # 2j-1 … 2j+2. Tous ces couples (ligne, colonne) tiennent dans la bande.
-    for j in 1:(nknots(ax)-1)
-        for lin in (2j-1):(2j+2)
-            b = BasisIndex(lin)
-            for k in (2j):(2j+1)
-                φ, φ′, φ″ = evaluate(ax, b, ax.colloc[k], Val(2))
-                S[k, lin], S′[k, lin], S″[k, lin] = φ, φ′, φ″
-            end
-        end
+    for j in 1:(nknots(ax)-1), lin in (2j-1):(2j+2), k in (2j):(2j+1)
+        S[k, lin], S′[k, lin], S″[k, lin] =
+            evaluate(ax, BasisIndex(lin), ax.colloc[k], Val(2))
     end
 
     # Conditions au bord : première et dernière ligne.
