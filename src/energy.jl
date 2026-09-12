@@ -25,18 +25,21 @@ function interaction_energy(cloud::ParticleCloud{T},
     lo = ntuple(d -> fine[d].knots[3], 3)
     hi = ntuple(d -> fine[d].knots[end-2], 3)
 
-    total = zero(T)
-    @inbounds for p in cloud.positions
-        φ = if all(d -> lo[d] < p[d] < hi[d], 1:3)
-            smoothed_potential(fine, csol_fine, sm, p)
-        else
-            v = spline_potential(coarse, csol_coarse, p)
-            # Hors des deux grilles : le potentiel de la charge enfermée.
-            v === nothing ? enclosed / sqrt(p[1]^2 + p[2]^2 + p[3]^2) : v
+    tmapreduce(length(cloud.positions)) do slice
+        total = zero(T)
+        @inbounds for i in slice
+            p = cloud.positions[i]
+            φ = if all(d -> lo[d] < p[d] < hi[d], 1:3)
+                smoothed_potential(fine, csol_fine, sm, p)
+            else
+                v = spline_potential(coarse, csol_coarse, p)
+                # Hors des deux grilles : le potentiel de la charge enfermée.
+                v === nothing ? enclosed / sqrt(p[1]^2 + p[2]^2 + p[3]^2) : v
+            end
+            total += w * φ
         end
-        total += w * φ
+        total
     end
-    total
 end
 
 """

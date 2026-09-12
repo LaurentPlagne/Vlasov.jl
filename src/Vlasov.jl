@@ -3,6 +3,7 @@ module Vlasov
 using LinearAlgebra
 using BandedMatrices
 
+include("threading.jl")
 include("random.jl")
 include("splines.jl")
 include("collocation.jl")

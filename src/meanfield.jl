@@ -98,9 +98,13 @@ function effective_potential!(csol::Array{T,3}, ρ::Array{T,3},
                               mesh::SplineMesh{3,T}, jel::Jellium{T}) where {T}
     gx, gy, gz = map(ax -> ax.colloc, mesh.axes)
     extra = similar(ρ)
-    @inbounds for k in eachindex(gz), j in eachindex(gy), i in eachindex(gx)
-        r = sqrt(gx[i]^2 + gy[j]^2 + gz[k]^2)
-        extra[i, j, k] = xc_potential(ρ[i, j, k]) + potential(jel, r)
+    # Chaque point s'évalue seul ; on découpe sur le dernier indice, qui
+    # sépare des tranches contiguës en mémoire.
+    tforeach(length(gz)) do slice
+        @inbounds for k in slice, j in eachindex(gy), i in eachindex(gx)
+            r = sqrt(gx[i]^2 + gy[j]^2 + gz[k]^2)
+            extra[i, j, k] = xc_potential(ρ[i, j, k]) + potential(jel, r)
+        end
     end
     csol .+= spline_coefficients(extra, mesh)
 end

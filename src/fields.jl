@@ -399,23 +399,27 @@ function forces!(cloud::ParticleCloud{T},
     lo = ntuple(d -> fine[d].knots[3], 3)
     hi = ntuple(d -> fine[d].knots[end-2], 3)
 
-    outside = 0
-    @inbounds for i in eachindex(cloud.positions)
-        p = cloud.positions[i]
-        if all(d -> lo[d] < p[d] < hi[d], 1:3)
-            cloud.forces[i] = w .* smoothed_field(fine, csol_fine, sm, p)
-        else
-            outside += 1
-            E = spline_field(coarse, csol_coarse, p)
-            cloud.forces[i] = if E === nothing
-                # Hors des deux grilles : tout ce qui reste est la charge
-                # enfermée, vue de loin.
-                r3 = (p[1]^2 + p[2]^2 + p[3]^2)^T(1.5)
-                (-w2 * escaped / r3) .* p
+    # Chaque particule n'écrit que sa propre force : la boucle se découpe sans
+    # précaution. Seul le compteur demande une réduction.
+    tmapreduce(length(cloud.positions)) do slice
+        n = 0
+        @inbounds for i in slice
+            p = cloud.positions[i]
+            if all(d -> lo[d] < p[d] < hi[d], 1:3)
+                cloud.forces[i] = w .* smoothed_field(fine, csol_fine, sm, p)
             else
-                w .* E
+                n += 1
+                E = spline_field(coarse, csol_coarse, p)
+                cloud.forces[i] = if E === nothing
+                    # Hors des deux grilles : tout ce qui reste est la charge
+                    # enfermée, vue de loin.
+                    r3 = (p[1]^2 + p[2]^2 + p[3]^2)^T(1.5)
+                    (-w2 * escaped / r3) .* p
+                else
+                    w .* E
+                end
             end
         end
+        n
     end
-    outside
 end

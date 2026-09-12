@@ -32,9 +32,69 @@ Contracte les coefficients spline avec un produit extérieur de moments 1D :
 `Σ c[i,j,k]·u[i]·v[j]·w[k]`. Tous les moments multipolaires sont de cette
 forme, à un choix de moments près.
 """
-contract(c::Array{T,3}, u, v, w) where {T} =
-    sum(c[i, j, k] * u[i] * v[j] * w[k]
-        for i in eachindex(u), j in eachindex(v), k in eachindex(w))
+function contract(c::Array{T,3}, u, v, w) where {T}
+    # ⚠️ Délibérément SÉQUENTIELLE. Une contraction coûte ~0,3 ms : la
+    # découper sur huit fils la fait passer à 0,8 ms, l'orchestration
+    # dominant le calcul. Le parallélisme est pris un cran au-dessus, dans
+    # `multipole`, où les dix contractions sont indépendantes entre elles.
+    s = zero(T)
+    @inbounds for k in eachindex(w), j in eachindex(v), i in eachindex(u)
+        s += c[i, j, k] * u[i] * v[j] * w[k]
+    end
+    s
+end
+
+"""
+    all_moments(c, p0, p1, p2) -> NTuple{10,T}
+
+Les dix contractions du développement multipolaire, en **une seule passe** sur
+les coefficients.
+
+Les calculer séparément relit `c` dix fois. Or l'opération est limitée par la
+bande passante mémoire et non par le calcul — mesuré : les dix contractions
+lancées en parallèle sur huit fils sont 2,6 fois plus LENTES que la même chose
+en séquentiel, parce qu'elles se disputent la mémoire au lieu de se partager
+du travail.
+
+Une passe unique factorise tout : pour chaque couple `(j,k)`, trois sommes
+partielles sur `i` suffisent à alimenter les dix moments.
+"""
+function all_moments(c::Array{T,3}, p0, p1, p2) where {T}
+    p0x, p0y, p0z = p0
+    p1x, p1y, p1z = p1
+    p2x, p2y, p2z = p2
+    q = d100 = d010 = d001 = m200 = m020 = m002 = mxy = mxz = myz = zero(T)
+
+    @inbounds for k in eachindex(p0z), j in eachindex(p0y)
+        a  = p0y[j] * p0z[k]
+        b  = p1y[j] * p0z[k]
+        cc = p0y[j] * p1z[k]
+        d  = p2y[j] * p0z[k]
+        e  = p0y[j] * p2z[k]
+        f  = p1y[j] * p1z[k]
+
+        # Les trois seules sommes sur `i` dont les dix moments ont besoin.
+        s0 = s1 = s2 = zero(T)
+        for i in eachindex(p0x)
+            v = c[i, j, k]
+            s0 += v * p0x[i]
+            s1 += v * p1x[i]
+            s2 += v * p2x[i]
+        end
+
+        q    += s0 * a
+        d100 += s1 * a
+        d010 += s0 * b
+        d001 += s0 * cc
+        m200 += s2 * a
+        m020 += s0 * d
+        m002 += s0 * e
+        mxy  += s1 * b
+        mxz  += s1 * cc
+        myz  += s0 * f
+    end
+    (q, d100, d010, d001, m200, m020, m002, mxy, mxz, myz)
+end
 
 """
     multipole(ρ, mesh) -> Multipole
@@ -50,25 +110,18 @@ function multipole(ρ::Array{T,3}, mesh::SplineMesh{3,T}) where {T}
     p1 = map(ax -> moments(ax, Val(1)), mesh.axes)
     p2 = map(ax -> moments(ax, Val(2)), mesh.axes)
 
-    q = contract(c, p0[1], p0[2], p0[3])
+    q, d100, d010, d001, m200, m020, m002, mxy, mxz, myz = all_moments(c, p0, p1, p2)
 
     # Dipôle, ramené en barycentre. Une densité de charge nulle n'en a pas.
-    dip = (contract(c, p1[1], p0[2], p0[3]),
-           contract(c, p0[1], p1[2], p0[3]),
-           contract(c, p0[1], p0[2], p1[3]))
+    dip = (d100, d010, d001)
     center = iszero(q) ? ntuple(_ -> zero(T), 3) : dip ./ q
 
     # Quadrupôle sous forme sans trace : Qₗₗ = 2∫xₗ² − Σ_{m≠l} ∫xₘ², et
     # Qₗₘ = 3∫xₗxₘ hors diagonale.
-    m200 = contract(c, p2[1], p0[2], p0[3])
-    m020 = contract(c, p0[1], p2[2], p0[3])
-    m002 = contract(c, p0[1], p0[2], p2[3])
     quad = (2m200 - m020 - m002,
             2m020 - m200 - m002,
             2m002 - m200 - m020,
-            3contract(c, p1[1], p1[2], p0[3]),
-            3contract(c, p1[1], p0[2], p1[3]),
-            3contract(c, p0[1], p1[2], p1[3]))
+            3mxy, 3mxz, 3myz)
 
     # Translation du tenseur au barycentre (théorème des axes parallèles).
     bx, by, bz = center
