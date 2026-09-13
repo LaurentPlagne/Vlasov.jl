@@ -1,8 +1,8 @@
 """
-Backend Metal : évaluation du champ lissé sur GPU Apple.
+Metal backend: smoothed-field evaluation and charge deposition on Apple GPUs.
 
-Chargée automatiquement dès que `Metal` l'est. Voir `src/gpu.jl` pour le
-contrat, et `docs/gpu.md` pour ce que la mesure en dit.
+Loaded automatically as soon as `Metal` is. See `src/gpu.jl` for the contract,
+and `docs/gpu.md` for what the measurements say about it.
 """
 module VlasovMetalExt
 
@@ -16,52 +16,51 @@ import Vlasov: ForceAccelerator, forces!, deposit_smoothed!, projectile_forces!,
                total_charge, uniform_sphere_potential
 
 """
-Tables et tampons résidents sur le GPU.
+Tables and buffers resident on the GPU.
 
-`csol` est réécrit à chaque pas — le potentiel change —, les tables ne le sont
-jamais. La grille fine étant **uniforme**, l'indice du nœud le plus proche se
-calcule au lieu de se chercher : le noyau n'a ni recherche dichotomique ni
-branche, ce qui est exactement ce qu'un GPU demande.
+`csol` is rewritten at every step — the potential changes — while the tables
+never are. The fine grid being **uniform**, the index of the nearest knot is
+computed rather than searched for: the kernel has neither a bisection nor a
+branch, which is exactly what a GPU asks for.
 """
 struct MetalForceAccelerator <: ForceAccelerator
     csol::MtlArray{Float32,3}
     overlap::MtlArray{Float32,2}
     gradient::MtlArray{Float32,2}
-    "Table du dépôt : la gaussienne aux huit points de collocation voisins."
+    "Deposition table: the Gaussian at the eight neighbouring collocation points."
     nodes::MtlArray{Float32,2}
     force::MtlArray{Float32,2}
-    "Tampons hôtes réutilisés : convertir `csol` ou empaqueter les positions
-     à chaque pas allouerait plusieurs mégaoctets par pas, et un ramasse-miettes
-     à l'arrivée."
+    "Reused host buffers: converting `csol` or packing the positions at every
+     step would allocate several megabytes per step, and a garbage collection
+     on arrival."
     hostcsol::Array{Float32,3}
     hostforce::Matrix{Float32}
-    """Positions sous la forme `(k, δ)` — voir [`_pack_kd!`](@ref). C'est cette
-    représentation, et non la position absolue, qui permet au GPU de choisir la
-    bonne colonne de table : `δ` est majoré par un demi-pas, donc codé en
-    `Float32` avec trente mille fois la finesse d'une colonne."""
+    """Positions in `(k, δ)` form — see [`_pack_kd!`](@ref). It is this
+    representation, and not the absolute position, that lets the GPU pick the
+    right table column: `δ` is bounded by half a step, hence encoded in
+    `Float32` thirty thousand times finer than a column."""
     hostknode::Matrix{Int32}
     hostdelta::Matrix{Float32}
     knode::MtlArray{Int32,2}
     delta::MtlArray{Float32,2}
-    "Tri par maille : permutation, mailles occupées, bornes."
+    "Cell sort: permutation, occupied cells, bounds."
     sorter::CellSort{Float64}
     hostcols::Matrix{Int32}
     cols::MtlArray{Int32,2}
-    """⚠️ Redimensionnés en cours de route : le nombre de mailles occupées
-    change à mesure que l'agrégat évolue. D'où les `Ref`, et `_ensure!`."""
+    """⚠️ Resized along the way: the number of occupied cells changes as the
+    cluster evolves. Hence the `Ref`s, and `_ensure!`."""
     cells::Base.RefValue{MtlVector{Int32,Metal.SharedStorage}}
     bounds::Base.RefValue{MtlVector{Int32,Metal.SharedStorage}}
     rho::MtlArray{Float32,3}
     hostrho::Array{Float32,3}
     hostreduction::Vector{Float32}
-    """Réduction du projectile : les trois composantes de la force qu'il subit,
-    puis l'énergie d'interaction avec les pseudo-électrons. Fusionnée dans le
-    noyau des forces, elle ne coûte que quelques opérations sur des données déjà
-    chargées — un second passage sur 800 000 particules en coûterait dix fois
-    plus."""
+    """Projectile reduction: the three components of the force it feels, then
+    its interaction energy with the pseudo-electrons. Fused into the force
+    kernel, it costs only a few operations on data already loaded — a second
+    sweep over 800 000 particles would cost ten times more."""
     reduction::MtlArray{Float32,1}
-    x0::Float32                   # premier nœud de la grille fine
-    h::Float32                    # pas (grille uniforme)
+    x0::Float32                   # first knot of the fine grid
+    h::Float32                    # step (uniform grid)
     nknots::Int32
     spacing::Float32
     nbdt::Int32
@@ -69,12 +68,12 @@ struct MetalForceAccelerator <: ForceAccelerator
     npart::Int
 end
 
-"""Vérifie qu'un axe est bien uniforme — le noyau en dépend."""
+"""Checks that an axis really is uniform — the kernel depends on it."""
 function _uniform_step(ax::SplineAxis)
     k = ax.knots
     h = (k[end] - k[1]) / (length(k) - 1)
     maximum(abs, diff(k) .- h) <= 1e-9 * abs(h) ||
-        throw(ArgumentError("le backend Metal suppose une grille fine uniforme"))
+        throw(ArgumentError("the Metal backend assumes a uniform fine grid"))
     h
 end
 
@@ -84,13 +83,13 @@ function Vlasov.ForceAccelerator(::Type{MtlArray}, fine::NTuple{3,SplineAxis{T}}
     h = _uniform_step(fine[1])
     for d in 2:3
         isapprox(_uniform_step(fine[d]), h; rtol = 1e-12) ||
-            throw(ArgumentError("le backend Metal suppose les trois axes identiques"))
+            throw(ArgumentError("the Metal backend assumes the three axes are identical"))
     end
-    # ⚠️ Les tampons **échangés à chaque pas** sont en mémoire partagée. Par
-    # défaut `MtlArray` alloue en `PrivateStorage`, visible du seul GPU, et
-    # `copyto!` fait alors une vraie copie : mesuré, 1,30 ms pour 9,2 Mo contre
-    # **0,21 ms** en partagé. Sur une puce à mémoire unifiée, payer une copie
-    # n'a pas de sens. Les tables constantes, elles, restent en privé.
+    # ⚠️ The buffers **exchanged at every step** live in shared memory. By
+    # default `MtlArray` allocates in `PrivateStorage`, visible to the GPU
+    # alone, and `copyto!` then makes a real copy: measured, 1.30 ms for 9.2 MB
+    # against **0.21 ms** when shared. On a unified-memory chip, paying for a
+    # copy makes no sense. The constant tables, for their part, stay private.
     shared(T, dims...) = fill!(MtlArray{T,length(dims),Metal.SharedStorage}(undef, dims...),
                                zero(T))
     MetalForceAccelerator(
@@ -110,24 +109,24 @@ function Vlasov.ForceAccelerator(::Type{MtlArray}, fine::NTuple{3,SplineAxis{T}}
         Float32(sm.spacing), Int32(sm.nbdt), Int32(size(sm.overlap, 2)), npart)
 end
 
-"""Empaquette les positions sous la forme `(k, δ)` : indice du nœud le plus
-proche, et **écart à ce nœud**.
+"""Packs the positions in `(k, δ)` form: index of the nearest knot, and the
+**offset from that knot**.
 
-⚠️ C'est le point qui décide de la justesse du portage. Une position vaut
-jusqu'à 78 a₀, où l'ULP de `Float32` est 7,6e-06 — soit 0,22 % de la largeur
-d'une colonne de table (0,00355 a₀). Former `x − knot` sur le GPU fait donc
-basculer une particule sur cinq cents sur la colonne voisine, ce qui n'est pas
-un arrondi qui se moyenne mais un **échantillon de gaussienne faux**.
+⚠️ This is the point that decides the port's accuracy. A position reaches 78 a₀,
+where the `Float32` ULP is 7.6e-06 — that is 0.22 % of the width of a table
+column (0.00355 a₀). Forming `x − knot` on the GPU therefore flips one particle
+in five hundred onto the neighbouring column, which is not a rounding error that
+averages out but a **wrong Gaussian sample**.
 
-`δ` est majoré par un demi-pas, 1,8 a₀ : codé en `Float32`, sa résolution est
-1,2e-07, trente mille fois plus fine qu'une colonne. La soustraction se fait
-ici, en `Float64`, et une seule fois — les deux noyaux s'en servent.
+`δ` is bounded by half a step, 1.8 a₀: encoded in `Float32`, its resolution is
+1.2e-07, thirty thousand times finer than a column. The subtraction happens
+here, in `Float64`, and once only — both kernels use the result.
 
-La position absolue se reconstruit au besoin par `x₀ + (k−1)h + δ`, ce qui ne
-perd rien de plus que ne perdait l'ancien empaquetage.
+The absolute position is reconstructed where needed as `x₀ + (k−1)h + δ`, which
+loses nothing more than the old packing did.
 
-Séparée dans sa propre fonction pour que la boucle soit typée : écrite en place
-dans `forces!`, elle capturerait des variables de type inconnu à la compilation.
+Kept in its own function so that the loop is typed: written inline in `forces!`,
+it would capture variables whose type is unknown at compile time.
 """
 function _pack_kd!(knode::Matrix{Int32}, delta::Matrix{Float32},
                    src::Vector{NTuple{3,T}}, x0::T, h::T, nk::Int) where {T}
@@ -145,15 +144,15 @@ function _pack_kd!(knode::Matrix{Int32}, delta::Matrix{Float32},
 end
 
 """
-Noyau : une particule par fil, contraction 10×10×10 contre `csol`.
+Kernel: one particle per thread, a 10×10×10 contraction against `csol`.
 
-Environ 3000 opérations pour 4 Ko lus : le noyau est **borné par la mémoire**,
-pas par le calcul. Deux particules d'une même maille lisent le même pavé, d'où
-l'intérêt (ici non exploité) de trier les particules — le tri de la thèse,
-pour la même raison qu'en 1997.
+About 3000 operations for 4 KB read: the kernel is **memory-bound**, not
+compute-bound. Two particles of the same cell read the same tile, whence the
+value (not yet exploited here) of sorting the particles — the thesis's sort, for
+the same reason as in 1997.
 
-Les particules dont le pochoir déborde de la grille écrivent un `NaN` : elles
-sont reprises par le CPU. Signaler vaut mieux que tronquer en silence.
+Particles whose stencil overflows the grid write a `NaN`: they are handed back
+to the CPU. Signalling beats truncating in silence.
 """
 function _field_kernel!(force, csol, ovl, grad, knode, delta, x0, h,
                         spacing, nbdt, w, nc, npart,
@@ -162,16 +161,16 @@ function _field_kernel!(force, csol, ovl, grad, knode, delta, x0, h,
     tid = thread_index_in_threadgroup()
     nthr = Int32(256)
 
-    # ⚠️ Tampon de réduction du groupe. Tous les fils doivent atteindre chaque
-    # barrière : pas de `return` anticipé dans ce noyau, seulement des drapeaux.
+    # ⚠️ Threadgroup reduction buffer. Every thread must reach every barrier:
+    # no early `return` in this kernel, only flags.
     sh = MtlThreadGroupArray(Float32, 4 * 256)
     @inbounds for c in Int32(0):Int32(3)
         sh[c * nthr + tid] = 0.0f0
     end
 
     @inbounds if i <= npart
-        # `(k, δ)` viennent de l'hôte, calculés en `Float64` : le noyau ne forme
-        # jamais `x − knot`, ce qui serait sa plus grosse perte de précision.
+        # `(k, δ)` come from the host, computed in `Float64`: the kernel never
+        # forms `x − knot`, which would be its largest loss of precision.
         kx = knode[1, i]; ky = knode[2, i]; kz = knode[3, i]
         dx0 = delta[1, i]; dy0 = delta[2, i]; dz0 = delta[3, i]
         bx = Int32(2) * kx - Int32(5)
@@ -184,8 +183,8 @@ function _field_kernel!(force, csol, ovl, grad, knode, delta, x0, h,
 
         fxp = NaN32; fyp = NaN32; fzp = NaN32
         if ok
-            # La colonne ne dépend que de `δ`, donc elle est **exacte** ici :
-            # plus aucune grande soustraction.
+            # The column depends only on `δ`, so it is **exact** here: no large
+            # subtraction left anywhere.
             half = spacing * 0.5f0
             cx = min(max(floor(Int32, (dx0 + half) / spacing * nbdt + 0.5f0) +
                          Int32(1), Int32(1)), nc)
@@ -215,21 +214,21 @@ function _field_kernel!(force, csol, ovl, grad, knode, delta, x0, h,
             fxp = -w * fx; fyp = -w * fy; fzp = -w * fz
         end
 
-        # --- projectile ↔ pseudo-électron, fusionné -------------------------
-        # Calculée pour **toutes** les particules, y compris celles que le CPU
-        # reprendra : la réduction doit les compter. `coef = −poids·charge`.
+        # --- projectile ↔ pseudo-electron, fused -----------------------------
+        # Computed for **every** particle, including those the CPU will take
+        # back: the reduction must count them. `coef = −weight·charge`.
         if coef != 0.0f0
-            # Position absolue reconstruite : `x₀ + (k−1)h + δ`. Elle porte la
-            # même précision que l'ancien empaquetage direct, et ne sert qu'ici
-            # — les colonnes, elles, n'en dépendent plus.
+            # Absolute position reconstructed as `x₀ + (k−1)h + δ`. It carries
+            # the same precision as the old direct packing, and is used only
+            # here — the columns no longer depend on it.
             px = x0 + Float32(kx - Int32(1)) * h + dx0
             py = x0 + Float32(ky - Int32(1)) * h + dy0
             pz = x0 + Float32(kz - Int32(1)) * h + dz0
             dx = px0 - px; dy = py0 - py; dz = pz0 - pz
             d2 = dx * dx + dy * dy + dz * dz
             u2 = d2 / (σ * σ)
-            # Près de zéro, les deux termes de la force gaussienne s'annulent à
-            # l'ordre dominant : la série évite la soustraction.
+            # Near zero the two terms of the Gaussian force cancel at leading
+            # order: the series avoids the subtraction.
             kf = if u2 <= 0.25f0
                     q = 1.0f0 / 685440.0f0
                     q = -1.0f0 / 49920.0f0 + u2 * q
@@ -247,7 +246,7 @@ function _field_kernel!(force, csol, ovl, grad, knode, delta, x0, h,
             m = coef * kf
             fx2 = m * dx; fy2 = m * dy; fz2 = m * dz
             if ok
-                fxp -= fx2; fyp -= fy2; fzp -= fz2       # réaction
+                fxp -= fx2; fyp -= fy2; fzp -= fz2       # reaction
             end
             r = sqrt(d2)
             sh[tid]            = fx2
@@ -260,7 +259,7 @@ function _field_kernel!(force, csol, ovl, grad, knode, delta, x0, h,
         force[1, i] = fxp; force[2, i] = fyp; force[3, i] = fzp
     end
 
-    # Réduction en arbre, puis une seule atomique par groupe.
+    # Tree reduction, then a single atomic per group.
     threadgroup_barrier(Metal.MemoryFlagThreadGroup)
     stride = nthr ÷ Int32(2)
     while stride > Int32(0)
@@ -281,19 +280,18 @@ function _field_kernel!(force, csol, ovl, grad, knode, delta, x0, h,
 end
 
 """
-Noyau de dépôt, version **triée**.
+Deposition kernel, **sorted** version.
 
-Un groupe de 512 fils par maille occupée, et chaque fil possède **un** des 512
-points du pochoir 8³. Il parcourt toutes les particules de la maille en
-accumulant dans un registre, et ne fait qu'**une seule** addition atomique à la
-fin.
+One group of 512 threads per occupied cell, and each thread owns **one** of the
+512 points of the 8³ stencil. It sweeps every particle of the cell accumulating
+into a register, and performs **one single** atomic addition at the end.
 
-C'est le renversement de boucle qui paie : la voie naïve fait 512 atomiques par
-particule, celle-ci en fait une par point de pochoir et par maille — cent fois
-moins, puisque chaque maille occupée contient une centaine de particules.
+It is the loop inversion that pays: the naive route does 512 atomics per
+particle, this one does one per stencil point per cell — a hundred times fewer,
+since each occupied cell holds about a hundred particles.
 
-Les colonnes passent par la mémoire du groupe, chargées par tranches de 64 :
-sans cela les 512 fils reliraient chacun les données de chaque particule.
+The columns go through threadgroup memory, loaded in batches of 64: without that
+each of the 512 threads would reread every particle's data.
 """
 function _deposit_kernel!(ρ, nodes, cols, cellids, bounds, nk, ncell)
     g = threadgroup_position_in_grid_1d()
@@ -345,8 +343,8 @@ function _deposit_kernel!(ρ, nodes, cols, cellids, bounds, nk, ncell)
     nothing
 end
 
-"""Agrandit les tampons de mailles si le tri en a trouvé davantage. On ne
-rétrécit jamais : la taille se stabilise en quelques pas."""
+"""Grows the cell buffers if the sort found more of them. We never shrink: the
+size settles within a few steps."""
 function _ensure!(acc::MetalForceAccelerator, ncell::Integer)
     grow(m) = fill!(MtlArray{Int32,1,Metal.SharedStorage}(undef, m), Int32(0))
     length(acc.cells[]) < ncell && (acc.cells[] = grow(ncell))
@@ -354,12 +352,12 @@ function _ensure!(acc::MetalForceAccelerator, ncell::Integer)
     nothing
 end
 
-"""Colonnes de table dans l'ordre trié, et particules hors domaine.
+"""Table columns in sorted order, and particles outside the domain.
 
-Calculées en `Float64` sur l'hôte, délibérément : voir le champ `hostcols`.
-Les particules hors du domaine utile reçoivent la colonne 1 et sont exclues du
-dépôt par un poids nul — plus simple qu'une liste à part, et sans branche dans
-le noyau."""
+Computed in `Float64` on the host, deliberately: see the `hostcols` field.
+Particles outside the useful domain receive column 1 and are excluded from the
+deposition by a zero weight — simpler than a separate list, and with no branch
+in the kernel."""
 function _fill_columns!(acc::MetalForceAccelerator, mesh, sm, positions)
     knots = mesh.axes[1].knots
     half = sm.spacing / 2
@@ -370,8 +368,8 @@ function _fill_columns!(acc::MetalForceAccelerator, mesh, sm, positions)
     delta = acc.hostdelta
     nout = Threads.Atomic{Int}(0)
 
-    # `δ` a déjà été calculé en `Float64` par `_pack_kd!` : il ne reste qu'à le
-    # relire dans l'ordre trié. La colonne n'en dépend que de lui.
+    # `δ` has already been computed in `Float64` by `_pack_kd!`: all that is
+    # left is to reread it in sorted order. The column depends on it alone.
     Threads.@threads for s in eachindex(perm)
         @inbounds begin
             i = perm[s]
@@ -394,8 +392,8 @@ end
 function Vlasov.deposit_smoothed!(ρ::Array{T,3}, acc::MetalForceAccelerator,
                                   mesh::SplineMesh{3,T}, sm::GaussianSmoothing{T},
                                   positions; charge::T) where {T}
-    # Le dépôt ouvre le pas : c'est lui qui empaquette `(k, δ)`, dont `forces!`
-    # se resservira.
+    # The deposition opens the step: it is the one that packs `(k, δ)`, which
+    # `forces!` will then reuse.
     _pack_kd!(acc.hostknode, acc.hostdelta, positions,
               acc.sorter.x0, acc.sorter.h, acc.sorter.nknots)
     copyto!(acc.knode, acc.hostknode)
@@ -416,13 +414,13 @@ function Vlasov.deposit_smoothed!(ρ::Array{T,3}, acc::MetalForceAccelerator,
 
     copyto!(acc.hostrho, acc.rho)
 
-    # ⚠️ **Une seule passe** sur les 729 000 points. La forme littérale —
-    # convertir, multiplier par la charge, puis renormaliser — en fait trois, et
-    # les trois coûtaient plus que le noyau GPU qu'elles suivent.
+    # ⚠️ **A single pass** over the 729 000 points. The literal form — convert,
+    # multiply by the charge, then renormalise — makes three of them, and the
+    # three cost more than the GPU kernel they follow.
     #
-    # Les deux mises à l'échelle se composent : `total_charge` est linéaire, donc
-    # multiplier par `charge` puis renormaliser revient à une seule
-    # multiplication, dont le facteur se calcule sur la densité brute.
+    # The two rescalings compose: `total_charge` is linear, so multiplying by
+    # `charge` then renormalising amounts to a single multiplication, whose
+    # factor is computed on the raw density.
     ρ .= acc.hostrho
     q = total_charge(ρ, mesh)
     ρ .*= (length(positions) - nout) * charge / q
@@ -435,14 +433,14 @@ function Vlasov.forces!(cloud::ParticleCloud{T}, acc::MetalForceAccelerator,
                         sm::GaussianSmoothing{T}; escaped::Integer = 0,
                         projectile = nothing, packed::Bool = false) where {T}
     npart = length(cloud.positions)
-    npart == acc.npart || throw(DimensionMismatch("accélérateur dimensionné pour $(acc.npart)"))
+    npart == acc.npart || throw(DimensionMismatch("accelerator sized for $(acc.npart)"))
     w = Float32(cloud.weight)
 
     acc.hostcsol .= csol_fine
     copyto!(acc.csol, acc.hostcsol)
-    # `packed = true` dit que le dépôt vient de le faire pour les mêmes
-    # positions — c'est le cas dans `update_forces!`, où il ouvre le pas.
-    # Refaire l'empaquetage coûterait deux millisecondes pour rien.
+    # `packed = true` says the deposition has just done it for the same
+    # positions — which is the case in `update_forces!`, where it opens the
+    # step. Redoing the packing would cost two milliseconds for nothing.
     if !packed
         _pack_kd!(acc.hostknode, acc.hostdelta, cloud.positions,
                   acc.sorter.x0, acc.sorter.h, acc.sorter.nknots)
@@ -450,8 +448,8 @@ function Vlasov.forces!(cloud::ParticleCloud{T}, acc::MetalForceAccelerator,
         copyto!(acc.delta, acc.hostdelta)
     end
 
-    # Le projectile est fusionné dans ce noyau : ses arguments valent zéro
-    # quand il n'y en a pas, et la branche disparaît.
+    # The projectile is fused into this kernel: its arguments are zero when
+    # there is none, and the branch disappears.
     pp = projectile === nothing ? (0f0, 0f0, 0f0) : Float32.(projectile.position)
     coef = projectile === nothing ? 0f0 : Float32(-cloud.weight * projectile.charge)
     σ = projectile === nothing ? 1f0 : Float32(Vlasov.scale(projectile.softening))
@@ -466,10 +464,10 @@ function Vlasov.forces!(cloud::ParticleCloud{T}, acc::MetalForceAccelerator,
     copyto!(acc.hostforce, acc.force)
     copyto!(acc.hostreduction, acc.reduction)
 
-    # Reprise CPU de ce que le GPU a refusé — les bords, et eux seuls. ⚠️ Il
-    # faut y **réinjecter la réaction du projectile** : le noyau l'a comptée
-    # dans la réduction mais n'a pas pu l'ajouter à une force qu'il n'a pas
-    # calculée.
+    # CPU fallback for what the GPU refused — the boundaries, and those only.
+    # ⚠️ The **projectile reaction must be reinjected** there: the kernel
+    # counted it in the reduction but could not add it to a force it did not
+    # compute.
     n = 0
     ww = T(cloud.weight); w2 = ww * ww
     @inbounds for i in 1:npart
@@ -501,12 +499,12 @@ end
 """
     projectile_forces!(cloud, acc, proj, jel) -> (force, e_electrons, e_jellium)
 
-Ne calcule **rien** sur les particules : la somme a déjà été faite par le noyau
-des forces, qui la fusionne au lieu d'ouvrir un second passage sur 800 000
-particules. Ne reste ici que la part jellium, qui est un scalaire.
+Computes **nothing** over the particles: the sum has already been done by the
+force kernel, which fuses it rather than opening a second sweep over 800 000
+particles. All that is left here is the jellium part, which is a scalar.
 
-⚠️ Suppose donc que [`forces!`](@ref) vient d'être appelée sur le **même**
-accélérateur, avec ce projectile.
+⚠️ Assumes therefore that [`forces!`](@ref) has just been called on the **same**
+accelerator, with this projectile.
 """
 function Vlasov.projectile_forces!(cloud::ParticleCloud{T}, acc::MetalForceAccelerator,
                                    proj::Projectile{T}, jel::Jellium{T}) where {T}
