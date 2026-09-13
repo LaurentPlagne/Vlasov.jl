@@ -174,8 +174,13 @@ function update_forces!(sim::Simulation{T}; advance::Bool = true,
     ρf, ρc = sim.ρ
     w = sim.cloud.weight
 
-    deposit_smoothed!(ρf, fine, sim.smoothing, sim.cloud.positions;
-                      charge = w, buffers = sim.scatter[1])
+    if accelerator === nothing
+        deposit_smoothed!(ρf, fine, sim.smoothing, sim.cloud.positions;
+                          charge = w, buffers = sim.scatter[1])
+    else
+        deposit_smoothed!(ρf, accelerator, fine, sim.smoothing, sim.cloud.positions;
+                          charge = w)
+    end
     deposit!(ρc, coarse, sim.cloud.positions; charge = w, buffers = sim.scatter[2])
     poisson!(sim.φ, sim.ρ, sim.meshes)
 
@@ -217,7 +222,7 @@ L'ordre des points 3 et 6 n'est pas un détail de commodité : les deux termes
 du bilan se réfèrent à des potentiels différents, et les intervertir rendrait
 le total silencieusement faux.
 
-`accelerator` détourne l'évaluation du champ lissé vers un
+`accelerator` détourne le **dépôt lissé** et l'**évaluation du champ** vers un
 [`ForceAccelerator`](@ref) — le GPU. ⚠️ Ce chemin travaille en `Float32` : la
 trajectoire n'est plus celle du chemin CPU, seulement la même à `4e-5` près.
 

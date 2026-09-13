@@ -220,8 +220,10 @@ et de loin.
 
 ## Le dépôt — les deux voies, mesurées
 
-Prototype dans [`scripts/depot_gpu.jl`](../scripts/depot_gpu.jl), pas encore
-branché dans `update_forces!`.
+**Intégré** : `CellSort` dans [`src/sorting.jl`](../src/sorting.jl), le noyau
+dans l'extension, et `update_forces!` y va dès qu'on lui passe un accélérateur.
+Le prototype qui a servi à comparer les deux voies reste dans
+[`scripts/depot_gpu.jl`](../scripts/depot_gpu.jl).
 
 Le dépôt est un **scatter** : chaque particule écrit dans 8³ = 512 points, et
 les particules voisines écrivent aux mêmes endroits.
@@ -363,15 +365,34 @@ Et une optimisation qui compte : le placement utilisait un `Dict` interrogé par
 particule — **10,6 ms à lui seul**. Un `Vector` indexé par maille le ramène à
 **0,5 ms**, vingt fois moins.
 
+## Bout en bout, une fois le dépôt intégré
+
+Accelerate partout, minimum sur deux tours alternés.
+
+| configuration | ms/pas |
+|---|---|
+| CPU, bilan à chaque pas | 234,2 |
+| GPU, bilan à chaque pas | 176,4 |
+| CPU, bilan 1 pas sur 10 | 179,3 |
+| **GPU (forces + dépôt), bilan 1/10** | **120,5** |
+
+Le dépôt intégré fait passer le meilleur de 140,2 à **120,5 ms**. Depuis le
+point de départ — OpenBLAS, tout sur CPU, bilan à chaque pas, 307,9 ms — cela
+fait **×2,6**.
+
+⚠️ **Piège rencontré à l'intégration.** La première version de `_fill_columns!`
+appelait `nearest_knot`, qui fait une **dichotomie**. Sur 800 000 particules et
+trois directions, cela coûtait plus que tout le reste du dépôt réuni : le gain
+tombait à ×1,26. La grille fine étant uniforme, l'indice se calcule. C'est la
+deuxième fois que ce piège coûte dans ce chantier.
+
 ## Ce qu'il reste, par ordre de rendement
 
 1. ~~Apple Accelerate~~ — **fait**, ×1,31 pour une ligne.
 2. ~~Rendre le bilan d'énergie périodique~~ — **fait**, ×1,32 à lui seul.
    `interaction_energy` sort du même coup de la liste GPU : appelée un pas sur
    dix, elle ne vaut plus la peine d'être portée.
-3. ~~Le dépôt~~ — **prototypé et mesuré** (ci-dessus) : la voie triée donne ×4
-   sur le noyau. Reste à la brancher dans `update_forces!`, ce qui suppose de
-   porter le tri dans le paquet — il profite aussi au CPU. Nos
+3. ~~Le dépôt~~ — **fait**, ×1,94 sur la routine (38,5 → 19,8 ms). Nos
    tampons par fil (5,6 Mo chacun) ne passent pas à l'échelle GPU. Deux voies :
    des atomiques, ou **trier les particules par cellule** pour en faire une
    réduction segmentée. Le tri de la thèse revient ici, pour exactement la même

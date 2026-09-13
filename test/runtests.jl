@@ -587,6 +587,41 @@ end
         @test cloud.forces[3][2] == 0
     end
 
+    @testset "Tri par maille" begin
+        ax = uniform_axis(-10.0, 10.0, 8)          # h = 2,5 ; 9 nœuds
+        n = 500
+        rng = Ran2(-1)
+        pos = [ntuple(_ -> 20 * (Float64(next!(rng)) - 0.5), 3) for _ in 1:n]
+
+        cs = CellSort(ax, n, 4)
+        cellsort!(cs, pos)
+
+        # La permutation est bien une permutation.
+        @test sort(cs.perm) == 1:n
+        # Les particules sont groupées par maille, et les mailles croissantes.
+        cells = [cs.keys[i] for i in cs.perm]
+        @test issorted(cells)
+        # Les bornes décrivent exactement ces groupes.
+        @test length(cs.bounds) == noccupied(cs) + 1
+        @test cs.bounds[1] == 0 && cs.bounds[end] == n
+        @test all(g -> all(==(cs.occupied[g]), cells[cs.bounds[g]+1:cs.bounds[g+1]]),
+                  1:noccupied(cs))
+        # Aucune maille vide dans la liste, et elles sont croissantes.
+        @test issorted(cs.occupied) && allunique(cs.occupied)
+        @test all(g -> cs.bounds[g+1] > cs.bounds[g], 1:noccupied(cs))
+
+        # ⚠️ Deux appels de suite doivent donner le même résultat : les
+        # compteurs sont remis à zéro. L'oubli produisait des décalages faux,
+        # donc une écriture hors bornes.
+        perm1 = copy(cs.perm); occ1 = copy(cs.occupied); b1 = copy(cs.bounds)
+        cellsort!(cs, pos)
+        @test cs.perm == perm1 && cs.occupied == occ1 && cs.bounds == b1
+
+        # Une grille non uniforme doit être refusée : l'indice de maille est
+        # calculé, pas cherché.
+        @test_throws ArgumentError CellSort(testaxis(8), n, 2)
+    end
+
     @testset "Dépôt lissé" begin
         using Random
         rng = Random.MersenneTwister(99)

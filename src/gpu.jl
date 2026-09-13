@@ -42,3 +42,21 @@ sont **repassées au CPU** : elles sont rares, et les traiter sur GPU
 demanderait des branches là où l'intérêt est justement de n'en avoir aucune.
 """
 function forces! end
+
+"""
+    deposit_smoothed!(ρ, acc, mesh, sm, positions; charge) -> nout
+
+Même contrat que la méthode CPU de [`deposit_smoothed!`](@ref), le *scatter* en
+moins : il part sur l'accélérateur.
+
+Le dépôt est la partie difficile à porter — chaque particule écrit dans 8³
+points, et les voisines écrivent aux mêmes. La voie naïve, une addition
+atomique par point et par particule, est **trois fois plus lente que le CPU** :
+410 millions d'atomiques en conflit, que le GPU sérialise. La voie retenue
+range d'abord les particules par maille ([`CellSort`](@ref)) et confie une
+maille à un groupe de fils, chacun propriétaire d'un point du pochoir — une
+atomique par point et par **maille**, soit cent fois moins.
+
+Voir `docs/gpu.md` pour les mesures.
+"""
+function deposit_smoothed! end
