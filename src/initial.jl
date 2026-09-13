@@ -1,40 +1,42 @@
 """
-Tirage initial des pseudo-particules dans l'espace des phases (le
-`initialise` du Fortran).
+Initial sampling of the pseudo-particles in phase space (the Fortran's
+`initialise`).
 
-Modèle de Thomas-Fermi : la position suit la densité radiale de l'agrégat, et
-l'impulsion est tirée uniformément dans la sphère de Fermi **locale**, dont le
-rayon `p_F = (3π²ρ)^⅓` dépend de la densité au point tiré. C'est ce qui donne
-à la distribution son caractère fermionique de départ — celui dont la thèse
-montre qu'il survit à la dynamique.
+Thomas-Fermi model: the position follows the cluster's radial density, and the
+momentum is drawn uniformly inside the **local** Fermi sphere, whose radius
+`p_F = (3π²ρ)^⅓` depends on the density at the sampled point. That is what gives
+the distribution its initial fermionic character — the one the thesis shows
+survives the dynamics.
 """
 
-"Coefficient du moment de Fermi : `p_F = (3π²ρ)^⅓`."
+"Coefficient of the Fermi momentum: `p_F = (3π²ρ)^⅓`."
 const FERMI_COEFFICIENT = cbrt(3 * π^2)
 
 """
     PhaseSpaceProfile{T}
 
-Ce qu'il faut savoir de l'agrégat au repos pour en tirer un état initial.
+What one needs to know about the cluster at rest in order to draw an initial
+state from it.
 
-Deux réalisations, qui sont deux âges du code : [`RadialProfile`](@ref) inverse
-une densité radiale tabulée (version portée, 1997), [`PotentialProfile`](@ref)
-rejette dans l'espace des phases contre un potentiel auto-cohérent (version
-cible, 1998). Elles décrivent le même état de Thomas-Fermi par deux chemins ;
-[`sample_thomas_fermi`](@ref) les distingue, tout le reste les ignore.
+Two realisations, which are two ages of the code: [`RadialProfile`](@ref)
+inverts a tabulated radial density (the ported version, 1997),
+[`PotentialProfile`](@ref) rejects in phase space against a self-consistent
+potential (the target version, 1998). They describe the same Thomas-Fermi state
+by two routes; [`sample_thomas_fermi`](@ref) tells them apart, everything else
+ignores the difference.
 """
 abstract type PhaseSpaceProfile{T<:AbstractFloat} end
 
 """
     RadialProfile(quantiles, density, rmax)
 
-Le profil radial de l'agrégat, sous les deux formes dont le tirage a besoin :
+The cluster's radial profile, in the two forms the sampling needs:
 
-  * `quantiles` — le rayon en fonction de la fraction cumulée de charge, soit
-    la **réciproque** de la fonction de répartition. Tirer un rayon se réduit
-    alors à y interpoler un nombre uniforme (`hm1.dat`).
-  * `density` — la densité `ρ(r)` échantillonnée de 0 à `rmax`, qui fixe le
-    moment de Fermi local (`rhoinit.dat`).
+  * `quantiles` — the radius as a function of the cumulative charge fraction,
+    that is the **inverse** of the distribution function. Drawing a radius then
+    reduces to interpolating a uniform number in it (`hm1.dat`).
+  * `density` — the density `ρ(r)` sampled from 0 to `rmax`, which sets the
+    local Fermi momentum (`rhoinit.dat`).
 """
 struct RadialProfile{T<:AbstractFloat} <: PhaseSpaceProfile{T}
     quantiles::Vector{T}
@@ -45,8 +47,8 @@ end
 """
     read_radial_profile(dir) -> RadialProfile
 
-Lit `hm1.dat` et `rhoinit.dat` dans `dir`. Chaque fichier commence par son
-nombre de points ; `rhoinit.dat` donne ensuite son rayon maximal.
+Reads `hm1.dat` and `rhoinit.dat` from `dir`. Each file begins with its number
+of points; `rhoinit.dat` then gives its maximum radius.
 """
 function read_radial_profile(dir::AbstractString)
     readvals(io, n) = [parse(Float64, strip(readline(io))) for _ in 1:n]
@@ -61,11 +63,11 @@ function read_radial_profile(dir::AbstractString)
     RadialProfile(quantiles, density, rmax)
 end
 
-"""Interpolation linéaire de `v` sur une grille régulière, à la position réduite `u ∈ [0,1)`."""
+"""Linear interpolation of `v` on a regular grid, at the reduced position `u ∈ [0,1)`."""
 @inline function _interp_regular(v::Vector{T}, u, n) where {T}
     j = min(floor(Int, u * (n - 1)) + 1, n - 1)
-    # Forme littérale du Fortran : les deux bornes puis le rapport, et non
-    # `u*(n-1) - (j-1)`, mathématiquement identique mais pas au bit près.
+    # The Fortran's literal form: the two bounds then the ratio, and not
+    # `u*(n-1) - (j-1)`, mathematically identical but not bit for bit.
     a = (j - 1) / (n - 1)
     b = j / (n - 1)
     v[j] + (v[j+1] - v[j]) * (u - a) / (b - a)
@@ -74,16 +76,16 @@ end
 """
     sample_thomas_fermi(profile, npart, weight; rng) -> (positions, momenta)
 
-Tire `npart` pseudo-particules de poids `weight` électrons chacune.
+Draws `npart` pseudo-particles, each of weight `weight` electrons.
 
-Six nombres uniformes par particule, dans l'ordre du Fortran : rayon, deux
-angles de position, module de l'impulsion, deux angles d'impulsion. Cet ordre
-compte — il faut consommer la suite de `rng` exactement comme l'oracle pour
-pouvoir comparer particule par particule.
+Six uniform numbers per particle, in the Fortran's order: radius, two position
+angles, momentum magnitude, two momentum angles. That order matters — the `rng`
+stream must be consumed exactly as the oracle consumes it for a
+particle-by-particle comparison to be possible.
 
-Le module de l'impulsion est tiré en `x^⅓·p_F`, ce qui peuple uniformément le
-volume de la sphère de Fermi et non son rayon. Les impulsions rendues sont
-celles des **pseudo-particules**, donc multipliées par `weight`.
+The momentum magnitude is drawn as `x^⅓·p_F`, which populates the volume of the
+Fermi sphere uniformly rather than its radius. The momenta returned are those of
+the **pseudo-particles**, hence multiplied by `weight`.
 """
 function sample_thomas_fermi(profile::RadialProfile{T}, npart::Integer,
                              weight::T; rng::Ran2 = Ran2(-1)) where {T}
@@ -98,7 +100,7 @@ function sample_thomas_fermi(profile::RadialProfile{T}, npart::Integer,
         r = _interp_regular(profile.quantiles, x[1], nq)
         positions[i] = _on_sphere(r, x[2], x[3])
 
-        # Densité au rayon tiré, sur une grille régulière de 0 à rmax.
+        # Density at the sampled radius, on a regular grid from 0 to rmax.
         ρ = _interp_regular(profile.density, r / rmax, nρ)
         p = cbrt(x[4]) * FERMI_COEFFICIENT * cbrt(ρ)
         momenta[i] = _on_sphere(p * weight, x[5], x[6])
@@ -109,13 +111,13 @@ end
 """
     PotentialProfile(grid, potential, rmax, pmax, fermi)
 
-Le potentiel radial auto-cohérent de l'agrégat, tel que le lit `initialise4`
-(version 1998-01-05) dans `pot.dat` — voir [`read_potential_profile`](@ref).
+The cluster's self-consistent radial potential, as `initialise4` (version
+1998-01-05) reads it from `pot.dat` — see [`read_potential_profile`](@ref).
 
-Il remplace [`RadialProfile`](@ref) : au lieu d'inverser une densité tabulée,
-la version tardive tire dans l'espace des phases et rejette ce qui dépasse le
-niveau de Fermi. `rmax` et `pmax` bornent la boîte de tirage, `fermi` est le
-critère d'acceptation.
+It replaces [`RadialProfile`](@ref): instead of inverting a tabulated density,
+the later version samples in phase space and rejects whatever exceeds the Fermi
+level. `rmax` and `pmax` bound the sampling box, `fermi` is the acceptance
+criterion.
 """
 struct PotentialProfile{T<:AbstractFloat} <: PhaseSpaceProfile{T}
     grid::Vector{T}
@@ -128,12 +130,12 @@ end
 """
     read_potential_profile(path) -> PotentialProfile
 
-Lit un `pot.dat` : le nombre d'intervalles, puis `rmax pmax E_F`, puis
-`nbgrid+1` triplets dont on retient la première et la **troisième** colonne
-— c'est ce que fait `initialise4`, la deuxième étant ignorée.
+Reads a `pot.dat`: the number of intervals, then `rmax pmax E_F`, then
+`nbgrid+1` triples of which the first and the **third** column are kept — that
+is what `initialise4` does, the second being ignored.
 
-⚠️ Aucun `pot.dat` d'origine n'a survécu dans l'archive de la thèse ; celui de
-`ref/fortran98/` est reconstruit. Voir `ref/fortran98/README.md`.
+⚠️ No original `pot.dat` survived in the thesis archive; the one in
+`ref/fortran98/` is reconstructed. See `ref/fortran98/README.md`.
 """
 function read_potential_profile(path::AbstractString)
     open(path) do io
@@ -147,20 +149,21 @@ end
 """
     PotentialProfile(grid, density)
 
-Construit le profil de tirage à partir d'une **densité radiale** tabulée.
+Builds the sampling profile from a tabulated **radial density**.
 
-À l'équilibre de Thomas-Fermi, `p_F(r)² / 2 + V(r) = E_F` en tout point : poser
-`V(r) = E_F − p_F(r)²/2` avec `p_F = (3π²ρ)^⅓` rend le critère de rejet
-`p²/2 + V(r) < E_F` équivalent à `p < p_F(r)`, qui est la définition même de la
-sphère de Fermi locale. `E_F` disparaît de l'inégalité — on le prend nul.
+At Thomas-Fermi equilibrium, `p_F(r)² / 2 + V(r) = E_F` everywhere: setting
+`V(r) = E_F − p_F(r)²/2` with `p_F = (3π²ρ)^⅓` makes the rejection criterion
+`p²/2 + V(r) < E_F` equivalent to `p < p_F(r)`, which is the very definition of
+the local Fermi sphere. `E_F` drops out of the inequality — we take it to be
+zero.
 
-C'est ce qui permet de partir d'un `rhorad.dat` archivé, la seule chose qui
-subsiste pour certains agrégats de la thèse, là où `initialise4` attendait un
-`pot.dat` auto-cohérent qui n'a pas survécu.
+This is what makes it possible to start from an archived `rhorad.dat`, the only
+thing that survives for some of the thesis's clusters, where `initialise4`
+expected a self-consistent `pot.dat` that did not.
 """
 function PotentialProfile(grid::AbstractVector, density::AbstractVector)
     length(grid) == length(density) ||
-        throw(DimensionMismatch("grille et densité de longueurs différentes"))
+        throw(DimensionMismatch("grid and density have different lengths"))
     T = float(promote_type(eltype(grid), eltype(density)))
     pF = [T(FERMI_COEFFICIENT) * cbrt(max(T(ρ), zero(T))) for ρ in density]
     PotentialProfile{T}(collect(T, grid), -pF .^ 2 ./ 2,
@@ -170,8 +173,8 @@ end
 """
     read_radial_density(path; column = 2) -> (grid, density)
 
-Lit un `rhorad.dat` : des colonnes de réels sans en-tête, la première étant le
-rayon. Les densités négatives — du bruit de fin de queue — sont ramenées à zéro.
+Reads a `rhorad.dat`: columns of reals with no header, the first being the
+radius. Negative densities — tail-end noise — are clamped to zero.
 """
 function read_radial_density(path::AbstractString; column::Integer = 2)
     rows = [parse.(Float64, split(l)) for l in eachline(path) if !isempty(strip(l))]
@@ -181,23 +184,23 @@ end
 """
     sample_thomas_fermi(profile::PotentialProfile, npart, weight; rng)
 
-Tirage par **rejet dans l'espace des phases**, le `initialise4` de 1998.
+Sampling by **rejection in phase space**, the `initialise4` of 1998.
 
-On tire un point uniformément dans la boule de rayon `rmax` et une impulsion
-uniformément dans celle de rayon `pmax` (d'où les `∛u`, qui peuplent le volume
-et non le rayon), et on garde le couple si `p²/2 + V(r) < E_F`. L'ensemble
-accepté est exactement `{E < E_F}` : la distribution de Thomas-Fermi, sans
-passer par une densité intermédiaire.
+A point is drawn uniformly inside the ball of radius `rmax` and a momentum
+uniformly inside the one of radius `pmax` (hence the `∛u`, which populate the
+volume rather than the radius), and the pair is kept if `p²/2 + V(r) < E_F`. The
+accepted set is exactly `{E < E_F}`: the Thomas-Fermi distribution, without going
+through an intermediate density.
 
-Les **six** uniformes sont retirés à chaque rejet, y compris les angles qui ne
-servent pas au test. C'est ce que fait le Fortran, et c'est ce qui détermine
-la consommation du flux de `rng` — donc la comparabilité particule à particule
-avec l'oracle.
+All **six** uniforms are redrawn on every rejection, including the angles that
+play no part in the test. That is what the Fortran does, and it is what
+determines the consumption of the `rng` stream — hence particle-by-particle
+comparability with the oracle.
 """
 function sample_thomas_fermi(profile::PotentialProfile{T}, npart::Integer,
                              weight::T; rng::Ran2 = Ran2(-1)) where {T}
     (; grid, potential, rmax, pmax, fermi) = profile
-    n = length(grid) - 1              # nombre d'intervalles
+    n = length(grid) - 1              # number of intervals
     scale = n / rmax
     positions = Vector{NTuple{3,T}}(undef, npart)
     momenta = Vector{NTuple{3,T}}(undef, npart)
@@ -208,8 +211,8 @@ function sample_thomas_fermi(profile::PotentialProfile{T}, npart::Integer,
             x = ntuple(_ -> T(next!(rng)), 6)
             r = rmax * cbrt(x[1])
             p = pmax * cbrt(x[4])
-            # Indice de cellule à la façon du Fortran : `int(scale*r - 1e-10)`,
-            # décalé de 1 pour l'indexation Julia.
+            # Cell index the Fortran's way: `int(scale*r - 1e-10)`, shifted by
+            # one for Julia's indexing.
             j = trunc(Int, scale * r - 1e-10) + 1
             v = potential[j] + (potential[j+1] - potential[j]) *
                                (r - grid[j]) / (grid[j+1] - grid[j])
@@ -221,8 +224,8 @@ function sample_thomas_fermi(profile::PotentialProfile{T}, npart::Integer,
     positions, momenta
 end
 
-"""Point de norme `r` sur la sphère, à partir de deux uniformes — `2u−1` pour
-le cosinus polaire, ce qui répartit uniformément en surface."""
+"""Point of norm `r` on the sphere, from two uniforms — `2u−1` for the polar
+cosine, which spreads points uniformly over the surface."""
 @inline function _on_sphere(r, uφ, uμ)
     μ = 2 * uμ - 1
     s = sqrt(1 - μ^2)
@@ -233,12 +236,12 @@ end
 """
     initial_cloud(profile, npart, nbelec, dt; rng) -> ParticleCloud
 
-Nuage prêt pour le schéma de Verlet : positions tirées, et positions
-précédentes amorcées d'un demi-pas en arrière depuis les impulsions.
+Cloud ready for the Verlet scheme: positions drawn, and previous positions
+primed half a step backwards from the momenta.
 
-C'est l'enchaînement `makeinit` puis `moveback1` du Fortran. Le second pas
-d'amorçage ([`full_step_back`](@ref)) demande les forces, donc un potentiel :
-il n'a pas sa place ici.
+This is the Fortran's `makeinit` followed by `moveback1`. The second priming
+stage ([`full_step_back`](@ref)) needs the forces, hence a potential: it has no
+place here.
 """
 function initial_cloud(profile::PhaseSpaceProfile{T}, npart::Integer, nbelec::T,
                        dt::T; rng::Ran2 = Ran2(-1)) where {T}

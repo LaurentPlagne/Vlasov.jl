@@ -1,23 +1,24 @@
 """
-Dépôt des pseudo-particules sur la grille, et passage valeurs ↔ coefficients.
+Deposition of the pseudo-particles onto the grid, and the values ↔ coefficients
+conversion.
 
-Deux représentations d'un même champ coexistent dans cette méthode, et les
-confondre est *le* bug classique :
+Two representations of the same field coexist in this method, and confusing them
+is *the* classic bug:
 
-  * **valeurs aux points de collocation** — ce que produit le dépôt ;
-  * **coefficients spline** — ce sur quoi s'intègrent les moments.
+  * **values at the collocation points** — what deposition produces;
+  * **spline coefficients** — what the moments integrate against.
 
-On passe des unes aux autres par `S⁻¹` appliqué dans chaque direction.
+One goes from one to the other by applying `S⁻¹` in each direction.
 """
 
 """
     dual_lengths(ax) -> Vector
 
-Longueur de la cellule duale de chaque point de collocation : la part du
-domaine qu'il « possède ». Sert à normaliser un dépôt en densité.
+Length of the dual cell of each collocation point: the share of the domain it
+"owns". Used to normalise a deposition into a density.
 
-Les quatre points extrêmes sont traités à part — leur cellule est bornée par
-le bord du domaine, pas par un point de collocation voisin.
+The four outermost points are treated separately — their cell is bounded by the
+edge of the domain, not by a neighbouring collocation point.
 """
 function dual_lengths(ax::SplineAxis)
     gt, g = ax.colloc, ax.knots
@@ -32,11 +33,11 @@ function dual_lengths(ax::SplineAxis)
 end
 
 """
-    locate(ax, x) -> (cell, weight) ou `nothing`
+    locate(ax, x) -> (cell, weight) or `nothing`
 
-Repère `x` entre deux points de collocation consécutifs : renvoie l'indice du
-point de gauche et le poids qui lui revient (celui de droite reçoit
-`1 - weight`). Renvoie `nothing` hors du domaine.
+Locates `x` between two consecutive collocation points: returns the index of the
+left point and the weight that falls to it (the right one receives
+`1 - weight`). Returns `nothing` outside the domain.
 """
 @inline function locate(ax::SplineAxis{T}, x) where {T}
     gt = ax.colloc
@@ -48,18 +49,18 @@ end
 """
     scatter!(kernel, ρ, mesh, positions, buffers) -> nout
 
-Moteur commun aux deux dépôts. `kernel(dest, ax, ay, az, p)` dépose une
-particule et rend `false` si elle est hors domaine.
+Engine shared by both depositions. `kernel(dest, ax, ay, az, p)` deposits one
+particle and returns `false` if it lies outside the domain.
 
-Sans `buffers`, la boucle est séquentielle. Avec, chaque fil accumule dans son
-propre tableau puis l'on somme : c'est la seule façon de paralléliser une
-diffusion sans perdre de contributions ni payer d'atomiques.
+Without `buffers` the loop is sequential. With them, each thread accumulates
+into its own array and the arrays are then summed: the only way to parallelise a
+scatter without losing contributions or paying for atomics.
 """
 function scatter!(kernel, ρ::Array{T,3}, mesh::SplineMesh{3,T},
                   positions, buffers) where {T}
     mx, my, mz = mesh.axes
     size(ρ) == (nbasis(mx), nbasis(my), nbasis(mz)) ||
-        throw(DimensionMismatch("ρ doit couvrir toute la grille de collocation"))
+        throw(DimensionMismatch("ρ must cover the whole collocation grid"))
 
     if buffers === nothing
         fill!(ρ, zero(T))
@@ -88,21 +89,21 @@ end
 """
     ScatterBuffers(mesh)
 
-Un tableau de densité **par fil**, pour paralléliser le dépôt.
+One density array **per thread**, to parallelise the deposition.
 
-Le dépôt est une *diffusion* : plusieurs particules écrivent dans la même
-case, et découper naïvement la boucle ferait perdre des contributions. Chaque
-fil accumule donc dans son propre tableau, et l'on somme à la fin — la somme
-coûte `nfils × N³` additions, négligeable devant le dépôt lui-même.
+Deposition is a *scatter*: several particles write into the same slot, and
+naively splitting the loop would lose contributions. Each thread therefore
+accumulates into its own array, and they are summed at the end — the sum costs
+`nthreads × N³` additions, negligible next to the deposition itself.
 
-⚠️ **Le coût mémoire croît comme le cube de la grille.** À 58³ et huit fils,
-c'est 12 Mo ; à 128³ ce serait 134 Mo. Les tampons sont donc créés
-explicitement par l'appelant, jamais en douce.
+⚠️ **The memory cost grows as the cube of the grid.** At 58³ and eight threads
+that is 12 MB; at 128³ it would be 134 MB. The buffers are therefore created
+explicitly by the caller, never behind its back.
 
-Piste connue pour aller plus loin quand les particules se désordonnent : les
-**trier par maille** avant de déposer, pour que des particules voisines
-écrivent dans des cases voisines. C'est ce que faisait le code de la thèse, en
-parallèle (méthode PSRS).
+Known avenue for going further once the particles have lost their order: **sort
+them by cell** before depositing, so that neighbouring particles write into
+neighbouring slots. That is what the thesis code did, in parallel (the PSRS
+method). Now available as [`CellSort`](@ref).
 """
 struct ScatterBuffers{T,N}
     slots::Vector{Array{T,N}}
@@ -116,7 +117,7 @@ end
 """
     scatter_reduce!(ρ, buffers, nused) -> ρ
 
-Somme les `nused` premiers tampons dans `ρ`.
+Sums the first `nused` buffers into `ρ`.
 """
 function scatter_reduce!(ρ::Array{T,N}, b::ScatterBuffers{T,N}, nused::Integer) where {T,N}
     copyto!(ρ, b.slots[1])
@@ -129,19 +130,19 @@ end
 """
     deposit!(ρ, mesh, positions; charge) -> nout
 
-Dépose des pseudo-particules de poids `charge` sur les points de collocation
-du maillage, par interpolation trilinéaire (« cloud-in-cell »), et normalise
-par le volume dual de chaque nœud pour obtenir une densité.
+Deposits pseudo-particles of weight `charge` onto the mesh's collocation points
+by trilinear interpolation ("cloud-in-cell"), and normalises by the dual volume
+of each node to obtain a density.
 
-`ρ` a la taille **complète** de la grille de collocation (bords compris), pas
-celle du problème intérieur. Renvoie le nombre de particules tombées hors
-domaine, qui sont ignorées.
+`ρ` has the **full** size of the collocation grid (boundaries included), not
+that of the interior problem. Returns the number of particles that fell outside
+the domain, which are ignored.
 """
 function deposit!(ρ::Array{T,3}, mesh::SplineMesh{3,T},
                   positions; charge::T, buffers = nothing) where {T}
     mx, my, mz = mesh.axes
     size(ρ) == (nbasis(mx), nbasis(my), nbasis(mz)) ||
-        throw(DimensionMismatch("ρ doit couvrir toute la grille de collocation"))
+        throw(DimensionMismatch("ρ must cover the whole collocation grid"))
     tx, ty, tz = mesh.locators
     nout = scatter!(ρ, mesh, positions, buffers) do dest, mx, my, mz, p
         lx = locate(tx, mx, p[1])
@@ -163,15 +164,15 @@ function deposit!(ρ::Array{T,3}, mesh::SplineMesh{3,T},
         true
     end
 
-    # Normalisation en densité. Le volume dual est le produit extérieur des
-    # trois longueurs duales : le broadcast le parcourt sans jamais le
-    # matérialiser en 3D, là où le Fortran en gardait 58³ flottants (`volm1`).
+    # Normalisation into a density. The dual volume is the outer product of the
+    # three dual lengths: the broadcast walks it without ever materialising it
+    # in 3D, where the Fortran kept 58³ floats for it (`volm1`).
     #
-    # ⚠️ Ces trois noms ne doivent PAS coïncider avec ceux du `do`-block
-    # ci-dessus. Une variable assignée dans une fermeture ET dans la fonction
-    # englobante n'en fait qu'une seule, que Julia boxe : les huit fils
-    # écriraient alors dans la même case. Le symptôme était un dépôt
-    # non déterministe, juste à un fil et faux à huit.
+    # ⚠️ These three names must NOT coincide with those of the `do` block above.
+    # A variable assigned both inside a closure AND in the enclosing function is
+    # one single variable, which Julia boxes: all eight threads would then write
+    # into the same slot. The symptom was a non-deterministic deposition,
+    # correct on one thread and wrong on eight.
     wx, wy, wz = map(dual_lengths, (mx, my, mz))
     ρ .*= charge ./ (wx .* wy' .* reshape(wz, 1, 1, :))
     nout
@@ -180,33 +181,33 @@ end
 """
     spline_coefficients!(c, ρ, mesh)
 
-Passe des valeurs aux points de collocation aux coefficients spline, en
-appliquant `S⁻¹` dans chaque direction (le `tensrus2` du Fortran).
+Converts values at the collocation points into spline coefficients by applying
+`S⁻¹` in each direction (the Fortran's `tensrus2`).
 """
 function spline_coefficients!(c::Array{T,N}, ρ::Array{T,N},
                               mesh::SplineMesh{N,T}) where {T,N}
-    # Même noyau que le solveur tensoriel : `N` rotations, `N` produits
-    # matrice-matrice, aucune tranche. Le tampon vient du maillage plutôt que
-    # d'une allocation de 1,4 Mo à chaque appel.
+    # Same kernel as the tensor solver: `N` rotations, `N` matrix-matrix
+    # products, no slicing. The buffer comes from the mesh rather than from a
+    # 1.4 MB allocation on every call.
     apply_all_rotating!(c, map(cm -> cm.Sinv, mesh.collocation), ρ, mesh.scratch[3])
 end
 
-"""Version allouante de [`spline_coefficients!`](@ref)."""
+"""Allocating version of [`spline_coefficients!`](@ref)."""
 spline_coefficients(ρ::Array{T,N}, mesh::SplineMesh{N,T}) where {T,N} =
     spline_coefficients!(similar(ρ), ρ, mesh)
 
 """
     total_charge(ρ, mesh) -> T
 
-Charge totale `∫ρ dV`, obtenue en contractant les coefficients spline avec les
-moments d'ordre 0 de chaque direction.
+Total charge `∫ρ dV`, obtained by contracting the spline coefficients with the
+order-0 moments of each direction.
 
-C'est le contrôle de conservation du dépôt : déposer `N` électrons doit rendre
-`N`, à la précision de l'interpolation près.
+This is the deposition's conservation check: depositing `N` electrons must
+return `N`, up to the accuracy of the interpolation.
 """
 function total_charge(ρ::Array{T,3}, mesh::SplineMesh{3,T}) where {T}
-    # Comme pour `multipole` : les moments duaux portent `S⁻ᵀ`, la densité se
-    # contracte telle quelle et ses coefficients n'ont pas à être formés.
+    # As for `multipole`: the dual moments carry `S⁻ᵀ`, so the density
+    # contracts as it stands and its coefficients need never be formed.
     px, py, pz = map(m -> m[1], mesh.dual_moments)
     s = zero(T)
     @inbounds for k in eachindex(pz), j in eachindex(py), i in eachindex(px)
