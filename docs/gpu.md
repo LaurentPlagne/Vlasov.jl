@@ -193,14 +193,39 @@ copies des positions et des forces 2,4 ms.
 **Sur le pas complet, cela fait ×1,30** — 438,6 → 336,6 ms, mesuré en séquence.
 Amdahl : un poste à 29 % divisé par 4 ne rend pas plus.
 
+## Où on en est — le profil de la configuration optimale
+
+Accelerate + forces sur GPU + bilan d'énergie un pas sur dix. Pas = **133,3 ms**,
+contre 307,9 au départ.
+
+| étage | ms | % |
+|---|---|---|
+| **dépôt lissé (fine)** | **39,1** | **29,4 %** |
+| forces (GPU) | 28,4 | 21,3 % |
+| poisson! | 21,5 | 16,1 % |
+| forces du projectile | 14,3 | 10,7 % |
+| dépôt (grossière) | 13,2 | 9,9 % |
+| champ moyen | 11,2 | 8,4 % |
+| Verlet | 2,8 | 2,1 % |
+| coefficients spline | 2,5 | 1,9 % |
+| recopie φ ← csol | 0,3 | 0,2 % |
+
+⚠️ **Le classement dépend de la configuration**, et l'annoncer sans le dire
+induit en erreur. Sur le chemin **CPU** (Accelerate, sans GPU) les forces mènent
+encore largement — 66,1 ms contre 38,0 pour le dépôt. C'est le portage GPU qui
+les ramène à 28,4 et fait passer le dépôt devant.
+
+Les deux dépôts cumulent **52,4 ms, soit 39 % du pas** : c'est le premier poste,
+et de loin.
+
 ## Ce qu'il reste, par ordre de rendement
 
 1. ~~Apple Accelerate~~ — **fait**, ×1,31 pour une ligne.
 2. ~~Rendre le bilan d'énergie périodique~~ — **fait**, ×1,32 à lui seul.
    `interaction_energy` sort du même coup de la liste GPU : appelée un pas sur
    dix, elle ne vaut plus la peine d'être portée.
-3. **Le dépôt** — désormais le premier poste du pas accéléré. C'est un
-   *scatter*, et c'est le morceau difficile. Nos
+3. **Le dépôt** (39 % du pas optimal, les deux grilles réunies) — le premier
+   poste. C'est un *scatter*, et c'est le morceau difficile. Nos
    tampons par fil (5,6 Mo chacun) ne passent pas à l'échelle GPU. Deux voies :
    des atomiques, ou **trier les particules par cellule** pour en faire une
    réduction segmentée. Le tri de la thèse revient ici, pour exactement la même
