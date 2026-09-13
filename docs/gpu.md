@@ -62,23 +62,94 @@ laissent des positions **rigoureusement égales**, pas approximativement.
 Le défaut reste `energy_every = 1`, pour que rien ne change sans qu'on l'ait
 demandé.
 
-## Ce que les deux changements donnent ensemble
+## Apple Accelerate — le meilleur rapport du lot
 
-Mesuré d'affilée, sur la même machine et dans la même seconde — la seule façon
-de comparer quand la charge varie :
+Le solveur tensoriel n'a pas besoin d'un GPU : l'**AMX** d'Apple Silicon fait du
+`Float64`, ce que le GPU ne sait pas faire. `AppleAccelerate.jl` y donne accès en
+une ligne, et le gain dépasse de loin les GEMM.
+
+| étage | OpenBLAS (2 fils) | Accelerate |
+|---|---|---|
+| forces | 74,8 | 63,2 |
+| énergie (Hartree) | 44,0 | 34,9 |
+| énergie (totale) | 48,9 | 34,7 |
+| dépôt lissé | 43,9 | 36,3 |
+| poisson! | 38,8 | **22,2** |
+| champ moyen | 20,4 | 12,4 |
+| coefficients spline | 10,1 | **2,5** |
+| **total** | **315,4** | **238,5** |
+
+**Les boucles particulaires gagnent aussi**, alors qu'elles n'appellent aucun
+BLAS : forces −15 %, énergie −25 %, dépôt −17 %. Ce n'est donc pas la vitesse
+des GEMM qui compte le plus, c'est que le **pool de fils d'OpenBLAS cesse de
+disputer le processeur** aux boucles `Threads.@threads`. Le réglage du nombre de
+fils OpenBLAS le montre : plus de fils accélèrent `poisson!` mais ralentissent
+le pas.
+
+| OpenBLAS | poisson! | pas complet |
+|---|---|---|
+| 1 fil | 55,5 | 233,6 |
+| 2 fils | 39,2 | **226,0** |
+| 4 fils | 33,1 | 246,9 |
+| 8 fils | 30,9 | 257,0 |
+| *Accelerate* | *22,1* | *168,3* |
+
+### ⚠️ Comment l'activer, et comment ne pas le faire
+
+```julia
+using AppleAccelerate                       # suffit ; __init__ fait le nécessaire
+AppleAccelerate.load_accelerate()           # pour rebasculer dans une session
+```
+
+**Ne jamais appeler `BLAS.lbt_forward(libacc)` sans `suffix_hint`.** Accelerate
+expose deux LAPACK : l'ancien, en entiers 32 bits, et le nouveau
+(`\x1a$NEWLAPACK$ILP64`) qu'attend Julia. Le détournement nu lie l'ancien, et
+l'ABI ne correspond pas.
+
+Ce que cela donne, constaté ici : `inv` rend du charbon — `InexactError:
+Int64(1.0e-323)` dans `getri!` — donc les matrices de collocation sont fausses,
+donc **le nuage explose**, rayon médian 1475 a₀ au lieu de 32. L'erreur n'est
+pas silencieuse cette fois, mais elle aurait pu l'être : ce chemin corrompt
+`inv`, pas `mul!`.
+
+Vérifié après correction : 40 pas sous Accelerate et sous OpenBLAS donnent des
+positions à `7,9e-10` près et un projectile à `1,2e-13` — l'arrondi attendu
+entre deux BLAS, rien de plus.
+
+## Ce que les trois changements donnent ensemble
+
+Trois tours alternés **dans le même processus** — le basculement BLAS est
+réversible, ce qui permet un A/B propre plutôt que deux processus dont on
+compare les humeurs. 800 000 particules, minimum sur trois mesures.
 
 | configuration | ms/pas | gain |
 |---|---|---|
-| CPU, bilan à chaque pas | 402,0 | — |
-| CPU, bilan 1 pas sur 10 | 290,2 | ×1,39 |
-| GPU, bilan à chaque pas | 342,8 | ×1,17 |
-| **GPU, bilan 1 pas sur 10** | **208,5** | **×1,93** |
+| OpenBLAS, bilan chaque pas, CPU | 307,9 | — |
+| OpenBLAS + GPU | 262,4 | ×1,17 |
+| Accelerate seul | 234,8 | ×1,31 |
+| OpenBLAS + bilan 1/10 | 234,1 | ×1,32 |
+| Accelerate + GPU | 200,9 | ×1,53 |
+| OpenBLAS + GPU + bilan 1/10 | 188,3 | ×1,64 |
+| Accelerate + bilan 1/10 | 181,3 | ×1,70 |
+| **Accelerate + GPU + bilan 1/10** | **140,2** | **×2,20** |
 
-⚠️ **Chauffer avant de chronométrer.** Le premier appel GPU paie la compilation
-du noyau Metal : sans chauffe, la même mesure donnait 614 ms/pas, soit un GPU
-*plus lent* que le CPU.
+Les trois leviers se composent presque multiplicativement. Le meilleur à lui
+seul est **Accelerate**, qui ne coûte qu'une ligne.
 
-## La contrainte : pas de double précision
+### ⚠️ Deux pièges de mesure, payés tous les deux
+
+**Chauffer avant de chronométrer.** Le premier appel GPU paie la compilation du
+noyau Metal : sans chauffe, la même mesure donnait 614 ms/pas — un GPU *plus
+lent* que le CPU.
+
+**Vérifier l'état avant de mesurer.** Un banc qui réutilise la même `Simulation`
+la fait vieillir. Après la corruption LAPACK ci-dessus, 98 % des particules
+étaient hors de la grille fine : elles prenaient le chemin grossier, bien moins
+cher, et le GPU rendait des `NaN` que le CPU refaisait. Le classement s'en
+trouvait **inversé** — le CPU y battait le GPU. Contrôler `forces!`, qui rend le
+nombre de particules hors grille : 635 sur 800 000 est sain, 784 579 ne l'est pas.
+
+## La contrainte : pas de double précision## La contrainte : pas de double précision
 
 Les GPU Apple n'ont pas de `Float64` — Metal Shading Language n'a pas de type
 `double`, et `MtlArray(rand(Float64, 4))` refuse explicitement. Le portage est
@@ -124,18 +195,20 @@ Amdahl : un poste à 29 % divisé par 4 ne rend pas plus.
 
 ## Ce qu'il reste, par ordre de rendement
 
-1. ~~Rendre le bilan d'énergie périodique~~ — **fait**, ×1,39 à lui seul.
+1. ~~Apple Accelerate~~ — **fait**, ×1,31 pour une ligne.
+2. ~~Rendre le bilan d'énergie périodique~~ — **fait**, ×1,32 à lui seul.
    `interaction_energy` sort du même coup de la liste GPU : appelée un pas sur
    dix, elle ne vaut plus la peine d'être portée.
-2. **Le dépôt** — désormais le premier poste du pas accéléré. C'est un
+3. **Le dépôt** — désormais le premier poste du pas accéléré. C'est un
    *scatter*, et c'est le morceau difficile. Nos
    tampons par fil (5,6 Mo chacun) ne passent pas à l'échelle GPU. Deux voies :
    des atomiques, ou **trier les particules par cellule** pour en faire une
    réduction segmentée. Le tri de la thèse revient ici, pour exactement la même
    raison qu'en 1997 : la localité des données.
-3. **Les forces du projectile** (4 %) — une réduction sur toutes les
+4. **Les forces du projectile** (4 %) — une réduction sur toutes les
    particules, triviale à porter.
-4. **Les GEMM** (10 %) — en dernier, et sans illusion.
+5. **Les GEMM sur GPU** — sans objet : Accelerate les fait déjà en `Float64`,
+   et le GPU ne saurait pas.
 
 Une remarque de conception au passage : `ParticleCloud` range les positions en
 `Vector{NTuple{3,T}}`, qu'il faut réempaqueter en matrice `3×N` à chaque appel.
@@ -148,3 +221,6 @@ vectorisation du chemin CPU.
 GPU Apple. L'environnement `gpu/` la porte.
 
     julia --project=gpu -t auto scripts/bench_gpu.jl
+
+L'environnement `gpu/` porte aussi `AppleAccelerate`, qui n'a rien d'un backend
+GPU mais relève du même chantier : aller plus vite sans changer les résultats.

@@ -81,6 +81,13 @@ manifeste — constaté ici, où il gardait les 33 dépendances transitives de `
 alors qu'une dépendance faible ne doit pas les tirer. Seule exception, parce
 qu'elle n'a pas d'API : le bloc `[extensions]`.
 
+⚠️ **Sur Apple Silicon, charger `AppleAccelerate` — ×1,31 pour une ligne**, et
+pas seulement sur les GEMM : les boucles particulaires gagnent 15 à 25 % parce que
+le pool de fils d'OpenBLAS cesse de leur disputer le processeur. Mais **jamais
+`BLAS.lbt_forward(libacc)` nu** : sans `suffix_hint`, cela lie l'ancien LAPACK
+d'Accelerate, `inv` rend du charbon et le nuage explose. Voir
+[`docs/gpu.md`](docs/gpu.md).
+
 ⚠️ **Un profil dont les postes ne somment pas au total est faux.** Chronométrer
 chaque étage dans sa propre boucle lui laisse ses données chaudes ; la séquence
 réelle déborde le cache à chaque tour. Ce piège a coûté un profil entier ici —
