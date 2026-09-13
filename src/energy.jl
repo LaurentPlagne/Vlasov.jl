@@ -1,20 +1,20 @@
 """
-Bilan d'énergie du système (les `enerele2g` et `enertot2g` du Fortran).
+Energy budget of the system (the Fortran's `enerele2g` and `enertot2g`).
 
-C'est **l'observable de validation** du chapitre 4 : sur un agrégat isolé,
-l'énergie totale doit se conserver. Une dérive signale un pas de temps trop
-grand, une grille trop lâche, ou une erreur.
+This is the **validation observable** of chapter 4: on an isolated cluster the
+total energy must be conserved. A drift signals a time step that is too large, a
+grid that is too loose, or a mistake.
 """
 
 """
     interaction_energy(cloud, fine, csol_fine, coarse, csol_coarse, sm; escaped, enclosed) -> T
 
-Somme `Σᵢ w·Φ(rᵢ)` sur les pseudo-particules — l'énergie d'interaction d'une
-distribution avec le potentiel `Φ` donné en coefficients spline.
+Sums `Σᵢ w·Φ(rᵢ)` over the pseudo-particles — the interaction energy of a
+distribution with the potential `Φ` given as spline coefficients.
 
-Mêmes trois régimes que [`forces!`](@ref), et pour la même raison : une
-particule doit voir le même potentiel dans le bilan d'énergie que dans les
-forces, sans quoi les deux ne parlent pas du même système.
+Same three regimes as [`forces!`](@ref), and for the same reason: a particle
+must see the same potential in the energy budget as in the forces, otherwise the
+two are not describing the same system.
 """
 function interaction_energy(cloud::ParticleCloud{T},
                             fine::NTuple{3,SplineAxis{T}}, csol_fine::Array{T,3},
@@ -33,7 +33,7 @@ function interaction_energy(cloud::ParticleCloud{T},
                 smoothed_potential(fine, csol_fine, sm, p)
             else
                 v = spline_potential(coarse, csol_coarse, p)
-                # Hors des deux grilles : le potentiel de la charge enfermée.
+                # Outside both grids: the potential of the enclosed charge.
                 v === nothing ? enclosed / sqrt(p[1]^2 + p[2]^2 + p[3]^2) : v
             end
             total += w * φ
@@ -45,27 +45,26 @@ end
 """
     ion_self_energy(jel) -> T
 
-Énergie électrostatique propre du fond de jellium, `3N²/5r₀` — celle d'une
-boule uniformément chargée. Constante au cours d'une simulation, mais elle
-entre dans le total.
+Electrostatic self-energy of the jellium background, `3N²/5r₀` — that of a
+uniformly charged ball. Constant over a simulation, but it enters the total.
 """
 ion_self_energy(jel::Jellium) = 3 * jel.nions^2 / (5 * jel.radius)
 
 """
     EnergyBudget(total, kinetic, hartree, meanfield, ions)
 
-Décomposition de l'énergie du système à un instant donné.
+Decomposition of the system's energy at a given instant.
 
-  * `hartree` — `½∫ρΦ_H`, répulsion des électrons entre eux ;
-  * `meanfield` — `∫ρ(Φ_xc + Φ_jel)`, échange-corrélation et attraction du
-    fond ionique ;
-  * `ions` — l'énergie propre du jellium, constante ;
-  * `total` — leur somme avec l'énergie cinétique.
+  * `hartree` — `½∫ρΦ_H`, repulsion of the electrons among themselves;
+  * `meanfield` — `∫ρ(Φ_xc + Φ_jel)`, exchange-correlation and attraction by the
+    ionic background;
+  * `ions` — the jellium self-energy, constant;
+  * `total` — their sum together with the kinetic energy.
 
-Le facteur ½ du terme de Hartree et son absence sur `meanfield` ne sont pas
-une étourderie : le premier compte une interaction **entre** électrons, qui
-serait sinon comptée deux fois ; le second une interaction avec un fond
-extérieur.
+The factor ½ on the Hartree term and its absence on `meanfield` are not an
+oversight: the first counts an interaction **between** electrons, which would
+otherwise be counted twice; the second an interaction with an external
+background.
 """
 struct EnergyBudget{T<:AbstractFloat}
     total::T
@@ -73,43 +72,44 @@ struct EnergyBudget{T<:AbstractFloat}
     hartree::T
     meanfield::T
     ions::T
-    """Part de `kinetic` portée par les particules au-delà de `rcmax` — le
-    `ekinout` du Fortran. Nulle si l'appelant ne fournit pas de rayon : c'est
-    un diagnostic d'évaporation, il n'entre dans aucune somme."""
+    """Share of `kinetic` carried by particles beyond `rcmax` — the Fortran's
+    `ekinout`. Zero when the caller supplies no radius: it is an evaporation
+    diagnostic and enters no sum."""
     escaped::T
 end
 
 """
     hartree_energy(cloud, …) -> T
 
-`½Σᵢ w·Φ_H(rᵢ)`, à évaluer sur le potentiel de Hartree **seul**, avant que
-l'échange-corrélation et le jellium n'y soient ajoutés.
+`½Σᵢ w·Φ_H(rᵢ)`, to be evaluated on the Hartree potential **alone**, before
+exchange-correlation and jellium are added to it.
 """
 hartree_energy(args...; kwargs...) = interaction_energy(args...; kwargs...) / 2
 
 """
     energy_budget(cloud, jellium, kinetic, hartree, total_interaction) -> EnergyBudget
 
-Assemble le bilan à partir des trois quantités mesurées séparément :
-l'énergie cinétique rendue par [`step!`](@ref), l'énergie de Hartree évaluée
-sur le potentiel nu, et l'interaction évaluée sur le potentiel **total**.
+Assembles the budget from the three quantities measured separately: the kinetic
+energy returned by [`step!`](@ref), the Hartree energy evaluated on the bare
+potential, and the interaction evaluated on the **total** potential.
 
-Le terme de champ moyen s'obtient par différence — `∫ρΦ_tot − 2·(½∫ρΦ_H)` —
-et non par une intégrale séparée : c'est ainsi que procède le Fortran, et cela
-évite de ré-échantillonner le potentiel une troisième fois.
+The mean-field term is obtained by difference — `∫ρΦ_tot − 2·(½∫ρΦ_H)` — and not
+by a separate integral: that is how the Fortran proceeds, and it avoids
+resampling the potential a third time.
 
-⚠️ **Question ouverte sur l'ordre des appels du Fortran.** `pspech2` est
-l'exacte opposée de `pspech` (`ech = −ech`), et la boucle en temps appelle la
-seconde après `move`, juste avant `enertot2g` : le potentiel devrait donc être
-revenu à Hartree seul, et `∫ρΦ_tot − 2·enele` valoir ~0. Les nombres disent
-l'inverse — `potel = −30.5` pour `enele = 989.8`, soit un terme de champ moyen
-de `−2010`, ordre de grandeur attendu pour l'attraction du jellium
-(`−N²/r₀ ≈ −1650`) augmentée de l'échange-corrélation.
+📋 **On the Fortran's ordering, once an open question, now settled.** `pspech2`
+is *not* the exact opposite of `pspech`: it contains **two** loops and therefore
+adds to `csol` twice — the first undoes `pspech`, the second adds the
+exchange-correlation **energy** density. `csol` is thus not meant to return to
+Hartree alone; it is converted from *potential* to *energy*, which is what
+`enertot2g` requires. Verified: the port reproduces ‖csol‖ = 737.4 for Hartree
+alone and 7.8 after `pspech`, exactly.
 
-Le bilan reproduit donc l'oracle au chiffre près sur les mêmes entrées, mais
-la lecture de l'enchaînement reste à confirmer. À trancher en instrumentant la
-boucle, avant de s'appuyer sur ces énergies pour conclure quoi que ce soit de
-physique.
+The genuine defect lies elsewhere, in that second loop: `rr` is computed only
+inside the `ρ > 1e-7` branch, so the `else` branch evaluates the jellium
+potential at the radius of an *earlier* point — over 90 % of the fine grid.
+Fixed by the author in the 1998-01-05 version. See `docs/coquilles-fortran.md`,
+anomaly 8.
 """
 function energy_budget(jel::Jellium{T}, kinetic::T, hartree::T,
                        total_interaction::T, escaped::T = zero(T)) where {T}

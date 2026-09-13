@@ -1,44 +1,44 @@
 """
-Rangement des particules par maille.
+Ordering the particles by cell.
 
-Le dépôt de charge est un *scatter* : chaque particule écrit dans 8³ points de
-la grille, et les particules voisines écrivent aux mêmes endroits. Les ranger
-par maille sert deux choses à la fois — la **localité** sur CPU, et sur GPU la
-possibilité de traiter une maille par groupe de fils, ce qui divise les
-additions atomiques par le nombre de particules qu'elle contient.
+Charge deposition is a *scatter*: each particle writes into 8³ grid points, and
+neighbouring particles write into the same ones. Ordering them by cell serves
+two purposes at once — **locality** on the CPU, and on the GPU the possibility of
+handling one cell per thread group, which divides the atomic additions by the
+number of particles that cell contains.
 
-C'est le tri de la thèse, pour la raison de 1997. Elle employait PSRS, dont
-l'intérêt est de minimiser la **redistribution entre processeurs** : sur le
-T3E, trier est un problème de communication. En mémoire partagée il n'y a pas
-d'échange à équilibrer, et un tri par comptage suffit — `O(N)`, insensible à
-l'ordre de départ. Voir `docs/gpu.md`.
+This is the thesis's sort, for the reason of 1997. It used PSRS, whose point is
+to minimise the **redistribution between processors**: on the T3E, sorting is a
+communication problem. In shared memory there is no exchange to balance, and a
+counting sort suffices — `O(N)`, insensitive to the starting order. See
+`docs/gpu.md`.
 """
 
 """
     CellSort(axis, npart, nthreads = Threads.nthreads())
 
-Tampons d'un tri par comptage sur la maille de la grille fine.
+Buffers for a counting sort on the fine grid's cell index.
 
-Tout est alloué une fois : à 800 000 particules et 91 125 mailles, allouer à
-chaque pas coûterait plus que le tri lui-même.
+Everything is allocated once: at 800 000 particles and 91 125 cells, allocating
+at every step would cost more than the sort itself.
 
-⚠️ Suppose la grille **uniforme** — l'indice de maille se calcule alors au lieu
-de se chercher.
+⚠️ Assumes a **uniform** grid — the cell index is then computed rather than
+searched for.
 """
 struct CellSort{T<:AbstractFloat}
     x0::T
     h::T
     nknots::Int
-    "Maille de chaque particule, dans l'ordre courant."
+    "Cell of each particle, in the current order."
     keys::Vector{Int32}
-    "Compteurs par tranche, puis leur somme."
+    "Per-chunk counters, then their sum."
     partial::Vector{Vector{Int32}}
     total::Vector{Int32}
-    "Où chaque tranche écrit, pour chaque maille."
+    "Where each chunk writes, for each cell."
     offsets::Vector{Vector{Int32}}
-    "Permutation : `perm[s]` est l'indice courant de la `s`-ième particule triée."
+    "Permutation: `perm[s]` is the current index of the `s`-th sorted particle."
     perm::Vector{Int32}
-    "Mailles contenant au moins une particule, et bornes `[bounds[g]+1, bounds[g+1]]`."
+    "Cells holding at least one particle, and bounds `[bounds[g]+1, bounds[g+1]]`."
     occupied::Vector{Int32}
     bounds::Vector{Int32}
     chunks::Vector{UnitRange{Int}}
@@ -49,7 +49,7 @@ function CellSort(axis::SplineAxis{T}, npart::Integer,
     k = axis.knots
     h = (k[end] - k[1]) / (length(k) - 1)
     maximum(abs, diff(k) .- h) <= 1e-9 * abs(h) ||
-        throw(ArgumentError("`CellSort` suppose une grille uniforme"))
+        throw(ArgumentError("`CellSort` assumes a uniform grid"))
     nk = length(k)
     ncell = nk^3
     CellSort{T}(k[1], h, nk,
@@ -61,8 +61,8 @@ function CellSort(axis::SplineAxis{T}, npart::Integer,
                 Int32[], Int32[], chunks(npart, nthreads))
 end
 
-"""Indice linéaire de la maille d'un point — le nœud le plus proche, comme le
-dépôt. Calculé, la grille étant uniforme."""
+"""Linear cell index of a point — the nearest knot, as in deposition. Computed,
+the grid being uniform."""
 @inline function cell_of(p, x0, h, nk)
     i(u) = clamp(round(Int32, (u - x0) / h) + Int32(1), Int32(1), Int32(nk))
     i(p[1]) + Int32(nk) * (i(p[2]) - Int32(1) + Int32(nk) * (i(p[3]) - Int32(1)))
@@ -71,21 +71,21 @@ end
 """
     cellsort!(cs, positions) -> cs
 
-Range les particules par maille. Remplit `perm`, `occupied` et `bounds`.
+Orders the particles by cell. Fills `perm`, `occupied` and `bounds`.
 
-Quatre passes : maille de chaque particule, fusion des compteurs, décalages,
-placement. Les deux premières et la dernière sont parallèles ; la troisième ne
-visite que les mailles **occupées**, qui sont dix fois moins nombreuses que les
-autres — l'agrégat n'occupe qu'une fraction de la boîte.
+Four passes: cell of each particle, merge of the counters, offsets, placement.
+The first two and the last are parallel; the third visits only the **occupied**
+cells, ten times fewer than the rest — the cluster fills only a fraction of the
+box.
 """
 function cellsort!(cs::CellSort, positions)
     length(positions) == length(cs.perm) ||
-        throw(DimensionMismatch("tri dimensionné pour $(length(cs.perm)) particules"))
+        throw(DimensionMismatch("sort sized for $(length(cs.perm)) particles"))
     x0, h, nk = cs.x0, cs.h, cs.nknots
 
-    # 1. Maille de chaque particule, et comptage par tranche.
-    # ⚠️ Remettre les compteurs à zéro : sans cela deux appels successifs les
-    # cumulent, les décalages deviennent faux et le placement écrit hors bornes.
+    # 1. Cell of each particle, and per-chunk counting.
+    # ⚠️ Reset the counters: without this, two successive calls accumulate them,
+    # the offsets become wrong and the placement writes out of bounds.
     Threads.@threads for t in eachindex(cs.chunks)
         cnt = cs.partial[t]
         fill!(cnt, Int32(0))
@@ -96,14 +96,14 @@ function cellsort!(cs::CellSort, positions)
         end
     end
 
-    # 2. Fusion. ⚠️ Dans `total`, jamais dans `partial[1]` : les décalages ont
-    # besoin des compteurs de chaque tranche, y compris la première.
+    # 2. Merge. ⚠️ Into `total`, never into `partial[1]`: the offsets need each
+    # chunk's counters, the first one included.
     copyto!(cs.total, cs.partial[1])
     for t in 2:length(cs.partial)
         cs.total .+= cs.partial[t]
     end
 
-    # 3. Mailles occupées, puis décalages — restreints à celles-là.
+    # 3. Occupied cells, then offsets — restricted to those.
     empty!(cs.occupied); empty!(cs.bounds); push!(cs.bounds, Int32(0))
     acc = Int32(0)
     @inbounds for c in eachindex(cs.total)
@@ -118,8 +118,8 @@ function cellsort!(cs::CellSort, positions)
         push!(cs.bounds, acc)
     end
 
-    # 4. Placement. Chaque tranche écrit dans sa propre zone de chaque maille,
-    # donc sans synchronisation.
+    # 4. Placement. Each chunk writes into its own region of each cell, hence no
+    # synchronisation.
     Threads.@threads for t in eachindex(cs.chunks)
         cur = cs.offsets[t]
         @inbounds for i in cs.chunks[t]
@@ -131,5 +131,5 @@ function cellsort!(cs::CellSort, positions)
     cs
 end
 
-"""Nombre de mailles occupées — dix fois moins que de mailles, en pratique."""
+"""Number of occupied cells — ten times fewer than cells, in practice."""
 noccupied(cs::CellSort) = length(cs.occupied)
