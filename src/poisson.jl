@@ -1,23 +1,23 @@
 """
-Assemblage du second membre de l'équation de Poisson (`makerh2` du Fortran).
+Assembly of the right-hand side of Poisson's equation (the Fortran's `makerh2`).
 
-Le domaine de calcul est fini, mais le potentiel d'un agrégat ne l'est pas :
-on impose sur les faces la valeur qu'aurait le potentiel à grande distance,
-donnée par le **développement multipolaire** de la densité — monopôle et
-quadrupôle, exprimés dans le repère du barycentre où le dipôle s'annule.
+The computational domain is finite, but a cluster's potential is not: on the
+faces we impose the value the potential would take at large distance, given by
+the **multipole expansion** of the density — monopole and quadrupole, expressed
+in the barycentre frame where the dipole vanishes.
 
-Ces valeurs de bord étant non nulles, elles sont **relevées** : on les fait
-passer au second membre via les colonnes extrêmes de l'opérateur complet.
+Those boundary values being non-zero, they are **lifted**: they are carried over
+to the right-hand side through the outermost columns of the complete operator.
 """
 
 """
     Multipole(charge, center, quadrupole)
 
-Développement multipolaire d'une distribution de charge.
+Multipole expansion of a charge distribution.
 
-`center` est le barycentre — s'y placer annule le terme dipolaire, ce qui
-laisse monopôle et quadrupôle. `quadrupole` ne garde que les 6 composantes
-indépendantes du tenseur symétrique, dans l'ordre `xx, yy, zz, xy, xz, yz`.
+`center` is the barycentre — sitting there cancels the dipole term, leaving
+monopole and quadrupole. `quadrupole` keeps only the 6 independent components of
+the symmetric tensor, in the order `xx, yy, zz, xy, xz, yz`.
 """
 struct Multipole{T}
     charge::T
@@ -28,15 +28,15 @@ end
 """
     contract(c, u, v, w) -> T
 
-Contracte les coefficients spline avec un produit extérieur de moments 1D :
-`Σ c[i,j,k]·u[i]·v[j]·w[k]`. Tous les moments multipolaires sont de cette
-forme, à un choix de moments près.
+Contracts the spline coefficients with an outer product of 1D moments:
+`Σ c[i,j,k]·u[i]·v[j]·w[k]`. Every multipole moment has this form, up to a
+choice of moments.
 """
 function contract(c::Array{T,3}, u, v, w) where {T}
-    # ⚠️ Délibérément SÉQUENTIELLE. Une contraction coûte ~0,3 ms : la
-    # découper sur huit fils la fait passer à 0,8 ms, l'orchestration
-    # dominant le calcul. Le parallélisme est pris un cran au-dessus, dans
-    # `multipole`, où les dix contractions sont indépendantes entre elles.
+    # ⚠️ Deliberately SEQUENTIAL. One contraction costs ~0.3 ms: splitting it
+    # over eight threads brings it to 0.8 ms, the orchestration dominating the
+    # computation. Parallelism is taken one level up, in `multipole`, where the
+    # ten contractions are independent of one another.
     s = zero(T)
     @inbounds for k in eachindex(w), j in eachindex(v), i in eachindex(u)
         s += c[i, j, k] * u[i] * v[j] * w[k]
@@ -47,17 +47,16 @@ end
 """
     all_moments(c, p0, p1, p2) -> NTuple{10,T}
 
-Les dix contractions du développement multipolaire, en **une seule passe** sur
-les coefficients.
+The ten contractions of the multipole expansion, in a **single pass** over the
+coefficients.
 
-Les calculer séparément relit `c` dix fois. Or l'opération est limitée par la
-bande passante mémoire et non par le calcul — mesuré : les dix contractions
-lancées en parallèle sur huit fils sont 2,6 fois plus LENTES que la même chose
-en séquentiel, parce qu'elles se disputent la mémoire au lieu de se partager
-du travail.
+Computing them separately reads `c` ten times. But the operation is limited by
+memory bandwidth and not by arithmetic — measured: the ten contractions launched
+in parallel over eight threads are 2.6 times SLOWER than the same thing
+sequentially, because they contend for memory instead of sharing work.
 
-Une passe unique factorise tout : pour chaque couple `(j,k)`, trois sommes
-partielles sur `i` suffisent à alimenter les dix moments.
+A single pass factors everything: for each pair `(j,k)`, three partial sums over
+`i` suffice to feed all ten moments.
 """
 function all_moments(c::Array{T,3}, p0, p1, p2) where {T}
     p0x, p0y, p0z = p0
@@ -73,7 +72,7 @@ function all_moments(c::Array{T,3}, p0, p1, p2) where {T}
         e  = p0y[j] * p2z[k]
         f  = p1y[j] * p1z[k]
 
-        # Les trois seules sommes sur `i` dont les dix moments ont besoin.
+        # The only three sums over `i` that the ten moments need.
         s0 = s1 = s2 = zero(T)
         for i in eachindex(p0x)
             v = c[i, j, k]
@@ -99,39 +98,39 @@ end
 """
     multipole(ρ, mesh) -> Multipole
 
-Moments de la densité `ρ` donnée aux points de collocation.
+Moments of the density `ρ` given at the collocation points.
 
-L'intégration devrait passer par les coefficients spline — `∫f = Σ cᵦ ∫φᵦ` —
-mais il n'est pas nécessaire de les former. Avec `c = S⁻¹ρ` :
+The integration ought to go through the spline coefficients — `∫f = Σ cᵦ ∫φᵦ` —
+but they need not be formed. With `c = S⁻¹ρ`:
 
-    Σ c[i,j,k]·u[i]v[j]w[k] = Σ ρ[a,b,c]·ũ[a]ṽ[b]w̃[c]     où  ũ = S⁻ᵀu
+    Σ c[i,j,k]·u[i]v[j]w[k] = Σ ρ[a,b,c]·ũ[a]ṽ[b]w̃[c]     where  ũ = S⁻ᵀu
 
-Transformer les trois **vecteurs** de moments coûte trois produits
-matrice-vecteur ; transformer le **tableau 3D** en coûtait trois produits
-matrice-matrice, quatre ordres de grandeur de plus. Et comme les moments ne
-dépendent que du maillage, `SplineMesh` les garde déjà transformés.
+Transforming the three moment **vectors** costs three matrix-vector products;
+transforming the **3D array** cost three matrix-matrix products, four orders of
+magnitude more. And since the moments depend only on the mesh, `SplineMesh`
+already keeps them transformed.
 """
 function multipole(ρ::Array{T,3}, mesh::SplineMesh{3,T}) where {T}
-    # Les moments duaux portent déjà `S⁻ᵀ` : on contracte directement la
-    # densité, sans former ses coefficients spline.
+    # The dual moments already carry `S⁻ᵀ`: we contract the density directly,
+    # without forming its spline coefficients.
     p0 = map(m -> m[1], mesh.dual_moments)
     p1 = map(m -> m[2], mesh.dual_moments)
     p2 = map(m -> m[3], mesh.dual_moments)
 
     q, d100, d010, d001, m200, m020, m002, mxy, mxz, myz = all_moments(ρ, p0, p1, p2)
 
-    # Dipôle, ramené en barycentre. Une densité de charge nulle n'en a pas.
+    # Dipole, brought to the barycentre. A vanishing charge density has none.
     dip = (d100, d010, d001)
     center = iszero(q) ? ntuple(_ -> zero(T), 3) : dip ./ q
 
-    # Quadrupôle sous forme sans trace : Qₗₗ = 2∫xₗ² − Σ_{m≠l} ∫xₘ², et
-    # Qₗₘ = 3∫xₗxₘ hors diagonale.
+    # Quadrupole in traceless form: Qₗₗ = 2∫xₗ² − Σ_{m≠l} ∫xₘ², and
+    # Qₗₘ = 3∫xₗxₘ off the diagonal.
     quad = (2m200 - m020 - m002,
             2m020 - m200 - m002,
             2m002 - m200 - m020,
             3mxy, 3mxz, 3myz)
 
-    # Translation du tenseur au barycentre (théorème des axes parallèles).
+    # Translation of the tensor to the barycentre (parallel axis theorem).
     bx, by, bz = center
     b2 = bx^2 + by^2 + bz^2
     shift = (q * (3bx^2 - b2), q * (3by^2 - b2), q * (3bz^2 - b2),
@@ -143,9 +142,9 @@ end
 """
     potential(mp, x, y, z) -> T
 
-Potentiel du développement multipolaire au point donné : `q/r` plus le terme
-quadrupolaire en `1/r⁵`. Les composantes hors diagonale comptent double, le
-tenseur étant symétrique.
+Potential of the multipole expansion at the given point: `q/r` plus the
+quadrupole term in `1/r⁵`. The off-diagonal components count twice, the tensor
+being symmetric.
 """
 function potential(mp::Multipole{T}, x, y, z) where {T}
     px, py, pz = (x, y, z) .- mp.center
@@ -160,16 +159,15 @@ end
 """
     foreach_face(f, nx, ny, nz)
 
-Applique `f(i, j, k)` aux points de la **surface** d'une grille, et à eux
-seuls.
+Applies `f(i, j, k)` to the points on the **surface** of a grid, and to those
+only.
 
-Parcourir tout le volume en écartant l'intérieur par un test visite 195 000
-points pour n'en traiter 19 500 : neuf dixièmes du temps passés à décider de
-ne rien faire.
+Sweeping the whole volume and discarding the interior by a test visits 195 000
+points to handle 19 500: nine tenths of the time spent deciding to do nothing.
 
-Les deux faces pleines sont traitées à part des parois latérales. Ce n'est pas
-de la coquetterie : elles pèsent un tiers des points à elles deux, et les
-répartir avec le reste déséquilibrerait les fils.
+The two full faces are handled apart from the side walls. This is not fussiness:
+between them they account for a third of the points, and spreading them together
+with the rest would unbalance the threads.
 """
 function foreach_face(f, nx::Integer, ny::Integer, nz::Integer)
     tforeach(ny) do slice
@@ -196,9 +194,9 @@ end
 """
     boundary_potential!(φ, mesh, mp) -> φ
 
-Remplit `φ` (taille complète de la grille) avec le potentiel multipolaire sur
-les **faces** du domaine. L'intérieur est laissé à zéro : il n'est jamais lu,
-seules les faces servent au relèvement.
+Fills `φ` (full grid size) with the multipole potential on the **faces** of the
+domain. The interior is left at zero: it is never read, only the faces serve the
+lifting.
 """
 function boundary_potential!(φ::Array{T,3}, mesh::SplineMesh{3,T},
                              mp::Multipole{T}) where {T}
@@ -214,31 +212,30 @@ end
 """
     poisson_rhs!(rhs, ρ, mesh) -> rhs
 
-Assemble le second membre de `∇²Φ = −4πρ` sur les points de collocation
-**intérieurs**, conditions de bord multipolaires comprises.
+Assembles the right-hand side of `∇²Φ = −4πρ` at the **interior** collocation
+points, multipole boundary conditions included.
 
-`ρ` couvre toute la grille, `rhs` seulement l'intérieur — c'est ce qu'attend
-[`solve!`](@ref).
+`ρ` covers the whole grid, `rhs` only the interior — which is what
+[`solve!`](@ref) expects.
 """
 function poisson_rhs!(rhs::Array{T,3}, ρ::Array{T,3}, mesh::SplineMesh{3,T},
                       φ::Array{T,3}) where {T}
     size(rhs) == size(mesh) ||
-        throw(DimensionMismatch("rhs doit avoir la taille du problème intérieur"))
+        throw(DimensionMismatch("rhs must have the size of the interior problem"))
 
     Dx, Dy, Dz = mesh.laplacians
     nsx, nsy, nsz = size(mesh)
     nx, ny, nz = size(φ)
     c = -4 * T(π)
 
-    # ⚠️ **Une seule passe.** La forme naturelle — une diffusion pour la densité
-    # puis six pour le relèvement des faces — fait sept parcours de 681 000
-    # points, et coûtait 4,6 ms là où celle-ci en coûte 0,29 : seize fois plus,
-    # et davantage que le solveur tensoriel qu'elle alimente. Le résultat est
-    # identique au bit près.
+    # ⚠️ **A single pass.** The natural form — one broadcast for the density then
+    # six for the lifting of the faces — makes seven sweeps over 681 000 points,
+    # and cost 4.6 ms where this one costs 0.29: sixteen times more, and more
+    # than the tensor solver it feeds. The result is identical bit for bit.
     #
-    # Chaque face contribue par la colonne correspondante de l'opérateur
-    # complet, vue depuis les lignes intérieures. Les termes en `y` et `z` ne
-    # dépendent pas de `i` : ils sortent de la boucle interne.
+    # Each face contributes through the corresponding column of the complete
+    # operator, seen from the interior rows. The `y` and `z` terms do not depend
+    # on `i`: they come out of the inner loop.
     Threads.@threads for k in 1:nsz
         @inbounds for j in 1:nsy
             dyl = Dy[j+1, 1]; dyr = Dy[j+1, ny]
@@ -255,26 +252,26 @@ function poisson_rhs!(rhs::Array{T,3}, ρ::Array{T,3}, mesh::SplineMesh{3,T},
 end
 
 """
-Variante qui calcule elle-même le potentiel de bord. À éviter dans une boucle
-en temps : [`poisson!`](@ref) le réutilise au lieu de refaire les contractions
-multipolaires.
+Variant that computes the boundary potential itself. To be avoided inside a time
+loop: [`poisson!`](@ref) reuses it rather than redoing the multipole
+contractions.
 """
 poisson_rhs!(rhs::Array{T,3}, ρ::Array{T,3}, mesh::SplineMesh{3,T}) where {T} =
     poisson_rhs!(rhs, ρ, mesh,
                  boundary_potential!(mesh.scratch[1], mesh, multipole(ρ, mesh)))
 
-"""Version allouante de [`poisson_rhs!`](@ref)."""
+"""Allocating version of [`poisson_rhs!`](@ref)."""
 poisson_rhs(ρ::Array{T,3}, mesh::SplineMesh{3,T}) where {T} =
     poisson_rhs!(Array{T,3}(undef, size(mesh)), ρ, mesh)
 
 """
     poisson!(φ, ρ, mesh) -> φ
 
-Résout `∇²Φ = −4πρ` sur toute la grille : les faces reçoivent le potentiel
-multipolaire, l'intérieur la solution du système tensoriel.
+Solves `∇²Φ = −4πρ` over the whole grid: the faces receive the multipole
+potential, the interior the solution of the tensor system.
 
-`φ` a la taille complète de la grille de collocation, comme `ρ`. C'est la
-chaîne complète densité → potentiel, et le `makerh2` + `solve` du Fortran.
+`φ` has the full size of the collocation grid, as does `ρ`. This is the complete
+density → potential chain, and the Fortran's `makerh2` + `solve`.
 """
 function poisson!(φ::Array{T,3}, ρ::Array{T,3}, mesh::SplineMesh{3,T}) where {T}
     boundary_potential!(φ, mesh, multipole(ρ, mesh))
@@ -284,12 +281,12 @@ end
 """
     solve_interior!(φ, ρ, mesh) -> φ
 
-Résout l'intérieur en prenant pour conditions de Dirichlet les valeurs **déjà
-présentes** sur les faces de `φ`.
+Solves the interior, taking as Dirichlet conditions the values **already
+present** on the faces of `φ`.
 
-C'est la moitié commune à [`poisson!`](@ref), qui pose ces valeurs par
-développement multipolaire, et au raccord entre grilles, qui les lit dans la
-solution du niveau plus grossier.
+This is the half shared by [`poisson!`](@ref), which lays those values down by
+multipole expansion, and by the inter-grid junction, which reads them from the
+coarser level's solution.
 """
 function solve_interior!(φ::Array{T,3}, ρ::Array{T,3}, mesh::SplineMesh{3,T}) where {T}
     rhs = poisson_rhs!(mesh.scratch_inner, ρ, mesh, φ)
@@ -301,11 +298,11 @@ end
 """
     boundary_from_coarse!(φ, mesh, coarse, csol_coarse) -> φ
 
-Pose sur les faces de `φ` les valeurs lues dans la solution d'une grille plus
-grossière (le `makerhsf` du Fortran).
+Lays onto the faces of `φ` the values read from a coarser grid's solution (the
+Fortran's `makerhsf`).
 
-C'est tout le raccord entre niveaux : la grille fine ne voit du monde
-extérieur que ce que la grossière lui dit à sa frontière.
+This is the whole inter-level junction: of the outside world, the fine grid sees
+only what the coarse one tells it at its boundary.
 """
 function boundary_from_coarse!(φ::Array{T,3}, mesh::SplineMesh{3,T},
                                coarse::SplineMesh{3,T}, csol_coarse::Array{T,3}) where {T}
@@ -315,26 +312,24 @@ function boundary_from_coarse!(φ::Array{T,3}, mesh::SplineMesh{3,T},
     foreach_face(nx, ny, nz) do i, j, k
         p = spline_potential(coarse.axes, csol_coarse, (gx[i], gy[j], gz[k]))
         p === nothing && throw(ArgumentError(
-            "le point de bord ($(gx[i]), $(gy[j]), $(gz[k])) sort de la grille " *
-            "grossière : les niveaux ne sont pas emboîtés"))
+            "the boundary point ($(gx[i]), $(gy[j]), $(gz[k])) lies outside the " *
+            "coarse grid: the levels are not nested"))
         @inbounds φ[i, j, k] = p
     end
     φ
 end
 
-"""Version allouante de [`poisson!`](@ref)."""
+"""Allocating version of [`poisson!`](@ref)."""
 poisson(ρ::Array{T,3}, mesh::SplineMesh{3,T}) where {T} = poisson!(similar(ρ), ρ, mesh)
 
 """
     poisson!(φs, ρs, nested) -> φs
 
-Résout Poisson sur une hiérarchie de grilles emboîtées, du plus grossier au
-plus fin.
+Solves Poisson on a hierarchy of nested grids, from coarsest to finest.
 
-Le niveau le plus grossier prend ses conditions du développement multipolaire
-de sa propre densité ; chaque niveau plus fin lit les siennes dans la solution
-du niveau au-dessus. `φs` et `ρs` sont ordonnés comme les niveaux, du plus fin
-au plus grossier.
+The coarsest level takes its conditions from the multipole expansion of its own
+density; each finer level reads its own from the solution of the level above.
+`φs` and `ρs` are ordered like the levels, finest to coarsest.
 """
 function poisson!(φs::NTuple{L,Array{T,3}}, ρs::NTuple{L,Array{T,3}},
                   nested::NestedMeshes{L,3,T}) where {L,T}
