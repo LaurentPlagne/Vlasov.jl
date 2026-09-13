@@ -49,8 +49,8 @@ struct MetalForceAccelerator <: ForceAccelerator
     cols::MtlArray{Int32,2}
     """⚠️ Redimensionnés en cours de route : le nombre de mailles occupées
     change à mesure que l'agrégat évolue. D'où les `Ref`, et `_ensure!`."""
-    cells::Base.RefValue{MtlVector{Int32,Metal.PrivateStorage}}
-    bounds::Base.RefValue{MtlVector{Int32,Metal.PrivateStorage}}
+    cells::Base.RefValue{MtlVector{Int32,Metal.SharedStorage}}
+    bounds::Base.RefValue{MtlVector{Int32,Metal.SharedStorage}}
     rho::MtlArray{Float32,3}
     hostrho::Array{Float32,3}
     hostreduction::Vector{Float32}
@@ -86,19 +86,26 @@ function Vlasov.ForceAccelerator(::Type{MtlArray}, fine::NTuple{3,SplineAxis{T}}
         isapprox(_uniform_step(fine[d]), h; rtol = 1e-12) ||
             throw(ArgumentError("le backend Metal suppose les trois axes identiques"))
     end
+    # ⚠️ Les tampons **échangés à chaque pas** sont en mémoire partagée. Par
+    # défaut `MtlArray` alloue en `PrivateStorage`, visible du seul GPU, et
+    # `copyto!` fait alors une vraie copie : mesuré, 1,30 ms pour 9,2 Mo contre
+    # **0,21 ms** en partagé. Sur une puce à mémoire unifiée, payer une copie
+    # n'a pas de sens. Les tables constantes, elles, restent en privé.
+    shared(T, dims...) = fill!(MtlArray{T,length(dims),Metal.SharedStorage}(undef, dims...),
+                               zero(T))
     MetalForceAccelerator(
-        MtlArray(zeros(Float32, n, n, n)),
+        shared(Float32, n, n, n),
         MtlArray(Float32.(sm.overlap)), MtlArray(Float32.(sm.gradient)),
         MtlArray(Float32.(sm.nodes)),
-        MtlArray(zeros(Float32, 3, npart)),
+        shared(Float32, 3, npart),
         Array{Float32,3}(undef, n, n, n), Matrix{Float32}(undef, 3, npart),
         Matrix{Int32}(undef, 3, npart), Matrix{Float32}(undef, 3, npart),
-        MtlArray(zeros(Int32, 3, npart)), MtlArray(zeros(Float32, 3, npart)),
+        shared(Int32, 3, npart), shared(Float32, 3, npart),
         CellSort(fine[1], npart), Matrix{Int32}(undef, 3, npart),
-        MtlArray(zeros(Int32, 3, npart)), Ref(MtlArray(zeros(Int32, 1))),
-        Ref(MtlArray(zeros(Int32, 1))), MtlArray(zeros(Float32, n, n, n)),
+        shared(Int32, 3, npart), Ref(shared(Int32, 1)),
+        Ref(shared(Int32, 1)), shared(Float32, n, n, n),
         Array{Float32,3}(undef, n, n, n),
-        Vector{Float32}(undef, 4), MtlArray(zeros(Float32, 4)),
+        Vector{Float32}(undef, 4), shared(Float32, 4),
         Float32(fine[1].knots[1]), Float32(h), Int32(length(fine[1].knots)),
         Float32(sm.spacing), Int32(sm.nbdt), Int32(size(sm.overlap, 2)), npart)
 end
@@ -341,12 +348,9 @@ end
 """Agrandit les tampons de mailles si le tri en a trouvé davantage. On ne
 rétrécit jamais : la taille se stabilise en quelques pas."""
 function _ensure!(acc::MetalForceAccelerator, ncell::Integer)
-    if length(acc.cells[]) < ncell
-        acc.cells[] = MtlArray(zeros(Int32, ncell))
-    end
-    if length(acc.bounds[]) < ncell + 1
-        acc.bounds[] = MtlArray(zeros(Int32, ncell + 1))
-    end
+    grow(m) = fill!(MtlArray{Int32,1,Metal.SharedStorage}(undef, m), Int32(0))
+    length(acc.cells[]) < ncell && (acc.cells[] = grow(ncell))
+    length(acc.bounds[]) < ncell + 1 && (acc.bounds[] = grow(ncell + 1))
     nothing
 end
 
@@ -411,9 +415,17 @@ function Vlasov.deposit_smoothed!(ρ::Array{T,3}, acc::MetalForceAccelerator,
         Int32(acc.sorter.nknots), Int32(ncell))
 
     copyto!(acc.hostrho, acc.rho)
+
+    # ⚠️ **Une seule passe** sur les 729 000 points. La forme littérale —
+    # convertir, multiplier par la charge, puis renormaliser — en fait trois, et
+    # les trois coûtaient plus que le noyau GPU qu'elles suivent.
+    #
+    # Les deux mises à l'échelle se composent : `total_charge` est linéaire, donc
+    # multiplier par `charge` puis renormaliser revient à une seule
+    # multiplication, dont le facteur se calcule sur la densité brute.
     ρ .= acc.hostrho
-    ρ .*= charge
-    ρ .*= (length(positions) - nout) * charge / total_charge(ρ, mesh)
+    q = total_charge(ρ, mesh)
+    ρ .*= (length(positions) - nout) * charge / q
     nout
 end
 

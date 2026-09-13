@@ -549,6 +549,48 @@ La densité se dégrade légèrement (1,5e-07 → 6,5e-07) : `δ` est arrondi en
 cent quarante fois mieux que les 9,0e-05 qu'aurait donnés le calcul direct en
 `Float32`.
 
+## Mémoire partagée : ne pas payer une copie qu'on n'a pas à faire
+
+Par défaut, `MtlArray` alloue en **`PrivateStorage`** — mémoire visible du seul
+GPU — et `copyto!` fait alors une vraie copie. Sur une puce à mémoire unifiée,
+cela n'a pas de sens :
+
+| 9,2 Mo | ms |
+|---|---|
+| `PrivateStorage` | 1,30 |
+| **`SharedStorage`** | **0,21** |
+
+Tous les tampons **échangés à chaque pas** sont passés en partagé — positions
+`(k, δ)`, colonnes, `csol`, forces, densité, mailles, réduction. Les tables
+constantes, montées une fois, restent en privé.
+
+Le dépôt passe de 22,78 à **18,53 ms**, et le pas de 80,8 à **77,9**.
+
+Le pas suivant serait d'écrire **directement** dans ces tampons partagés
+(`unsafe_wrap`), ce qui supprimerait aussi les tampons hôtes intermédiaires et
+les `copyto!` qui restent — mesuré à 0,19 ms contre 0,21, le gain est mince,
+mais c'est surtout une simplification.
+
+## Une queue de dépôt en trois passes
+
+Même motif que le second membre de Poisson : la forme littérale — convertir la
+densité, la multiplier par la charge, puis la renormaliser — faisait trois
+parcours de 729 000 points. Les deux mises à l'échelle se composent, puisque
+`total_charge` est linéaire : une seule multiplication suffit, dont le facteur
+se calcule sur la densité brute. **−1,5 ms**.
+
+## Où on en est
+
+| configuration | ms/pas |
+|---|---|
+| CPU, bilan à chaque pas | 225,2 |
+| GPU, bilan à chaque pas | 148,6 |
+| CPU, bilan 1 pas sur 10 | 161,8 |
+| **GPU, bilan 1 pas sur 10** | **77,9** |
+
+Depuis le point de départ — OpenBLAS, tout CPU, bilan à chaque pas, 307,9 ms —
+**×3,95**.
+
 ## Ce qu'il reste, par ordre de rendement
 
 1. ~~Apple Accelerate~~ — **fait**, ×1,31 pour une ligne.
