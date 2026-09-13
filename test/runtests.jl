@@ -930,6 +930,22 @@ end
             @test length(hist) == 6
             @test all(b -> isfinite(b.total), hist)
 
+            # Le bilan d'énergie **observe**, il ne rétroagit pas : le rendre
+            # périodique doit laisser la trajectoire rigoureusement inchangée.
+            # C'est ce qui autorise à l'espacer — le Fortran ne l'appelait
+            # qu'un pas sur dix — et cela vaut ×1,5 sur le temps de calcul.
+            a = Simulation(p, prof); run!(a; nsteps = 12, energy_every = 1)
+            b = Simulation(p, prof); h = run!(b; nsteps = 12, energy_every = 4)
+            @test a.cloud.positions == b.cloud.positions
+            @test a.cloud.previous == b.cloud.previous
+            @test length(h) == 3                       # pas 1, 5, 9
+            @test all(x -> isfinite(x.total), h)
+
+            # `step!(; energy = false)` avance sans rendre de bilan.
+            @test step!(b; energy = false) === nothing
+            @test step!(b; energy = true) isa EnergyBudget
+            @test_throws ArgumentError run!(b; nsteps = 1, energy_every = 0)
+
             # L'énergie totale est une petite différence de grands termes : la
             # mesurer par rapport à elle-même exagérerait la dérive. On la
             # rapporte à l'échelle des termes qui la composent.

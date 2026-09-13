@@ -161,8 +161,15 @@ disponible.
 
 `advance = false` calcule les forces sans faire avancer le projectile, ce dont
 l'amorçage a besoin.
+
+`energy = false` saute l'énergie de Hartree et rend `nothing`. Ce n'est pas une
+économie de façade : à 800 000 pseudo-particules cet appel pèse à lui seul 23 %
+du pas. Il doit se décider **ici** et pas après coup — l'énergie de Hartree se
+mesure sur les coefficients avant que l'échange-corrélation ne les écrase, et
+ils n'existent qu'entre deux lignes.
 """
-function update_forces!(sim::Simulation{T}; advance::Bool = true) where {T}
+function update_forces!(sim::Simulation{T}; advance::Bool = true,
+                        energy::Bool = true, accelerator = nothing) where {T}
     fine, coarse = sim.meshes[1], sim.meshes[2]
     ρf, ρc = sim.ρ
     w = sim.cloud.weight
@@ -174,12 +181,17 @@ function update_forces!(sim::Simulation{T}; advance::Bool = true) where {T}
 
     csolf = spline_coefficients!(sim.csol[1], sim.φ[1], fine)
     csolc = spline_coefficients!(sim.csol[2], sim.φ[2], coarse)
-    hartree = interaction_energy(sim.cloud, fine.axes, csolf,
-                                 coarse.axes, csolc, sim.smoothing) / 2
+    hartree = energy ? interaction_energy(sim.cloud, fine.axes, csolf,
+                                          coarse.axes, csolc, sim.smoothing) / 2 :
+                       nothing
 
     effective_potential!(csolf, ρf, fine, sim.jellium)
     effective_potential!(csolc, ρc, coarse, sim.jellium)
-    forces!(sim.cloud, fine.axes, csolf, coarse.axes, csolc, sim.smoothing)
+    if accelerator === nothing
+        forces!(sim.cloud, fine.axes, csolf, coarse.axes, csolc, sim.smoothing)
+    else
+        forces!(sim.cloud, accelerator, fine.axes, csolf, coarse.axes, csolc, sim.smoothing)
+    end
     advance && advance_projectile!(sim)
 
     # Le potentiel total sert ensuite au bilan : on le garde sous la main.
@@ -189,7 +201,7 @@ function update_forces!(sim::Simulation{T}; advance::Bool = true) where {T}
 end
 
 """
-    step!(sim) -> EnergyBudget
+    step!(sim; energy = true) -> EnergyBudget ou `nothing`
 
 Un pas de temps complet, dans l'ordre du code d'origine :
 
@@ -204,27 +216,46 @@ Un pas de temps complet, dans l'ordre du code d'origine :
 L'ordre des points 3 et 6 n'est pas un détail de commodité : les deux termes
 du bilan se réfèrent à des potentiels différents, et les intervertir rendrait
 le total silencieusement faux.
+
+`accelerator` détourne l'évaluation du champ lissé vers un
+[`ForceAccelerator`](@ref) — le GPU. ⚠️ Ce chemin travaille en `Float32` : la
+trajectoire n'est plus celle du chemin CPU, seulement la même à `4e-5` près.
+
+`energy = false` saute les points 3 et 6 et rend `nothing`. **C'est le premier
+poste du pas** — les deux appels font ensemble 34 % du temps CPU, et 43 % une
+fois les forces sur GPU, plus que les forces elles-mêmes. Le Fortran ne
+calculait `enertot2g` qu'un pas sur dix ; le faire aussi rend ×1,63. La
+trajectoire n'en dépend pas : le bilan ne rétroagit sur rien, il observe.
 """
-function step!(sim::Simulation{T}) where {T}
-    hartree = update_forces!(sim)
+function step!(sim::Simulation{T}; energy::Bool = true,
+               accelerator = nothing) where {T}
+    hartree = update_forces!(sim; energy, accelerator)
     diag = step!(sim.cloud, sim.params.dt; rcmax = sim.params.rcmax)
+    energy || return nothing
     total = interaction_energy(sim.cloud, sim.meshes[1].axes, sim.φ[1],
                                sim.meshes[2].axes, sim.φ[2], sim.smoothing)
     energy_budget(sim.jellium, diag.kinetic, hartree, total, diag.escaped)
 end
 
 """
-    run!(sim; nsteps, callback) -> Vector{EnergyBudget}
+    run!(sim; nsteps, energy_every = 1, accelerator = nothing, callback) -> Vector{EnergyBudget}
 
 Enchaîne `nsteps` pas et rend l'historique du bilan d'énergie — l'observable
-de stabilité du chapitre 4. `callback(i, budget)` est appelée après chaque pas.
+de stabilité du chapitre 4. `callback(i, budget)` est appelée après chaque pas,
+avec `nothing` pour budget aux pas où il n'est pas calculé.
+
+`energy_every = 10` reproduit le Fortran, qui n'appelait `enertot2g` qu'un pas
+sur dix, et **rend ×1,63** : le bilan est le premier poste du pas. Le défaut
+reste 1 pour que rien ne change sans qu'on l'ait demandé.
 """
 function run!(sim::Simulation; nsteps::Integer = sim.params.nsteps,
+              energy_every::Integer = 1, accelerator = nothing,
               callback = (i, b) -> nothing)
+    energy_every >= 1 || throw(ArgumentError("`energy_every` doit valoir au moins 1"))
     history = EnergyBudget{Float64}[]
     for i in 1:nsteps
-        b = step!(sim)
-        push!(history, b)
+        b = step!(sim; energy = (i - 1) % energy_every == 0, accelerator)
+        b === nothing || push!(history, b)
         callback(i, b)
     end
     history

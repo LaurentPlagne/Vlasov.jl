@@ -46,18 +46,37 @@ désormais le premier poste, et de loin.
 
 ## Un gain gratuit, avant tout GPU
 
-## Un gain gratuit, avant tout GPU
+## Le bilan d'énergie, rendu périodique — fait
 
 `interaction_energy` est appelée **deux fois par pas** — une fois pour Hartree
 dans `update_forces!`, une fois pour le total dans `step!`. Les deux sont des
 **diagnostics**, et le Fortran ne calculait `enertot2g` qu'un pas sur dix.
 
-La rendre périodique retire 9/10 de 43 % du pas accéléré : **336 → 206 ms**,
-soit **×1,63** sans une ligne de GPU, et **×2,1** depuis le point de départ.
-C'est le meilleur rapport du lot, et de loin.
+    run!(sim; nsteps, energy_every = 10)          # le choix du Fortran
+    step!(sim; energy = false)                    # un pas sans bilan
 
-Cela demande de changer le contrat de `step!`, qui rend aujourd'hui un
-`EnergyBudget` à chaque pas. C'est la seule difficulté.
+Ce qui l'autorise : le bilan **observe**, il ne rétroagit sur rien. Vérifié, et
+c'est un test : douze pas avec `energy_every = 1` et avec `energy_every = 4`
+laissent des positions **rigoureusement égales**, pas approximativement.
+
+Le défaut reste `energy_every = 1`, pour que rien ne change sans qu'on l'ait
+demandé.
+
+## Ce que les deux changements donnent ensemble
+
+Mesuré d'affilée, sur la même machine et dans la même seconde — la seule façon
+de comparer quand la charge varie :
+
+| configuration | ms/pas | gain |
+|---|---|---|
+| CPU, bilan à chaque pas | 402,0 | — |
+| CPU, bilan 1 pas sur 10 | 290,2 | ×1,39 |
+| GPU, bilan à chaque pas | 342,8 | ×1,17 |
+| **GPU, bilan 1 pas sur 10** | **208,5** | **×1,93** |
+
+⚠️ **Chauffer avant de chronométrer.** Le premier appel GPU paie la compilation
+du noyau Metal : sans chauffe, la même mesure donnait 614 ms/pas, soit un GPU
+*plus lent* que le CPU.
 
 ## La contrainte : pas de double précision
 
@@ -105,10 +124,11 @@ Amdahl : un poste à 29 % divisé par 4 ne rend pas plus.
 
 ## Ce qu'il reste, par ordre de rendement
 
-1. **Rendre le bilan d'énergie périodique** (43 % du pas accéléré) — aucun GPU,
-   ×1,63. À faire avant de songer à porter `interaction_energy` : une fois
-   appelée un pas sur dix, elle ne vaut plus la peine d'être portée.
-2. **Le dépôt** (28 %) — c'est un *scatter*, et c'est le morceau difficile. Nos
+1. ~~Rendre le bilan d'énergie périodique~~ — **fait**, ×1,39 à lui seul.
+   `interaction_energy` sort du même coup de la liste GPU : appelée un pas sur
+   dix, elle ne vaut plus la peine d'être portée.
+2. **Le dépôt** — désormais le premier poste du pas accéléré. C'est un
+   *scatter*, et c'est le morceau difficile. Nos
    tampons par fil (5,6 Mo chacun) ne passent pas à l'échelle GPU. Deux voies :
    des atomiques, ou **trier les particules par cellule** pour en faire une
    réduction segmentée. Le tri de la thèse revient ici, pour exactement la même
