@@ -1,51 +1,55 @@
 """
-Découpage en tranches pour les boucles parallèles.
+Chunking for parallel loops.
 
-Les boucles qui pèsent dans un pas de temps sont toutes de la même forme : un
-parcours indépendant des pseudo-particules ou des points de grille, suivi
-éventuellement d'une somme. On les découpe en tranches **contiguës** — et non
-entrelacées — pour que chaque fil travaille sur une zone de mémoire continue.
+The loops that weigh on a time step all have the same shape: an independent
+sweep over the pseudo-particles or the grid points, optionally followed by a
+sum. They are split into **contiguous** chunks — not interleaved — so that each
+thread works on a continuous region of memory.
 """
 
 using LinearAlgebra: BLAS
 
 """
-Interrupteur global du parallélisme.
+Global parallelism switch.
 
-Sert à deux choses : comparer en **alternance** une version parallèle et une
-version séquentielle sur la même machine au même instant — seule façon de
-mesurer quoi que ce soit quand la charge varie — et retrouver un
-comportement déterministe quand on débogue.
+It serves two purposes: comparing a parallel and a sequential version
+**alternately** on the same machine at the same moment — the only way to measure
+anything when the load varies — and recovering deterministic behaviour while
+debugging.
 
     Vlasov.PARALLEL[] = false
 """
 const PARALLEL = Ref(true)
 
-"""Nombre de tranches à utiliser : 1 si le parallélisme est coupé."""
+"""Number of chunks to use: 1 when parallelism is switched off."""
 @inline nchunks_now() = PARALLEL[] ? Threads.nthreads() : 1
 
 """
     configure_blas!(; threads = 2)
 
-Limite le nombre de fils d'OpenBLAS.
+Caps the number of OpenBLAS threads.
 
-⚠️ **Le défaut d'OpenBLAS est mauvais ici.** Il prend autant de fils que de
-cœurs, en plus de ceux de Julia, et les deux se disputent la machine. Mesuré
-sur `poisson!`, 8 fils Julia sur 10 cœurs :
+⚠️ **The OpenBLAS default is bad here.** It takes as many threads as there are
+cores, on top of Julia's, and the two fight over the machine. Measured on
+`poisson!`, 8 Julia threads on 10 cores:
 
-| fils BLAS | médiane | étendue (max/min) |
+| BLAS threads | median | spread (max/min) |
 |---|---|---|
-| 1 | 11,1 ms | 1,1× |
-| 2 | 9,6 ms | 1,4× |
-| 4 | 8,6 ms | 2,6× |
-| 8 *(défaut)* | **20,5 ms** | **5,4×** |
+| 1 | 11.1 ms | 1.1× |
+| 2 | 9.6 ms | 1.4× |
+| 4 | 8.6 ms | 2.6× |
+| 8 *(default)* | **20.5 ms** | **5.4×** |
 
-Le défaut n'est pas seulement deux fois plus lent en médiane : il rend les
-temps **imprévisibles**, du simple au quintuple. Deux fils donnent le meilleur
-compromis entre vitesse et régularité.
+The default is not merely twice as slow in the median: it makes timings
+**unpredictable**, by a factor of five. Two threads give the best compromise
+between speed and regularity.
 
-N'est appelée nulle part automatiquement : changer un réglage global à l'insu
-de l'appelant serait discourtois. À invoquer avant une campagne de calcul.
+⚠️ On Apple Silicon, prefer `AppleAccelerate` outright: its BLAS has no thread
+pool to contend with Julia's, which is worth ×1.31 on the whole step — see
+`docs/gpu.md`.
+
+Never called automatically: changing a global setting behind the caller's back
+would be discourteous. Invoke it before a batch of runs.
 """
 function configure_blas!(; threads::Integer = 2)
     BLAS.set_num_threads(threads)
@@ -55,16 +59,16 @@ end
 """
     chunks(n, nchunks = nchunks_now()) -> Vector{UnitRange}
 
-Découpe `1:n` en tranches contiguës de tailles aussi égales que possible.
-Rend une tranche vide de moins que demandé plutôt que des tranches vides.
+Splits `1:n` into contiguous chunks of as nearly equal size as possible.
+Returns one chunk fewer than asked rather than empty chunks.
 """
 function chunks(n::Integer, nchunks::Integer = nchunks_now())
     nchunks = max(1, min(nchunks, n))
-    base, reste = divrem(n, nchunks)
+    base, remainder = divrem(n, nchunks)
     stop = 0
     map(1:nchunks) do c
         start = stop + 1
-        stop += base + (c <= reste)
+        stop += base + (c <= remainder)
         start:stop
     end
 end
@@ -72,12 +76,12 @@ end
 """
     tmapreduce(f, n) -> T
 
-Somme `f(range)` sur les tranches de `1:n`, en parallèle. `f` reçoit une
-**tranche** et non un indice : c'est à elle de boucler, ce qui lui laisse
-accumuler dans une variable locale plutôt que dans un tableau partagé.
+Sums `f(range)` over the chunks of `1:n`, in parallel. `f` receives a **chunk**
+and not an index: it is up to `f` to loop, which lets it accumulate into a local
+variable rather than into a shared array.
 
-Retombe sur un appel direct à un seul fil, pour que le résultat soit
-identique — à l'ordre de sommation près — et que le surcoût disparaisse.
+Falls back to a direct single-threaded call, so that the result is identical —
+up to summation order — and the overhead disappears.
 """
 function tmapreduce(f, n::Integer)
     parts = chunks(n)
@@ -89,15 +93,15 @@ function tmapreduce(f, n::Integer)
     reduce(_addall, results)
 end
 
-"""Addition terme à terme, qui accepte aussi bien des nombres que des tuples."""
+"""Element-wise addition, accepting numbers as well as tuples."""
 @inline _addall(a::Number, b::Number) = a + b
 @inline _addall(a::Tuple, b::Tuple) = map(_addall, a, b)
 
 """
     tforeach(f, n)
 
-Applique `f` à chaque tranche de `1:n`, en parallèle, sans rien collecter.
-Pour les boucles qui écrivent chacune dans leur propre case.
+Applies `f` to each chunk of `1:n`, in parallel, collecting nothing.
+For loops where each write goes to its own slot.
 """
 function tforeach(f, n::Integer)
     parts = chunks(n)

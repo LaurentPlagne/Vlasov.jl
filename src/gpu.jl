@@ -1,62 +1,62 @@
 """
-Interface du calcul des forces sur accélérateur.
+Interface for force evaluation on an accelerator.
 
-Le portage GPU vise les **boucles sur les particules**, qui font 79 % d'un pas
-à l'échelle de production — et non le solveur tensoriel, qui n'en fait que 14 %
-et plafonnerait donc à ×1,16.
+The GPU port targets the **particle loops**, which account for 79 % of a step at
+production scale — not the tensor solver, which accounts for only 14 % and would
+therefore cap out at ×1.16.
 
-Rien ici ne dépend d'un backend : les méthodes sont fournies par une extension
-de paquet (`ext/VlasovMetalExt.jl` pour Metal), chargée seulement si l'utilisateur
-charge `Metal`. Sans backend, ces fonctions lèvent une erreur explicite et le
-chemin CPU reste le seul.
+Nothing here depends on a backend: the methods are supplied by a package
+extension (`ext/VlasovMetalExt.jl` for Metal), loaded only if the user loads
+`Metal`. Without a backend these functions raise an explicit error and the CPU
+path remains the only one.
 
-⚠️ **Le GPU travaille en `Float32`.** Les GPU Apple n'ont pas de double
-précision — Metal n'a pas de type `double`. Le chemin CPU `Float64` reste donc
-la référence, celle qui se compare à l'oracle Fortran à `1e-13` ; le chemin GPU
-se valide contre lui, au niveau où la physique le demande.
+⚠️ **The GPU works in `Float32`.** Apple GPUs have no double precision — Metal
+has no `double` type. The `Float64` CPU path therefore remains the reference,
+the one compared against the Fortran oracle at `1e-13`; the GPU path is
+validated against it, at the level the physics demands.
 """
 
 """
     ForceAccelerator
 
-Ce qu'un backend doit fournir pour prendre en charge l'évaluation du champ
-lissé. Le type est déclaré ici pour que [`forces!`](@ref) puisse le nommer ;
-les réalisations vivent dans les extensions.
+What a backend must provide to take over evaluation of the smoothed field. The
+type is declared here so that [`forces!`](@ref) can name it; the realisations
+live in the extensions.
 
     ForceAccelerator(MtlArray, fine_axes, smoothing, npart, n)
 
-Prépare le calcul pour une grille et un nombre de particules donnés : tables et
-tampons sont alloués **une fois**, pas à chaque pas. Les allocations tuent le
-parallélisme, sur GPU plus encore.
+Prepares the computation for a given grid and particle count: tables and buffers
+are allocated **once**, not at every step. Allocations kill parallelism, and on
+a GPU more so.
 """
 abstract type ForceAccelerator end
 
 """
     forces!(cloud, acc, csol_fine, coarse, csol_coarse, sm; escaped) -> Int
 
-Même contrat que la méthode CPU de [`forces!`](@ref), l'évaluation du champ
-lissé en moins : elle part sur l'accélérateur `acc`.
+Same contract as the CPU method of [`forces!`](@ref), minus the smoothed-field
+evaluation: that goes to the accelerator `acc`.
 
-Les particules trop près du bord pour que le pochoir 10³ tienne dans la grille
-sont **repassées au CPU** : elles sont rares, et les traiter sur GPU
-demanderait des branches là où l'intérêt est justement de n'en avoir aucune.
+Particles too close to the boundary for the 10³ stencil to fit inside the grid
+are **handed back to the CPU**: they are rare, and handling them on the GPU
+would call for branches exactly where the point is to have none.
 """
 function forces! end
 
 """
     deposit_smoothed!(ρ, acc, mesh, sm, positions; charge) -> nout
 
-Même contrat que la méthode CPU de [`deposit_smoothed!`](@ref), le *scatter* en
-moins : il part sur l'accélérateur.
+Same contract as the CPU method of [`deposit_smoothed!`](@ref), minus the
+*scatter*: that goes to the accelerator.
 
-Le dépôt est la partie difficile à porter — chaque particule écrit dans 8³
-points, et les voisines écrivent aux mêmes. La voie naïve, une addition
-atomique par point et par particule, est **trois fois plus lente que le CPU** :
-410 millions d'atomiques en conflit, que le GPU sérialise. La voie retenue
-range d'abord les particules par maille ([`CellSort`](@ref)) et confie une
-maille à un groupe de fils, chacun propriétaire d'un point du pochoir — une
-atomique par point et par **maille**, soit cent fois moins.
+Deposition is the hard part to port — each particle writes into 8³ points, and
+neighbouring particles write into the same ones. The naive route, one atomic add
+per point per particle, is **three times slower than the CPU**: 410 million
+contending atomics, which the GPU serialises. The route taken here first orders
+the particles by cell ([`CellSort`](@ref)) and gives one cell to one thread
+group, each thread owning one stencil point — one atomic per point per **cell**,
+a hundred times fewer.
 
-Voir `docs/gpu.md` pour les mesures.
+See `docs/gpu.md` for the measurements.
 """
 function deposit_smoothed! end
