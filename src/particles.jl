@@ -1,33 +1,32 @@
 """
-Pseudo-particules et intégration temporelle.
+Pseudo-particles and time integration.
 
-La méthode échantillonne la densité d'espace des phases par des
-pseudo-particules, chacune représentant `weight` électrons : sa masse et sa
-charge sont celles de ces `weight` électrons réunis.
+The method samples the phase-space density with pseudo-particles, each
+representing `weight` electrons: its mass and charge are those of those `weight`
+electrons taken together.
 
-L'intégration est un Verlet en position : la vitesse n'est jamais stockée,
-elle se lit dans l'écart entre deux positions successives.
+The integration is a position Verlet: the velocity is never stored, it is read
+from the gap between two successive positions.
 """
 
-"Masse de l'électron, en unités atomiques (`mel` du Fortran)."
+"Electron mass, in atomic units (the Fortran's `mel`)."
 const ELECTRON_MASS = 1.0
 
-"Charge de l'électron, en unités atomiques (`qel` du Fortran)."
+"Electron charge, in atomic units (the Fortran's `qel`)."
 const ELECTRON_CHARGE = -1.0
 
 """
     ParticleCloud(positions, previous, forces, weight)
 
-Nuage de pseudo-particules pour un schéma de Verlet en position.
+Cloud of pseudo-particles for a position Verlet scheme.
 
-`previous` porte les positions au pas précédent — c'est ce qui tient lieu de
-vitesse. `weight` est le nombre d'électrons que représente chaque
-pseudo-particule.
+`previous` holds the positions at the previous step — that is what stands in for
+the velocity. `weight` is the number of electrons each pseudo-particle
+represents.
 
-Le Fortran stockait tout cela dans des tableaux `(3, npartmax)` en ordre
-colonne, ce qui est exactement la disposition mémoire d'un
-`Vector{NTuple{3,T}}` : le portage est une réinterprétation, pas une
-conversion.
+The Fortran stored all of this in `(3, npartmax)` arrays in column order, which
+is exactly the memory layout of a `Vector{NTuple{3,T}}`: the port is a
+reinterpretation, not a conversion.
 """
 struct ParticleCloud{T<:AbstractFloat}
     positions::Vector{NTuple{3,T}}
@@ -44,13 +43,13 @@ end
 
 Base.length(c::ParticleCloud) = length(c.positions)
 
-"""Masse d'une pseudo-particule : celle des `weight` électrons qu'elle porte."""
+"""Mass of a pseudo-particle: that of the `weight` electrons it carries."""
 mass(c::ParticleCloud) = ELECTRON_MASS * c.weight
 
-"""Charge d'une pseudo-particule."""
+"""Charge of a pseudo-particle."""
 charge(c::ParticleCloud) = ELECTRON_CHARGE * c.weight
 
-"""Produit vectoriel de deux triplets."""
+"""Cross product of two triples."""
 @inline cross3(a, b) = (a[2] * b[3] - a[3] * b[2],
                         a[3] * b[1] - a[1] * b[3],
                         a[1] * b[2] - a[2] * b[1])
@@ -58,21 +57,21 @@ charge(c::ParticleCloud) = ELECTRON_CHARGE * c.weight
 """
     step!(cloud, dt; rcmax = Inf) -> (; kinetic, escaped, angular)
 
-Avance le nuage d'un pas de temps par Verlet en position :
+Advances the cloud by one time step with position Verlet:
 
     q(t+dt) = 2q(t) − q(t−dt) + dt²·F/M
 
-et renvoie les diagnostics que le Fortran calculait dans la même boucle —
-énergie cinétique, moment cinétique total, et la part de l'énergie cinétique
-portée par les particules **sorties**. Ils sont obtenus du moment centré
-`p = M·(q(t+dt) − q(t−dt))/2dt`, qui n'existe qu'ici : le calculer après coup
-demanderait de conserver un état de plus.
+and returns the diagnostics the Fortran computed in the same loop — kinetic
+energy, total angular momentum, and the share of the kinetic energy carried by
+the particles that have **left**. They are obtained from the centred momentum
+`p = M·(q(t+dt) − q(t−dt))/2dt`, which exists only here: computing it afterwards
+would require keeping one more piece of state.
 
-`rcmax` est le rayon au-delà duquel une particule compte comme sortie, mesuré
-sur la position **avant** le pas — comme le `move` du Fortran, qui teste
-`ract` sur `qp` et non sur la position nouvelle. Il valait `100.d0` en dur
-jusqu'en 1997, et devient un paramètre d'entrée en 1998. Le défaut `Inf` ne
-compte rien comme sorti, ce qui laisse `escaped` nul pour qui ne s'en sert pas.
+`rcmax` is the radius beyond which a particle counts as gone, measured on the
+position **before** the step — like the Fortran's `move`, which tests `ract` on
+`qp` and not on the new position. It was hard-coded to `100.d0` until 1997, and
+becomes an input parameter in 1998. The default `Inf` counts nothing as gone,
+leaving `escaped` at zero for callers who do not use it.
 """
 function step!(cloud::ParticleCloud{T}, dt::T; rcmax::Real = T(Inf)) where {T}
     M = mass(cloud)
@@ -89,8 +88,8 @@ function step!(cloud::ParticleCloud{T}, dt::T; rcmax::Real = T(Inf)) where {T}
         p = pfac .* (qnew .- qold)
         e = (p[1]^2 + p[2]^2 + p[3]^2) / 2M
         ekin += e
-        # Comparaison des carrés : une racine par particule pour un simple
-        # seuil, c'est une racine de trop.
+        # Comparing squares: one square root per particle for a mere threshold
+        # is one square root too many.
         q[1]^2 + q[2]^2 + q[3]^2 > r2max && (eout += e)
         angular = angular .+ cross3(q, p)
         cloud.previous[i] = q
@@ -102,10 +101,10 @@ end
 """
     half_step_back(positions, momenta, M, dt)
 
-Amorce du leapfrog, premier temps : `q(−dt/2) = q(0) − (dt/2M)·p`.
+Leapfrog priming, first stage: `q(−dt/2) = q(0) − (dt/2M)·p`.
 
-C'est le `moveback1` du Fortran, où le tableau des positions précédentes
-portait encore les impulsions issues du tirage initial.
+This is the Fortran's `moveback1`, where the array of previous positions still
+held the momenta produced by the initial sampling.
 """
 half_step_back(positions, momenta, M, dt) =
     map((q, p) -> q .- (dt / 2M) .* p, positions, momenta)
@@ -113,30 +112,31 @@ half_step_back(positions, momenta, M, dt) =
 """
     full_step_back(positions, half, forces, M, dt)
 
-Amorce du leapfrog, second temps : de `q(0)` et `q(−dt/2)` vers `q(−dt)`, en
-utilisant les forces évaluées en `q(−dt/2)`.
+Leapfrog priming, second stage: from `q(0)` and `q(−dt/2)` to `q(−dt)`, using
+the forces evaluated at `q(−dt/2)`.
 
-⚠️ **Reproduit un coefficient douteux du code d'origine.** `moveback2` calcule
+⚠️ **Reproduces a dubious coefficient of the original code.** `moveback2`
+computes
 
     coef2 = 0.5·dltt*2·npart/(mel·nbelec)
 
-soit `dt/M`. Or `coef2·F` est alors une *vitesse*, ajoutée à des longueurs :
-la formule n'est pas homogène. Un développement de Taylor donne `dt²/4M`, et
-la routine voisine `move` écrit bien `dltt**2`. Tout indique une coquille
-`dltt*2` pour `dltt**2` — mais elle est présente à l'identique dans les
-**cinq** versions du code de la thèse, donc jamais corrigée.
+that is, `dt/M`. But `coef2·F` is then a *velocity*, added to lengths: the
+formula is not dimensionally consistent. A Taylor expansion gives `dt²/4M`, and
+the neighbouring routine `move` does write `dltt**2`. Everything points to a
+typo, `dltt*2` for `dltt**2` — but it is present identically in **all five**
+versions of the thesis code, hence never fixed.
 
-L'effet est ponctuel : il ne fausse que l'amorçage, comme une erreur sur la
-vitesse initiale. On le reproduit tel quel pour rester comparable à l'oracle ;
-`consistent = true` sélectionne la variante homogène `dt²/4M`, pour mesurer
-ce que la coquille coûte.
+The effect is one-off: it only distorts the priming, like an error on the
+initial velocity. We reproduce it as is, to stay comparable with the oracle;
+`consistent = true` selects the dimensionally consistent variant `dt²/4M`, to
+measure what the typo costs.
 """
 function full_step_back(positions, half, forces, M, dt; consistent::Bool = false)
     coef = consistent ? dt^2 / 4M : dt / M
     map((q, h, f) -> .-q .+ 2 .* h .+ coef .* f, positions, half, forces)
 end
 
-# Pas de `kinetic_energy(cloud, dt)` autonome : le moment centré en t se lit
-# entre q(t+dt) et q(t−dt), qui ne coexistent qu'à l'intérieur d'un pas. Une
-# fonction d'après-coup ne verrait que q(t) et q(t−dt) et rendrait le moment
-# en t−dt/2 — une autre grandeur, sous le même nom. `step!` la renvoie.
+# No standalone `kinetic_energy(cloud, dt)`: the centred momentum at t is read
+# between q(t+dt) and q(t−dt), which coexist only inside a step. An after-the-
+# fact function would see only q(t) and q(t−dt) and would return the momentum at
+# t−dt/2 — a different quantity under the same name. `step!` returns it.
