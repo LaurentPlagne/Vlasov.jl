@@ -266,6 +266,49 @@ données. Mesuré sur le chemin **CPU**, sans une ligne de GPU :
 
 Soit 19,7 ms économisées par pas pour un tri à 6,7 ms.
 
+### PSRS : pourquoi la thèse en avait besoin, et pas nous
+
+Le tri par échantillonnage régulier est plus rapide sur une séquence **déjà
+presque triée**, et les particules d'un pas à l'autre le sont : mesuré,
+**14,4 % seulement changent de maille par pas**, très stablement — une
+particule traverse une maille de 3,55 a₀ en environ sept pas à la vitesse de
+Fermi.
+
+Mais le tri employé ici est un **tri par comptage**, donc `O(N)` et
+**insensible à l'ordre par construction**. Décomposition de ses 6,7 ms
+d'origine :
+
+| étage | ms | dépend de l'ordre ? |
+|---|---|---|
+| indices de maille + comptage | 0,49 | non, `O(N)` |
+| fusion des compteurs | 0,26 | non |
+| décalages | 1,86 | non, `O(mailles)` |
+| **placement** | **0,41** | **oui** |
+| colonnes de table | 3,63 | non, `O(N)` |
+
+**Seules 0,41 ms dépendent de l'ordre.** Un tri adaptatif optimiserait la part
+la moins chère. Ce qui coûte, c'est le travail par particule — indices de
+maille et colonnes de table — qu'aucun algorithme de tri ne touche, puisqu'il
+dépend des positions exactes, lesquelles changent à chaque pas.
+
+**Là où PSRS gagne vraiment, c'est en mémoire distribuée.** Sur le T3E de la
+thèse, trier les particules est un problème de *communication* : il faut les
+redistribuer entre processeurs, et l'échantillonnage régulier sert précisément
+à équilibrer l'échange. Sur une machine à mémoire partagée il n'y a pas
+d'échange à équilibrer — le placement écrit directement à sa place. La méthode
+répondait à une contrainte que nous n'avons pas encore. Elle redeviendra
+pertinente le jour où la simulation passera sur plusieurs nœuds.
+
+Cette vérification a tout de même rapporté : le calcul des décalages balayait
+les 91 125 mailles alors que 7 413 sont occupées. Restreint, il passe de
+**1,86 à 0,13 ms** (plus 0,06 pour dresser la liste), et la préparation
+complète de **6,7 à 5,2 ms**. Le dépôt trié sur GPU revient donc à
+**8,7 + 5,2 = 13,9 ms** contre 35,7 sur CPU, soit ×2,6.
+
+Le prochain morceau est le calcul des colonnes de table, 3,63 ms : il est
+particulaire et parallèle, donc il a sa place sur le GPU, où les positions sont
+déjà montées pour les forces.
+
 ### Deux pièges du tri par comptage
 
 **Remettre les compteurs à zéro.** `count_cells!` accumule ; une mesure répétée

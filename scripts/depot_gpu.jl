@@ -59,10 +59,25 @@ function count_cells!(keys, partial, pos, chunks, x0, h, nk)
     end
 end
 
-"""Où chaque tranche écrit, pour chaque maille : le tri par comptage parallèle."""
-function slice_offsets!(offsets, partial, total, ncell)
+"""Liste des mailles **occupées**. Sur 91 125 mailles, 7 413 le sont : l'agrégat
+de rayon 40 n'occupe qu'une fraction de la boîte de ±78."""
+function occupied_cells(total::Vector{Int32})
+    occ = Vector{Int32}(undef, count(>(Int32(0)), total))
+    j = 0
+    @inbounds for c in eachindex(total)
+        total[c] > Int32(0) && (j += 1; occ[j] = Int32(c))
+    end
+    occ
+end
+
+"""Où chaque tranche écrit, pour chaque maille : le tri par comptage parallèle.
+
+⚠️ Ne balayer que les mailles **occupées**. La version qui parcourait les
+91 125 mailles coûtait 1,86 ms ; restreinte, elle en coûte 0,13, et dresser la
+liste 0,06 — un gain net de 1,67 ms sur une préparation de 6,7."""
+function slice_offsets!(offsets, partial, total, occ)
     acc = Int32(0)
-    @inbounds for c in 1:ncell
+    @inbounds for c in occ
         a = acc
         for t in eachindex(partial)
             offsets[t][c] = a
@@ -218,7 +233,8 @@ function main()
         count_cells!(keys, partial, pos, chunks, x0, h, nk)
         copyto!(total, partial[1])
         for t in 2:nch; total .+= partial[t]; end
-        slice_offsets!(offsets, partial, total, ncell)
+        occ = occupied_cells(total)
+        slice_offsets!(offsets, partial, total, occ)
         place!(perm, keys, offsets, chunks)
         Threads.@threads for s in 1:NPART
             @inbounds begin
@@ -231,10 +247,9 @@ function main()
                 end
             end
         end
-        nothing
+        occ
     end
-    sort!()
-    occ = Int32[c for c in 1:ncell if total[c] > 0]
+    occ = sort!()
     offs = Int32[0]; acc = Int32(0)
     for c in occ; acc += total[c]; push!(offs, acc); end
 
