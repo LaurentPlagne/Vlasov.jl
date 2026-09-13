@@ -77,7 +77,7 @@ voir davantage. Ni des runs longs, où un biais sous le bruit peut s'accumuler.
 | 5 | `force2gi` | appel avec un argument de trop | code mort | corrigée (obligatoire) |
 | 6 | `makerhsf` | multipôles calculés puis jetés | temps de calcul, bruit | — |
 | 7 | `ceq3d.f` | `π` tronqué à 12 décimales | ~1e-12 partout | non reproduite |
-| 8 | `pspech2` / `enertot2g` | potentiel incohérent au bilan ? | à élucider | — |
+| 8 | `pspech2` | `rr` périmé dans la branche `ρ ≤ 1e-7` | **mesurée : ‖csol‖ 6,3 → 704,4** | corrigée en 1998-01-05 |
 | 9 | `docapture` | adoucissement différent d'`incproj` | énergie de compte rendu | — |
 
 Les points 4 et 5 sont corrigés dans `modernize.patch`, sans quoi le code ne
@@ -85,8 +85,11 @@ compile pas ; voir [`ref/fortran/README.md`](../ref/fortran/README.md).
 
 Les points 1, 2 et 3 sont présents **à l'identique dans les cinq versions** du
 code de la thèse (`arkonnen/vlasov`, `lu`, `pghpf`, `pghpf2`, `t3e/new`,
-`lindhard`). Ce ne sont donc pas des accidents de copie : ils ont traversé tout
-le développement sans être vus.
+`lindhard`), et survivent jusqu'à la dernière (1998-01-05). Ce ne sont donc pas
+des accidents de copie : ils ont traversé tout le développement sans être vus.
+
+Le point 8 fait exception : l'auteur l'a corrigé début 1998. C'est la seule
+anomalie de cette liste dont on sache qu'elle a été vue.
 
 ---
 
@@ -290,37 +293,57 @@ on écrit pourquoi.
 
 ## 8. `pspech2` / `enertot2g` — quel potentiel voit le bilan ?
 
-**Constat, non élucidé.** `pspech2` est l'exacte opposée de `pspech`
-(`ech = −ech`), et la boucle en temps l'appelle juste avant `enertot2g`. Le
-potentiel devrait donc être revenu à Hartree seul. En traçant la norme de
-`csol` sur une itération :
+**Élucidé.** L'énoncé initial partait d'une lecture fausse : `pspech2` n'est
+**pas** l'opposée de `pspech`. Elle contient **deux** boucles, et ajoute donc
+deux fois à `csol` :
 
-| point de la boucle | ‖csol‖ |
-|---|---|
-| avant `enerele2g` (Hartree seul) | 737,4 |
-| avant `force2g` (après `pspech`) | 7,8 |
-| avant `enertot2g` (après `pspech2`) | **322,2** |
+1. `ech = −(V_xc + V_jel)` — celle-là, oui, défait `pspech` ;
+2. `ech = ε_xc + V_jel` — l'énergie d'échange-corrélation, avec le facteur ¾
+   de Dirac et l'expression **intégrée** de Gunnarsson-Lundqvist
+   `εc = −0,0333·[(1+x³)ln(1+1/x) + x/2 − x² − ⅓]`, `x = rs/11,4`.
 
-`pspech2` ne restitue donc pas 737,4. Et 322,2 ne correspond **ni** à Hartree
-**ni** au potentiel total — alors que la valeur `potel = −30,5` qu'en tire
-`enertot2g` est, elle, cohérente avec le potentiel **total** (‖·‖ = 7,8) et
-non avec Hartree (qui donnerait ≈ 1979).
+`csol` n'est donc pas censé revenir à Hartree : `pspech2` le convertit du
+**potentiel** vers l'**énergie**, ce que `enertot2g` demande. Le tableau
+d'origine se relit alors sans mystère, et les deux premières lignes se
+reproduisent **exactement** dans le portage :
 
-Vérifié au passage : `ech` est rigoureusement **identique** entre les deux
-routines — même `rho` (norme 0,095344877106496542 des deux côtés), même `ech`
-(911,00264890247547). La différence ne vient donc pas de l'intégrande.
+| point de la boucle | ‖csol‖ Fortran | portage |
+|---|---|---|
+| Hartree seul | 737,4 | **737,4** |
+| après `pspech` (+ V_xc + V_jel) | 7,8 | **7,8** |
+| après `pspech2` (+ ε_xc + V_jel) | 322,2 | *voir ci-dessous* |
 
-**Ce que le portage fait.** `energy_budget` reproduit les nombres de l'oracle
-au chiffre près à partir de ses propres entrées (champ moyen à `6e-15`, total
-à `8e-13`), et la boucle Julia alimente le bilan avec ce que la physique
-demande sans ambiguïté : `½∫ρΦ_H` pour Hartree, `∫ρΦ_total` pour
-l'interaction. Les deux coïncident avec les valeurs publiées par le Fortran.
+La troisième ne se reproduit pas, et c'est là que le vrai défaut se loge. La
+seconde boucle est écrite ainsi :
 
-**À faire.** Compter et ordonner tous les appels à `pspech`/`pspech2` — le
-tracé en montre plus que la lecture de la boucle n'en laissait attendre, et
-dans un ordre inattendu. Tant que ce n'est pas élucidé, ne rien conclure de
-physique à partir des énergies **du Fortran** ; celles du portage reposent,
-elles, sur une définition explicite.
+```fortran
+if (rho(i,j,k).gt.1.d-7) then
+   rsrm1=rho(i,j,k)**us3
+   rr=dsqrt(gtx(i)**2+gty(j)**2+gtz(k)**2)   ! ← calculé seulement ici
+   ...
+else
+   ech(i,j,k)=potjel(rr,nbion)                ! ← rr du point PRÉCÉDENT
+end if
+```
+
+**`rr` n'est calculé que dans la branche dense.** Sur la grille fine de l'état
+initial, seuls 9,5 % des points dépassent `1e-7` : les 90,5 % restants
+évaluent le potentiel de jellium à un rayon hérité d'un point antérieur,
+choisi par l'ordre de parcours. Mesuré dans le portage, l'effet est massif —
+`‖csol‖` passe de **6,3** (rayon correct) à **704,4** (rayon périmé). La
+valeur 322,2, intermédiaire, n'a pas été reproduite au chiffre près : elle a
+été relevée à un autre instant de la boucle, sur un autre état de densité.
+
+**La version 1998-01-05 corrige le défaut** en hissant `rr` hors du `if`.
+C'est la seule des corrections silencieuses de 1998 dont l'effet soit
+quantifié ici.
+
+**Ce que le portage fait.** Il ne reproduit pas la conversion en deux temps :
+la boucle Julia alimente le bilan avec une définition explicite — `½∫ρΦ_H`
+pour Hartree, `∫ρΦ_total` pour l'interaction — et `energy_budget` retrouve les
+nombres de l'oracle à `6e-15`. La paire `xc_potential` / `xc_energy_density`
+existe désormais dans `meanfield.jl` pour que la distinction soit nommée
+plutôt que subie.
 
 ---
 

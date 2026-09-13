@@ -83,6 +83,29 @@ Tous deux ne dépendent de la densité que par `ρ^⅓`, calculé une fois.
 end
 
 """
+    xc_energy_density(ρ) -> T
+
+Densité d'énergie d'échange-corrélation LDA — à ne pas confondre avec
+[`xc_potential`](@ref), qui en est la dérivée fonctionnelle.
+
+C'est la seconde boucle de `pspech2` : l'échange y porte le facteur ¾ de
+Dirac, et la corrélation prend l'expression **intégrée** de
+Gunnarsson-Lundqvist,
+
+    εc = −0.0333·[(1+x³)·ln(1+1/x) + x/2 − x² − ⅓],   x = rs/11.4
+
+au lieu du simple logarithme du potentiel. Le bilan d'énergie demande `ε`, les
+forces demandent `V` ; les confondre est l'erreur que cette paire de fonctions
+existe pour rendre visible.
+"""
+@inline function xc_energy_density(ρ::T) where {T}
+    ρ <= 0 && return zero(T)
+    x = cbrt(3 / (4 * T(π) * ρ)) / T(11.4)
+    T(XC_EXCHANGE) * cbrt(ρ) * 3 / 4 +
+        T(XC_CORRELATION) * ((1 + x^3) * log1p(1 / x) + x / 2 - x^2 - T(1) / 3)
+end
+
+"""
     effective_potential!(csol, ρ, mesh, jellium) -> csol
 
 Ajoute au potentiel de Hartree — déjà présent dans `csol` sous forme de

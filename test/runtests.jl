@@ -1028,6 +1028,30 @@ end
         end
     end
 
+    @testset "Potentiel et énergie d'échange-corrélation" begin
+        # `xc_potential` est la dérivée fonctionnelle de l'énergie d'échange
+        # -corrélation, `xc_energy_density` en est la densité : les confondre
+        # est précisément l'erreur que la paire existe pour empêcher. Le test
+        # le vérifie sur l'échange seul, où la relation est exacte :
+        #   E_x = ∫ ε_x ρ  avec ε_x = ¾·(−(3/π)^⅓ ρ^⅓)
+        #   V_x = d(ε_x ρ)/dρ = −(3/π)^⅓ ρ^⅓ = (4/3)·ε_x
+        # La corrélation empêche l'égalité globale, mais son poids est faible.
+        for ρ in (1e-3, 3.7e-3, 1e-2)
+            εx = 3 / 4 * (-cbrt(3 / π)) * cbrt(ρ)
+            vx = (-cbrt(3 / π)) * cbrt(ρ)
+            @test vx ≈ 4 / 3 * εx
+            # Chaque fonction doit porter le bon terme d'échange.
+            @test xc_potential(ρ) < vx          # + corrélation, négative
+            @test xc_energy_density(ρ) < εx
+            # …et rester nettement distinctes l'une de l'autre.
+            @test xc_energy_density(ρ) > xc_potential(ρ)
+        end
+        # Densité nulle : l'énergie s'annule proprement plutôt que de diverger
+        # sur `rs → ∞`.
+        @test xc_energy_density(0.0) == 0.0
+        @test xc_potential(0.0) == 0.0
+    end
+
     @testset "Sphère uniformément chargée" begin
         Q, R = 3.0, 2.0
         # Continuité de la valeur et du champ à la surface.
