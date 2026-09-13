@@ -58,6 +58,57 @@ garantit qu'il ait produit une figure publiée.
 pseudo-particules, `dE/dx` reste entre 0,985 et 1,006 — convergé à ±1 %, sans
 la moindre dérive vers 0,72.
 
+## Tranché par les données archivées
+
+`temp/…/lucifer/Eloss/` conserve les **sorties de production de l'époque**, sous le nom
+que le code fabrique lui-même : `Em1q1e002i000.dat` = masse 1, charge 1, 2 keV, impact 0.
+Six énergies existent à impact nul : 2, 5, 7, 10, 19 et 50 keV.
+
+Ces fichiers donnent `x(t)` tous les pas de temps, donc `v(t)` par différences finies —
+et `½mv²` au premier pas redonne 73,502 u.a. contre 73,498 annoncés en en-tête, ce qui
+confirme `dt = 1,0` et valide la lecture.
+
+**La colonne 6 vaut `−N/|x|`**, ce qui identifie le système : `−15,680 × 99,717 = 1564` et
+`−5,0911 × 308,266 = 1569`. Le run archivé est donc **Na₁₅₆₈**, lancé depuis `x₀ = −100`
+— et non Na₁₉₆ depuis −70. (Le même calcul sur notre sortie donne 195,2 : Na₁₉₆.)
+
+| Source | `dE/dx` (eV/a₀) |
+|---|---|
+| Archive `Em1q1e002i000.dat`, Na₁₅₆₈, sur la traversée ±R | **1,09** |
+| Archive, plateau dans le cœur (moyenne glissante) | **1,15 – 1,20** |
+| **Portage Julia, Na₁₉₆** | **1,00** |
+| Fortran d'origine, Na₁₉₆ | 0,996 |
+| Ma lecture de la figure `Fperte2` | 0,69 – 0,74 |
+
+Le profil local le confirme : `dE/dx` est nul jusqu'à `x ≈ −55`, monte à un plateau de
+1,15 – 1,20 sur tout le cœur, et retombe à zéro après `x ≈ +55` — un rayon de 46 a₀, qui
+est exactement `r_s·N^{1/3} = 4 × 1568^{1/3}` pour Na₁₅₆₈.
+
+**C'est donc ma lecture de la figure qui était fausse, pas le portage.** Les deux tailles
+de cluster partagent la même densité de cœur (`r_s = 4`), et le pouvoir d'arrêt suit la
+densité : 1,00 pour Na₁₉₆ et 1,15 pour Na₁₅₆₈ sont cohérents entre eux. Aucune des
+valeurs produites par le code — d'époque ou portée — n'approche 0,72. La figure `Fperte2`
+porte des courbes Na₄₀/Na₂₅₀/Na₁₀₀₀ ; ni Na₁₉₆ ni Na₁₅₆₈ n'y figurent, et la grandeur
+tracée n'est vraisemblablement pas la perte totale divisée par le diamètre.
+
+> 🗣️ **L'auteur, de mémoire : « le cutoff du projectile était le paramètre clé pour le
+> pouvoir d'arrêt ».** Cohérent avec le reste : le `vlas.inp` de production proton garde
+> `cutoff = 1.0`, tandis que le balayage Xe²⁵⁺ de `arkonnen/launch/` monte à `5.0`. C'est
+> bien un paramètre d'entrée que l'on fait varier, et `σ_ion = 1,0 a₀` de la figure
+> désigne `cutoff = 1.0`.
+
+### Ce qui reste ouvert
+
+Non pas un écart code/thèse — il n'y en a plus — mais la **définition** portée par la
+figure `Fperte2`. Pour la trancher il faudrait rejouer un Na₄₀ ou un Na₂₅₀ et comparer
+courbe à courbe, ce que le portage sait faire.
+
+Reste aussi à vérifier si `initialise4` (échantillonnage par rejet, version 1998-01-05)
+déplace `dE/dx` : c'est le seul changement de physique entre la version portée et la
+cible. Voir [`chronologie-versions-fortran.md`](chronologie-versions-fortran.md).
+
+<!-- ancienne section, conservée pour mémoire -->
+
 > 🗣️ **L'auteur, de mémoire : « le cutoff du projectile était le paramètre
 > clé pour le pouvoir d'arrêt ».** Cela oriente fortement la recherche : le
 > `cutoff` **est** bien le paramètre pertinent, et `σ_ion = 1,0 a₀` de la
@@ -74,8 +125,8 @@ Restent à élucider, par ordre de vraisemblance :
 2. **La définition de `dE/dx` dans la figure** — pente ajustée sur la partie
    linéaire, ou rapportée à la densité du cœur, plutôt que perte totale
    divisée par le diamètre.
-3. **La version du code.** Les figures de la thèse ont été produites près de
-   la soutenance (déc. 1998), alors que le portage part de la version du
-   1997-06-06. La dernière séquentielle (1998-01-07) ajoute `pspech3` et
-   `multrcmax`, qui touchent précisément au rayon de coupure du projectile.
-   Voir [`chronologie-versions-fortran.md`](chronologie-versions-fortran.md).
+3. **La version du code.** Le portage part du 1997-06-06 ; la cible de
+   production est le 1998-01-05, qui change l'initialisation (`initialise4`).
+   ⚠️ J'avais écrit ici que `multrcmax` touchait au rayon de coupure du
+   projectile : c'est faux. Cette routine compte les électrons dans des
+   sphères de 50 à 100 a₀ et écrit `rcm.dat` — un diagnostic d'évaporation.

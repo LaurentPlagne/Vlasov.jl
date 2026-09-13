@@ -1,0 +1,11 @@
+# Produits de compilation
+*.o
+vlas98
+# Fichiers de travail recopiés depuis data/ par le programme, et ses sorties
+*.dat
+!data/*.dat
+*.log
+Eloss/
+out/
+# Reconstruit par make_pot.py — ce n'est pas une donnée d'origine
+pot.dat

@@ -44,7 +44,8 @@ Versions datées, sous `temp/home/sauron2/plagne/it8/ttt/` sauf mention contrair
 | 1997-11-06 | 5045 | 87 | `majrel2/lucifer/vlas.f.echcorr` | échange-corrélation, potentiel radial |
 | 1997-12-29 | 5345 | 90 | `majrel2/lucifer/vlas.f.29-12-97` | |
 | 1998-01-05 | 5345 | 90 | `majrel2/lucifer/vlas.f` | |
-| **1998-01-07** | **5297** | **91** | **`majrel2/lucifer/initial/vlas.f`** | ⭐ **dernière séquentielle** |
+| **1998-01-05** | **5345** | **90** | **`majrel2/lucifer/vlas.f`** | ⭐ **cible : dernière de production** |
+| 1998-01-07 | 5297 | 91 | `majrel2/lucifer/initial/vlas.f` | branche `initial/` — **sans projectile** |
 
 ### Rattachement des copies `arkonnen/`
 
@@ -112,26 +113,91 @@ plus courte ; `mpi_stuff.hpf` y isole les enveloppes MPI.
 1998-12-18          soutenance
 ```
 
-## Conséquence pour le portage Julia
+## Quelle version est la cible
 
-La cible n'est **pas une version unique** — les deux dernières sont sur des branches
-disjointes, et il faut prendre à chacune ce qu'elle apporte :
+La plus récente par la date n'est pas la bonne. **`lucifer/initial/vlas.f` (1998-01-07)
+n'appelle pas `initpro`** : son programme principal n'a plus de projectile. C'est une
+expérience de relaxation — d'où le répertoire `initial/`, un `qpold=0.0` après
+l'initialisation, un terme de friction `kconv = -1e-5` ajouté aux forces dans `move`, et
+un terme cinétique de Thomas-Fermi `½(3π²)^{2/3}ρ^{2/3}` ajouté à `pspech`.
 
-1. **Physique → `lucifer/initial/vlas.f` (1998-01-07).** Elle ajoute 16 routines à la
-   version portée : énergie propre (`enertot2gi`, `enertot2gix`), potentiel radial
-   (`mkpotrad`, `mkpotradx`, `mkrhoradx`), distributions en énergie (`distene`,
-   `mkdensene`, `denseta`), `pspech3`, et un jeu d'initialisation refait (`initialise4`,
-   `testinit`, `litpotexa`). C'est là que se trouve l'état de la physique au moment de la
-   rédaction — donc l'état auquel correspondent les figures de la thèse. **Piste à
-   instruire pour l'écart `dE/dx`** : `pspech3` et `multrcmax` touchent au rayon de coupure
-   du projectile, que vous identifiez comme le paramètre clé du pouvoir d'arrêt.
-2. **Parallélisme → `mystuffgz/vlas.hpf`.** Non pas à porter, mais à lire comme
-   spécification : le découpage `(block,*,*)` sur la densité contre `(*,*,block)` sur le
-   potentiel dit quelles transpositions étaient jugées nécessaires, et le tri à deux
-   niveaux `grostri` → `petittri` donne la granularité retenue pour la localité.
-   L'équivalent Julia du tri n'existe pas encore ; il n'est pas urgent tant que le dépôt
-   reste seul (`Threads.@threads` + un tableau de densité par fil suffit), mais c'est la
-   référence quand la grille et le nombre de particules augmenteront.
+**La cible est `lucifer/vlas.f` (1998-01-05)** : dernière version de la lignée principale
+qui fasse encore une collision (`initpro`, `incproj`, `force2g`, `enerele2g`).
 
-Ordre raisonnable : d'abord (1), qui peut expliquer un écart physique réel ; (2) ne
-change aucun résultat, seulement le temps de calcul.
+### Ce qui sépare la version portée (1997-06-06) de la cible (1998-01-05)
+
+61 routines identiques, 15 modifiées, 16 ajoutées, **aucune supprimée**. Le détail :
+
+**Change la physique**
+
+| Quoi | Effet |
+|---|---|
+| `makeinit` appelle **`initialise4`** au lieu de `initialise` | échantillonnage par **rejet dans l'espace des phases 6D** : on tire `r = rmax·x₁^{1/3}`, `p = pmax·x₄^{1/3}` et on accepte si `p²/2 + V(r) < E_F`. C'est la distribution de Thomas-Fermi exacte, là où l'ancienne inversait un profil radial tabulé (`hm1.dat`, `rhoinit.dat`). |
+| `griech` : `nbprem` **10 → 2** | change la grille d'échantillonnage `gtech` |
+| `initialise` : `integer rmax` → **`real*8 rmax`** | corrige la coquille n°4 |
+| `initialise` : `sqrt`/`cos`/`sin` → `dsqrt`/`dcos`/`dsin` | intrinsèques simple précision sur des `real*8` |
+| `pspech2` : `rr` sort du `if (rho > 1e-7)` | avant, `rr` gardait la valeur du point précédent quand la densité était négligeable |
+
+**Nouveau paramètre d'entrée `rcmax`**, lu en fin de `vlas.inp` (deux lignes de plus) et
+passé à `move`, `enerele2g`, `enertot2g`, où il remplace le `100.d0` codé en dur : c'est
+le rayon au-delà duquel un électron est compté comme sorti. `vlas.inp` de production le
+documente comme « rayon considéré comme inner cluster ».
+
+**Diagnostics seuls** — `multrcmax` (nombre d'électrons dans des sphères de 50 à 100 a₀,
+écrit dans `rcm.dat` : *malgré son nom, rien à voir avec le rayon de coupure du
+projectile*), `mkpotrad`/`mkpotradx`/`mkrhoradx` (profils radiaux), `mkdensene`/
+`distene`/`denseta` (distributions en énergie), `sortietest`/`sortietest2`, et le couple
+`litpotexa` + `enertot2gix` qui rejoue le bilan d'énergie avec un potentiel radial
+externe. `angular`, `echanti2`, `griech` passent de `0:100` à `0:NBGEM` (constante).
+
+**Code mort** — `pspech3` n'est appelé nulle part. Il calcule pourtant la **densité
+d'énergie** d'échange-corrélation (Dirac avec son facteur ¾, et l'expression complète de
+Gunnarsson-Lundqvist) plutôt que le **potentiel**, et corrige le double comptage de
+Hartree par `csol ← ½csol + echsol`. C'est exactement la correction que réclame la
+coquille n°8 : l'auteur l'avait écrite sans la brancher.
+
+`ceq3d.f` change aussi : `NHFX` passe de **28 à 32**, `npartmax` à 3 000 000, et `NBGEM`
+apparaît.
+
+### Le verrou : `pot.dat`
+
+`initialise4` et `litpotexa` lisent un fichier `pot.dat` — en-tête `nbgrid`, puis
+`rmax pmax Ef`, puis `(r, ·, V(r))` — qu'**aucune version de `vlas.f` n'écrit**. Il est
+produit par `mkpotradx` (sous le nom `potrad.dat`) lors d'un run précédent : c'est une
+boucle d'amorçage auto-cohérente. **Aucun exemplaire n'a survécu dans l'archive.**
+
+`ref/fortran98/pot.dat` est donc une **reconstruction**, pas l'original. Elle est exacte
+pour ce que le fichier sert à faire : le test de rejet `p²/2 + V(r) < E_F` équivaut à
+`p < p_F(r)`, donc poser `V(r) = E_F − p_F(r)²/2` avec `p_F = (3π²ρ)^{1/3}` reproduit la
+distribution de Thomas-Fermi voulue, et `E_F` s'élimine. `ρ(r)` vient de `rhoinit.dat`,
+le profil d'équilibre que l'ancienne initialisation utilisait déjà.
+
+## Où sont les runs de production
+
+`arkonnen/vlasov/vlas.inp` — à côté de la source portée — est le fichier **de production
+proton** : il ne diffère de `ref/fortran/vlas.inp` que par deux lignes, **800 000
+pseudo-particules** (au lieu de 20 000) et **4000 pas** (au lieu de 2). Grille, domaines,
+cutoff, énergie, pas de temps sont identiques. Le nôtre était un fichier de test.
+
+`arkonnen/launch/` contient un balayage de douze entrées au **format à 71 lignes**, celui
+de la version parallèle : projectile de masse 236 864 u.a. (≈ Xe), charge 25, 1 310 720
+particules, grille 32/63, domaines 120/300, `cutoff = 5.0`, `rcmax = 45`. Les suffixes
+`02` et `08` sont les vitesses : √(2E/m) = 0,197 et 0,788 u.a. Les paramètres d'impact
+balayent 30 à 80 a₀. **Les runs Xe²⁵⁺ de la thèse ont donc tourné sur le code HPF.**
+
+`temp/…/lucifer/Eloss/` conserve les **sorties archivées** : `Em1q1e002i000.dat` se lit
+masse 1, charge 1, 2 keV, impact 0 — exactement le nom que produit notre oracle 98. Voir
+[`validation-chapitre6.md`](validation-chapitre6.md) : ces trajectoires archivées sont
+une référence bien plus sûre qu'une lecture de figure.
+
+## Ordre de travail
+
+1. **`rcmax` en paramètre d'entrée** — mécanique, sans risque.
+2. **`initialise4`** — le vrai changement de physique, et le seul qui déplace `dE/dx`.
+3. **Les corrections silencieuses** (`dsqrt`, `rr` dans `pspech2`, `nbprem`) — à mesurer
+   une par une contre l'oracle 98.
+4. **`pspech3`**, à brancher ou non : c'est la correction de la coquille n°8, mais
+   l'auteur ne l'a pas branchée. La reproduire veut dire la laisser morte.
+5. **Le parallélisme**, depuis `mystuffgz/vlas.hpf` lu comme spécification : découpage
+   `(block,*,*)` sur la densité contre `(*,*,block)` sur le potentiel, tri à deux niveaux
+   `grostri` → `petittri`. Ne change aucun résultat, seulement le temps de calcul.

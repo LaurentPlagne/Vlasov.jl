@@ -344,6 +344,51 @@ reproduit les deux formes, en les signalant l'une à l'autre.
 
 ---
 
+## Ce que la version de 1998 corrige — et ne corrige pas
+
+Vérifié en comparant la version portée (1997-06-06) à la cible de production
+(1998-01-05, voir [`chronologie-versions-fortran.md`](chronologie-versions-fortran.md)) :
+
+| # | Anomalie | Dans 1998-01-05 |
+|---|---|---|
+| 1 | `moveback2` : `dltt*2` pour `dltt**2` | **survit à l'identique** |
+| 2 | `ran2` : `IQ1=3668` au lieu de `53668` | **survit à l'identique** |
+| 3 | `maketaint` : supports d'intégration tronqués | **survit** |
+| 4 | `initialise` : `integer rmax` lisant un réel | ✅ **corrigée** — `real*8 rmax` |
+| 5 | `force2gi` : un argument de trop | **survit** (code mort) |
+| 9 | `docapture` : adoucissement divergent | **survit à l'identique** |
+
+Deux corrections silencieuses s'ajoutent, non relevées jusqu'ici parce qu'elles
+n'existaient pas dans la version portée :
+
+* **`initialise`** troque `sqrt`/`cos`/`sin` contre `dsqrt`/`dcos`/`dsin` — les
+  intrinsèques simple précision s'appliquaient à des `real*8`.
+* **`pspech2`** sort le calcul de `rr` du `if (rho > 1e-7)`. Avant, aux points de densité
+  négligeable, `rr` gardait la valeur du **point précédent** : le potentiel de jellium y
+  était évalué au mauvais rayon.
+
+L'anomalie 8 mérite un mot à part. La version 1998 contient une routine **`pspech3`** qui
+calcule la densité d'énergie d'échange-corrélation (Dirac avec son facteur ¾, expression
+complète de Gunnarsson-Lundqvist) au lieu du potentiel, et corrige le double comptage de
+Hartree par `csol ← ½csol + echsol`. C'est précisément la correction que réclame
+l'anomalie 8 — **mais elle n'est appelée nulle part**. L'auteur l'avait écrite sans la
+brancher. Reproduire fidèlement la cible veut donc dire la porter et la laisser morte.
+
+## Nouvelle : `initialise4` mélange les précisions
+
+Dans `initialise4` (1998-01-05), la position utilise `dsqrt` et le moment `sqrt`, dans la
+même routine, à quatre lignes d'écart :
+
+```fortran
+stheta = dsqrt(1.d0-(2.d0*x(3)-1.d0)**2.d0)   ! position
+...
+stheta = sqrt(1.d0-(2.d0*x(6)-1.d0)**2.d0)    ! moment
+```
+
+L'auteur venait de remplacer `sqrt` par `dsqrt` dans `initialise` ; la ligne du moment a
+été oubliée. Effet : l'angle polaire des vitesses est tiré avec une précision de `real*4`.
+À porter tel quel tant que l'oracle 98 sert de référence.
+
 ## Ce qui reste à examiner
 
 Le portage n'a couvert que 60 % du code vivant. Les étages non encore lus en

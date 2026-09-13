@@ -76,11 +76,18 @@ rien de l'accord après des centaines de pas enchaînés ; celle-ci le dit.
 
 📋 **La chronologie des ~43 versions Fortran est dans
 [`docs/chronologie-versions-fortran.md`](docs/chronologie-versions-fortran.md)**. Le
-portage part de la version du **1997-06-06** ; la dernière séquentielle est du
-**1998-01-07** (16 routines de plus : énergie propre, potentiel radial, `pspech3`), et la
-parallélisation vit dans une branche jamais fusionnée, `arkonnen/mystuffgz/vlas.hpf`
-(HPF + MPI + tri à deux niveaux). Une seule sous-arborescence a gardé ses dates d'origine :
-`temp/home/sauron2/plagne/` — partout ailleurs les `mtime` valent janvier 2025.
+portage part du **1997-06-06** ; la cible est le **1998-01-05**
+([`ref/fortran98/`](ref/fortran98/), second oracle). ⚠️ La version la plus récente par la
+date, 1998-01-07, **n'est pas la cible** : elle n'appelle pas `initpro`, c'est une
+expérience de relaxation sans projectile. La parallélisation vit dans une branche jamais
+fusionnée, `arkonnen/mystuffgz/vlas.hpf` (HPF + MPI + tri à deux niveaux). Une seule
+sous-arborescence a gardé ses dates d'origine : `temp/home/sauron2/plagne/` — partout
+ailleurs les `mtime` valent janvier 2025.
+
+⚠️ **`ref/fortran98/pot.dat` est une reconstruction, pas une donnée d'origine** : le
+fichier dont `initialise4` dépend n'a pas survécu dans l'archive, et sans lui le
+programme s'arrête au démarrage. Voir [`ref/fortran98/README.md`](ref/fortran98/README.md)
+pour ce que l'hypothèse engage.
 
 📋 **Les coquilles constatées sont relevées dans
 [`docs/coquilles-fortran.md`](docs/coquilles-fortran.md)** — à consulter avant de
