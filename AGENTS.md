@@ -74,6 +74,13 @@ toléraient (un `integer` relisant un réel, un appel avec un argument de trop e
 Fortran sur 600 pas, `dE/dx` à 0,5 %. Les comparaisons ponctuelles à `1e-13` ne disaient
 rien de l'accord après des centaines de pas enchaînés ; celle-ci le dit.
 
+⚠️ **Les dépendances passent par `Pkg`, jamais par une édition de `Project.toml`.**
+`Pkg.add` accepte un mot-clé `target` peu connu : `:weakdeps` pour une dépendance
+faible, `:extras` pour une dépendance de test. Éditer à la main désynchronise le
+manifeste — constaté ici, où il gardait les 33 dépendances transitives de `Metal`
+alors qu'une dépendance faible ne doit pas les tirer. Seule exception, parce
+qu'elle n'a pas d'API : le bloc `[extensions]`.
+
 📋 **Le portage GPU est documenté dans [`docs/gpu.md`](docs/gpu.md)**, profil à
 l'appui. ⚠️ Deux choses à savoir avant d'y toucher : les GEMM du solveur tensoriel
 ne font que **14 %** d'un pas à l'échelle de production — les porter plafonne à
