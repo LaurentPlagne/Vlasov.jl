@@ -1,27 +1,27 @@
 """
-Paramètres de simulation et boucle en temps.
+Simulation parameters and time loop.
 
-Le Fortran lisait ses paramètres dans `vlas.inp`, un fichier positionnel où
-chaque valeur est précédée de son commentaire : intervertir deux lignes passe
-inaperçu et change la physique. Ici ils sont nommés.
+The Fortran read its parameters from `vlas.inp`, a positional file where each
+value is preceded by its comment: swapping two lines goes unnoticed and changes
+the physics. Here they are named.
 """
 
 """
     SimulationParameters(; …)
 
-Paramètres d'une simulation. Les noms du Fortran sont rappelés en regard.
+Parameters of a simulation. The Fortran's names are recalled alongside.
 
-  * `nfine` (`n1xyz`) — intervalles de la grille fine, sur `[-rcluster, rcluster]` ;
-  * `ninner`, `nouter` (`n1big`, `n2big`) — découpage de la grille grossière ;
-  * `rcluster`, `rbox` (`xclu`, `xboite`) — rayons des deux domaines ;
-  * `nions`, `nelectrons` (`nbion`, `nbelec`) ;
-  * `nparticles` (`npart`) — pseudo-particules ;
-  * `nsteps`, `dt` (`nbt`, `dltt`) ;
-  * `rcmax` — rayon au-delà duquel un électron est compté comme **sorti** de
-    l'agrégat. Codé en dur à `100.d0` jusqu'en 1997 ; devenu la 19ᵉ valeur de
-    `vlas.inp` dans la version 1998-01-05, où `vlas.inp` de production le
-    documente « rayon considéré comme inner cluster ». La valeur par défaut
-    reproduit donc le comportement d'avant.
+  * `nfine` (`n1xyz`) — intervals of the fine grid, over `[-rcluster, rcluster]`;
+  * `ninner`, `nouter` (`n1big`, `n2big`) — subdivision of the coarse grid;
+  * `rcluster`, `rbox` (`xclu`, `xboite`) — radii of the two domains;
+  * `nions`, `nelectrons` (`nbion`, `nbelec`);
+  * `nparticles` (`npart`) — pseudo-particles;
+  * `nsteps`, `dt` (`nbt`, `dltt`);
+  * `rcmax` — radius beyond which an electron counts as having **left** the
+    cluster. Hard-coded to `100.d0` until 1997; became the 19th value of
+    `vlas.inp` in the 1998-01-05 version, where the production `vlas.inp`
+    documents it as "radius considered as inner cluster". The default therefore
+    reproduces the earlier behaviour.
 """
 Base.@kwdef struct SimulationParameters{T<:AbstractFloat}
     nfine::Int = 28
@@ -40,22 +40,22 @@ end
 """
     read_parameters(path) -> SimulationParameters
 
-Lit un `vlas.inp` du code d'origine : une ligne de commentaire, une ligne de
-valeur, en alternance. Les paramètres de projectile qui suivent sont ignorés —
-ils ne concernent pas l'agrégat isolé.
+Reads a `vlas.inp` of the original code: one comment line, one value line,
+alternating. The projectile parameters that follow are ignored — they do not
+concern the isolated cluster.
 """
 function read_parameters(path::AbstractString)
     vals = String[]
     open(path) do io
         for (i, line) in enumerate(eachline(io))
-            isodd(i) || push!(vals, strip(line))   # lignes paires = valeurs
+            isodd(i) || push!(vals, strip(line))   # even lines = values
         end
     end
     length(vals) >= 10 ||
-        throw(ArgumentError("$path : 10 valeurs attendues, $(length(vals)) trouvées"))
+        throw(ArgumentError("$path: 10 values expected, $(length(vals)) found"))
     num(s) = parse(Float64, replace(s, "d" => "e", "D" => "e"))
-    # `rcmax` est la 19ᵉ valeur, absente des `vlas.inp` d'avant 1998 : on
-    # retombe alors sur le `100.d0` que le Fortran codait en dur.
+    # `rcmax` is the 19th value, absent from pre-1998 `vlas.inp` files: we then
+    # fall back on the `100.d0` the Fortran hard-coded.
     rcmax = length(vals) >= 19 && !isempty(vals[19]) ? num(vals[19]) : 100.0
     SimulationParameters(
         nfine = Int(num(vals[1])), ninner = Int(num(vals[2])), nouter = Int(num(vals[3])),
@@ -68,13 +68,13 @@ end
 """
     Simulation(params, profile)
 
-Tout ce qui est constant au cours d'une simulation — maillages emboîtés,
-tables de lissage, fond de jellium — plus l'état qui évolue : le nuage de
-pseudo-particules.
+Everything that stays constant over a simulation — nested meshes, smoothing
+tables, jellium background — plus the state that evolves: the cloud of
+pseudo-particles.
 
-Construire une `Simulation` fait le travail lourd une fois : assemblage des
-matrices, diagonalisations, tables de convolution. Les pas qui suivent ne
-réutilisent que des multiplications.
+Building a `Simulation` does the heavy work once: matrix assembly,
+diagonalisations, convolution tables. The steps that follow only ever reuse
+multiplications.
 """
 struct Simulation{T<:AbstractFloat,P}
     params::SimulationParameters{T}
@@ -82,19 +82,19 @@ struct Simulation{T<:AbstractFloat,P}
     smoothing::GaussianSmoothing{T}
     jellium::Jellium{T}
     cloud::ParticleCloud{T}
-    """Projectile, ou `nothing` pour un agrégat isolé. Le type le porte plutôt
-       qu'un champ `Union` : la boucle reste spécialisée dans les deux cas."""
+    """Projectile, or `nothing` for an isolated cluster. The type carries it
+       rather than a `Union` field: the loop stays specialised in both cases."""
     projectile::P
     ρ::NTuple{2,Array{T,3}}
     φ::NTuple{2,Array{T,3}}
-    """Coefficients spline du potentiel, un jeu par niveau. Ils vivent le temps
-       d'un pas entier : leur donner des tampons propres évite 2,8 Mo
-       d'allocations par pas, et le ramasse-miettes qui va avec."""
+    """Spline coefficients of the potential, one set per level. They live for a
+       whole step: giving them their own buffers avoids 2.8 MB of allocations
+       per step, and the garbage collection that comes with them."""
     csol::NTuple{2,Array{T,3}}
-    """Tampons de diffusion, un par fil et par niveau, pour le dépôt parallèle.
-       Voir `ScatterBuffers` : leur coût mémoire croît comme le cube de la
-       grille, d'où leur présence explicite ici plutôt qu'une création en
-       douce à chaque dépôt."""
+    """Scatter buffers, one per thread and per level, for the parallel
+       deposition. See `ScatterBuffers`: their memory cost grows as the cube of
+       the grid, hence their explicit presence here rather than a quiet creation
+       at every deposition."""
     scatter::NTuple{2,ScatterBuffers{T,3}}
 end
 
@@ -121,17 +121,17 @@ end
 """
     prime_leapfrog!(sim, positions, momenta; consistent) -> sim
 
-Amorce le schéma de Verlet, qui a besoin de **deux** positions et non d'une
-position et d'une vitesse.
+Primes the Verlet scheme, which needs **two** positions and not a position and a
+velocity.
 
-En deux temps, comme `moveback1` puis `moveback2` du Fortran : un demi-pas en
-arrière depuis les impulsions, puis le pas complet, qui demande les forces —
-donc un potentiel, donc un dépôt et une résolution de Poisson.
+In two stages, like the Fortran's `moveback1` then `moveback2`: half a step
+backwards from the momenta, then the full step, which needs the forces — hence a
+potential, hence a deposition and a Poisson solve.
 
-⚠️ Sauter le second temps ne laisse pas le nuage « approximativement » amorcé :
-`previous` vaudrait `q(−dt/2)` là où le schéma attend `q(−dt)`, soit une
-vitesse initiale fausse d'un facteur deux. Le symptôme est une énergie
-cinétique qui monte dès les premiers pas.
+⚠️ Skipping the second stage does not leave the cloud "approximately" primed:
+`previous` would hold `q(−dt/2)` where the scheme expects `q(−dt)`, that is an
+initial velocity wrong by a factor of two. The symptom is a kinetic energy that
+rises from the very first steps.
 """
 function prime_leapfrog!(sim::Simulation{T}, positions, momenta;
                          consistent::Bool = false) where {T}
@@ -139,9 +139,9 @@ function prime_leapfrog!(sim::Simulation{T}, positions, momenta;
     dt = sim.params.dt
     half = half_step_back(positions, momenta, M, dt)
 
-    # Les forces s'évaluent en q(−dt/2), pas en q(0). Le projectile, lui, ne
-    # bouge pas : le Fortran n'appelle `incproj` qu'une fois l'amorçage fini,
-    # et l'avancer ici le ferait entrer dans l'agrégat avec un pas d'avance.
+    # The forces are evaluated at q(−dt/2), not at q(0). The projectile, for its
+    # part, does not move: the Fortran calls `incproj` only once priming is
+    # over, and advancing it here would have it enter the cluster one step early.
     copyto!(sim.cloud.positions, half)
     update_forces!(sim; advance = false)
 
@@ -154,19 +154,19 @@ end
 """
     update_forces!(sim) -> T
 
-Dépose les particules, résout Poisson sur les deux grilles, ajoute le champ
-moyen et remplit les forces du nuage. Renvoie l'énergie de Hartree, mesurée
-**avant** l'ajout du champ moyen — c'est le seul moment où le potentiel nu est
-disponible.
+Deposits the particles, solves Poisson on both grids, adds the mean field and
+fills the cloud's forces. Returns the Hartree energy, measured **before** the
+mean field is added — that is the only moment when the bare potential is
+available.
 
-`advance = false` calcule les forces sans faire avancer le projectile, ce dont
-l'amorçage a besoin.
+`advance = false` computes the forces without advancing the projectile, which is
+what priming needs.
 
-`energy = false` saute l'énergie de Hartree et rend `nothing`. Ce n'est pas une
-économie de façade : à 800 000 pseudo-particules cet appel pèse à lui seul 23 %
-du pas. Il doit se décider **ici** et pas après coup — l'énergie de Hartree se
-mesure sur les coefficients avant que l'échange-corrélation ne les écrase, et
-ils n'existent qu'entre deux lignes.
+`energy = false` skips the Hartree energy and returns `nothing`. This is no
+token economy: at 800 000 pseudo-particles that single call accounts for 23 % of
+the step. It has to be decided **here** and not after the fact — the Hartree
+energy is measured on the coefficients before exchange-correlation overwrites
+them, and they exist only between two lines.
 """
 function update_forces!(sim::Simulation{T}; advance::Bool = true,
                         energy::Bool = true, accelerator = nothing) where {T}
@@ -195,47 +195,48 @@ function update_forces!(sim::Simulation{T}; advance::Bool = true,
     if accelerator === nothing
         forces!(sim.cloud, fine.axes, csolf, coarse.axes, csolc, sim.smoothing)
     else
-        # Le projectile est fusionné dans le noyau des forces : le lui passer
-        # ici évite un second passage sur toutes les particules.
-        # `packed = true` : le dépôt accéléré, qui ouvre le pas, a déjà
-        # empaqueté les positions pour le GPU.
+        # The projectile is fused into the force kernel: passing it here avoids
+        # a second sweep over every particle.
+        # `packed = true`: the accelerated deposition, which opens the step, has
+        # already packed the positions for the GPU.
         forces!(sim.cloud, accelerator, fine.axes, csolf, coarse.axes, csolc,
                 sim.smoothing; projectile = sim.projectile, packed = true)
     end
     advance && advance_projectile!(sim, accelerator)
 
-    # Le potentiel total sert ensuite au bilan : on le garde sous la main.
+    # The total potential is used next for the budget: we keep it at hand.
     sim.φ[1] .= csolf
     sim.φ[2] .= csolc
     hartree
 end
 
 """
-    step!(sim; energy = true) -> EnergyBudget ou `nothing`
+    step!(sim; energy = true) -> EnergyBudget or `nothing`
 
-Un pas de temps complet, dans l'ordre du code d'origine :
+One complete time step, in the order of the original code:
 
- 1. dépôt des particules sur les deux grilles — lissé sur la fine ;
- 2. Poisson emboîté, du grossier au fin, qui donne le potentiel de Hartree ;
- 3. énergie de Hartree, mesurée **sur ce potentiel-là**, avant qu'on y ajoute
-    quoi que ce soit ;
- 4. ajout de l'échange-corrélation et du jellium ;
- 5. forces, puis avance de Verlet ;
- 6. bilan d'énergie, mesuré sur le potentiel **total**.
+ 1. deposition of the particles onto both grids — smoothed on the fine one;
+ 2. nested Poisson, coarse to fine, giving the Hartree potential;
+ 3. Hartree energy, measured **on that potential**, before anything is added to
+    it;
+ 4. addition of exchange-correlation and the jellium;
+ 5. forces, then the Verlet advance;
+ 6. energy budget, measured on the **total** potential.
 
-L'ordre des points 3 et 6 n'est pas un détail de commodité : les deux termes
-du bilan se réfèrent à des potentiels différents, et les intervertir rendrait
-le total silencieusement faux.
+The ordering of points 3 and 6 is no matter of convenience: the two terms of the
+budget refer to different potentials, and swapping them would make the total
+silently wrong.
 
-`accelerator` détourne le **dépôt lissé** et l'**évaluation du champ** vers un
-[`ForceAccelerator`](@ref) — le GPU. ⚠️ Ce chemin travaille en `Float32` : la
-trajectoire n'est plus celle du chemin CPU, seulement la même à `4e-5` près.
+`accelerator` diverts the **smoothed deposition** and the **field evaluation**
+to a [`ForceAccelerator`](@ref) — the GPU. ⚠️ That path works in `Float32`: the
+trajectory is no longer the CPU path's, only the same to within `4e-5`.
 
-`energy = false` saute les points 3 et 6 et rend `nothing`. **C'est le premier
-poste du pas** — les deux appels font ensemble 34 % du temps CPU, et 43 % une
-fois les forces sur GPU, plus que les forces elles-mêmes. Le Fortran ne
-calculait `enertot2g` qu'un pas sur dix ; le faire aussi rend ×1,63. La
-trajectoire n'en dépend pas : le bilan ne rétroagit sur rien, il observe.
+`energy = false` skips points 3 and 6 and returns `nothing`. **It is the step's
+largest item** — the two calls together account for 34 % of the CPU time, and
+43 % once the forces are on the GPU, more than the forces themselves. The
+Fortran computed `enertot2g` only one step in ten; doing the same yields ×1.63.
+The trajectory does not depend on it: the budget feeds back into nothing, it
+observes.
 """
 function step!(sim::Simulation{T}; energy::Bool = true,
                accelerator = nothing) where {T}
@@ -250,18 +251,18 @@ end
 """
     run!(sim; nsteps, energy_every = 1, accelerator = nothing, callback) -> Vector{EnergyBudget}
 
-Enchaîne `nsteps` pas et rend l'historique du bilan d'énergie — l'observable
-de stabilité du chapitre 4. `callback(i, budget)` est appelée après chaque pas,
-avec `nothing` pour budget aux pas où il n'est pas calculé.
+Chains `nsteps` steps and returns the history of the energy budget — the
+stability observable of chapter 4. `callback(i, budget)` is called after each
+step, with `nothing` for budget at the steps where it is not computed.
 
-`energy_every = 10` reproduit le Fortran, qui n'appelait `enertot2g` qu'un pas
-sur dix, et **rend ×1,63** : le bilan est le premier poste du pas. Le défaut
-reste 1 pour que rien ne change sans qu'on l'ait demandé.
+`energy_every = 10` reproduces the Fortran, which called `enertot2g` only one
+step in ten, and **yields ×1.63**: the budget is the step's largest item. The
+default stays at 1 so that nothing changes without having been asked for.
 """
 function run!(sim::Simulation; nsteps::Integer = sim.params.nsteps,
               energy_every::Integer = 1, accelerator = nothing,
               callback = (i, b) -> nothing)
-    energy_every >= 1 || throw(ArgumentError("`energy_every` doit valoir au moins 1"))
+    energy_every >= 1 || throw(ArgumentError("`energy_every` must be at least 1"))
     history = EnergyBudget{Float64}[]
     for i in 1:nsteps
         b = step!(sim; energy = (i - 1) % energy_every == 0, accelerator)
@@ -274,11 +275,11 @@ end
 """
     advance_projectile!(sim)
 
-Ajoute l'interaction du projectile — force sur lui, réaction sur les
-pseudo-particules — puis l'avance d'un pas.
+Adds the projectile's interaction — force on it, reaction on the
+pseudo-particles — then advances it by one step.
 
-Sans projectile, ne fait rien : le corps est éliminé à la compilation, la
-boucle de l'agrégat isolé n'en paie pas le prix.
+With no projectile, does nothing: the body is eliminated at compile time, so the
+isolated-cluster loop does not pay for it.
 """
 advance_projectile!(::Simulation{T,Nothing}, accelerator = nothing) where {T} = nothing
 
