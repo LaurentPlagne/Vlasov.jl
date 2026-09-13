@@ -43,6 +43,16 @@ Vérifié : appliquer cette recette aux `Ekproj.dat.N` redonne `desdx.dat.1000`
 | 16 | 0,800 | 1,618 | 1,587 / 1,586 |
 | 25 | 1,000 | 1,540 | 1,529 / 1,590 |
 
+## Résultat du portage
+
+`resultat-portage.txt` est la sortie de `scripts/figure53.jl` : les cinq points
+recalculés, à comparer colonne à colonne avec `desdx.dat.1000`. Quatre sur cinq
+tombent à ±5 %. Voir `docs/validation-chapitre6.md`.
+
+`rhorad.Na1000.dat` est la densité radiale d'équilibre de Na₁₀₀₀ (octobre 1998,
+998,7 électrons intégrés), recopiée de `…/majrel2/initial/1000/` : c'est l'état
+initial des runs, le `pot.dat` d'origine n'ayant pas survécu.
+
 ## À quoi cela sert
 
 Ces courbes ont été produites avec la **force gaussienne** de la thèse

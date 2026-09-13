@@ -58,7 +58,52 @@ garantit qu'il ait produit une figure publiée.
 pseudo-particules, `dE/dx` reste entre 0,985 et 1,006 — convergé à ±1 %, sans
 la moindre dérive vers 0,72.
 
-## Tranché : le code n'applique pas la force de la thèse
+## Figure reproduite — Na₁₀₀₀, σ_ion = 1
+
+Le balayage en vitesse de la thèse est retrouvé, avec la force gaussienne, sur
+l'agrégat et à la statistique de la production.
+
+Grille `nfine = 44`, `rcluster = 78`, `rbox = 235` (h = 3,55 a₀, la résolution
+validée sur Na₁₉₆, étendue pour contenir Na₁₀₀₀ et le projectile dès son
+entrée). **800 000 pseudo-particules**, départ à `x₀ = −65` comme les
+trajectoires archivées. Onze minutes de calcul pour les cinq points.
+
+| keV | v | portage `Δx=4` | ajustement ±10 | thèse | écart |
+|---|---|---|---|---|---|
+| 1 | 0,200 | 0,541 | 0,532 | 0,526 / 0,518 | **+3,6 %** |
+| 4 | 0,400 | 0,999 | 1,061 | 0,961 / 0,995 | **+2,2 %** |
+| 9 | 0,600 | 1,388 | 1,444 | 1,422 / 1,480 | **−4,4 %** |
+| 16 | 0,800 | 1,608 | 1,572 | 1,587 / 1,586 | **+1,4 %** |
+| 25 | 1,000 | 1,410 | 1,504 | 1,529 / 1,590 | −9,6 % |
+
+Quatre points sur cinq tombent à ±5 %, c'est-à-dire dans l'écart que les deux
+colonnes publiées ont **entre elles** (2 à 4 %). Le portage reproduit donc la
+courbe au niveau de sa propre dispersion, y compris le maximum vers v = 0,8 et
+la décroissance au-delà.
+
+Le point à 25 keV est le moins bon. L'estimateur de la thèse mesure une pente
+sur quatre bohrs : à v = 1, le projectile les franchit en quatre pas, et deux
+points suffisent à porter tout le résultat. L'ajustement sur ±10 a₀ y ramène
+l'écart à −3,5 %, ce qui dit que c'est l'estimateur qui plafonne, pas la
+physique.
+
+⚠️ **Il a fallu 800 000 pseudo-particules.** À 20 000, la trajectoire complète
+reste juste (perte totale 73,7 eV contre 76,1 pour l'archive, à 4 keV) mais la
+pente sur quatre bohrs devient **négative** : la fenêtre est trop étroite pour
+le bruit de tirage. C'est pourquoi la production employait ce nombre-là, et
+c'est le genre de chose qu'on ne devine pas — on la mesure.
+
+L'état initial vient de `rhorad.Na1000.dat`, la densité radiale d'équilibre
+archivée (octobre 1998, 998,7 électrons intégrés), convertie en profil de
+tirage par `PotentialProfile(grid, density)`. Le `pot.dat` qu'attendait
+`initialise4` n'a pas survécu, mais la densité suffit : à l'équilibre de
+Thomas-Fermi, poser `V = −p_F²/2` rend le critère de rejet équivalent à
+`p < p_F(r)`.
+
+Rejouable par [`scripts/figure53.jl`](../scripts/figure53.jl) ; sortie brute
+dans [`ref/these/resultat-portage.txt`](../ref/these/resultat-portage.txt).
+
+## Ce qui a permis d'y arriver — la force
 
 Les points **effectivement tracés** des figures du chapitre ont été retrouvés,
 dans le répertoire de travail xmgr de la thèse, et versionnés sous

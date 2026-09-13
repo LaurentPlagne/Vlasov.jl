@@ -145,6 +145,40 @@ function read_potential_profile(path::AbstractString)
 end
 
 """
+    PotentialProfile(grid, density)
+
+Construit le profil de tirage à partir d'une **densité radiale** tabulée.
+
+À l'équilibre de Thomas-Fermi, `p_F(r)² / 2 + V(r) = E_F` en tout point : poser
+`V(r) = E_F − p_F(r)²/2` avec `p_F = (3π²ρ)^⅓` rend le critère de rejet
+`p²/2 + V(r) < E_F` équivalent à `p < p_F(r)`, qui est la définition même de la
+sphère de Fermi locale. `E_F` disparaît de l'inégalité — on le prend nul.
+
+C'est ce qui permet de partir d'un `rhorad.dat` archivé, la seule chose qui
+subsiste pour certains agrégats de la thèse, là où `initialise4` attendait un
+`pot.dat` auto-cohérent qui n'a pas survécu.
+"""
+function PotentialProfile(grid::AbstractVector, density::AbstractVector)
+    length(grid) == length(density) ||
+        throw(DimensionMismatch("grille et densité de longueurs différentes"))
+    T = float(promote_type(eltype(grid), eltype(density)))
+    pF = [T(FERMI_COEFFICIENT) * cbrt(max(T(ρ), zero(T))) for ρ in density]
+    PotentialProfile{T}(collect(T, grid), -pF .^ 2 ./ 2,
+                        T(last(grid)), maximum(pF), zero(T))
+end
+
+"""
+    read_radial_density(path; column = 2) -> (grid, density)
+
+Lit un `rhorad.dat` : des colonnes de réels sans en-tête, la première étant le
+rayon. Les densités négatives — du bruit de fin de queue — sont ramenées à zéro.
+"""
+function read_radial_density(path::AbstractString; column::Integer = 2)
+    rows = [parse.(Float64, split(l)) for l in eachline(path) if !isempty(strip(l))]
+    (first.(rows), [max(r[column], 0.0) for r in rows])
+end
+
+"""
     sample_thomas_fermi(profile::PotentialProfile, npart, weight; rng)
 
 Tirage par **rejet dans l'espace des phases**, le `initialise4` de 1998.

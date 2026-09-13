@@ -40,7 +40,8 @@ export deposit_smoothed!
 export Jellium, WIGNER_SEITZ_NA, xc_potential, xc_energy_density
 export effective_potential!, uniform_sphere_potential
 export PhaseSpaceProfile, RadialProfile, read_radial_profile, sample_thomas_fermi
-export PotentialProfile, read_potential_profile, initial_cloud, FERMI_COEFFICIENT
+export PotentialProfile, read_potential_profile, read_radial_density
+export initial_cloud, FERMI_COEFFICIENT
 export EnergyBudget, energy_budget, interaction_energy, hartree_energy, ion_self_energy
 export SimulationParameters, read_parameters, Simulation, run!
 export Projectile, projectile_forces!, energy_loss, kinetic_energy, HARTREE_TO_EV
