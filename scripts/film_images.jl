@@ -49,8 +49,12 @@ const ROOT = dirname(@__DIR__)
 const KEV = 1000 / HARTREE_TO_EV
 
 function parse_args(argv)
+    # ⚠️ `epaisseur = 2` is the **measured** optimum, not a guess, and the
+    # default matters: at 40 the slab spans the cluster's whole depth and the
+    # picture becomes a column density — a smooth radial gradient with a ragged
+    # masked edge, in which the wake is diluted fourteenfold. See `slab_z0`.
     o = Dict("kev" => "4", "images" => "400", "particules" => "800000",
-             "epaisseur" => "40")
+             "epaisseur" => "2")
     for a in argv
         m = match(r"^--([a-z]+)=(.+)$", a)
         (m === nothing || !haskey(o, m[1])) && error("unrecognised argument: $a")
@@ -61,16 +65,23 @@ end
 
 """Density averaged over the planes with `|z| ≤ halfwidth`, in `Float32`.
 
-⚠️ **This averaging is what makes the picture readable, and it is free.** With
-800 000 pseudo-particles a cell of the fine grid holds about 134 of them, so the
-shot noise is `1/√134 ≈ 8.7 %` — measured at 9.6 % on `δρ` away from the wake.
-The deformation the projectile leaves behind is of the same order, so on a
-**single** plane it is buried: signal-to-noise of 3 per cell, which reads as
-salt and pepper.
+⚠️ **A thicker slab is not a better one, and the reasoning that says otherwise
+is wrong.** Averaging `n` planes divides the shot noise by `√n`, which is true
+and tempting — but the wake fits inside a **single cell in `z`**, so widening
+the slab dilutes the signal faster than it kills the noise. Measured, at 4 keV
+with the ion at the centre:
 
-Averaging the `n` planes of a slab divides that noise by `√n` without costing a
-single extra time step. Over the cluster's full depth (22 planes at `h = 3.5`)
-that is ×4.7, and the wake comes out.
+| `\\|z\\| ≤` | planes | signal | noise | S/N |
+|---|---|---|---|---|
+| 0 (one plane) | 1 | 1.09e-3 | 3.60e-4 | 3.02 |
+| **2** | **2** | 1.18e-3 | 3.18e-4 | **3.70** |
+| 7 | 8 | 5.57e-4 | 1.79e-4 | 3.11 |
+| 40 (full depth) | 46 | 7.89e-5 | 6.34e-5 | **1.24** |
+
+So the optimum is `|z| ≤ 2`, worth 23 % over a single plane, and a full-depth
+projection is **worse than one plane**. It also stops being a cut and becomes a
+*column density*: a smooth radial gradient with a ragged masked edge, which is
+what a projected sphere looks like.
 
 `halfwidth = 0` keeps the single plane nearest `z = 0` — the grid does not
 necessarily hold one exactly, the points being at the Gauss nodes.
