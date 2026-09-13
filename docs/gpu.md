@@ -427,8 +427,46 @@ Accelerate partout, minimum sur deux tours alternés, 800 000 particules.
 | CPU, bilan 1 pas sur 10 | 175,7 |
 | **GPU, bilan 1 pas sur 10** | **104,4** |
 
+Puis, le second membre de Poisson fusionné (ci-dessous) :
+
+| configuration | ms/pas |
+|---|---|
+| CPU, bilan à chaque pas | 229,7 |
+| GPU, bilan à chaque pas | 162,1 |
+| CPU, bilan 1 pas sur 10 | 172,1 |
+| **GPU, bilan 1 pas sur 10** | **94,8** |
+
 Depuis le point de départ — OpenBLAS, tout CPU, bilan à chaque pas, 307,9 ms —
-cela fait **×2,95**.
+cela fait **×3,25**.
+
+## Le second membre de Poisson : sept passes au lieu d'une
+
+En décomposant `poisson!` — 23 % du pas, jamais réexaminé depuis le début — le
+coupable n'était pas là où on l'attendait :
+
+| étage | ms |
+|---|---|
+| multipôles | 0,56 |
+| potentiel de bord | 0,33 |
+| **`poisson_rhs!`** | **5,44** |
+| solve tensoriel (6 GEMM + division) | 3,46 |
+| recopie vers φ | 0,52 |
+
+**Le second membre coûtait plus cher que le solveur qu'il alimente.** Écrit sous
+sa forme naturelle — une diffusion pour la densité, puis six pour le relèvement
+des faces — il faisait sept parcours de 681 000 points. Fusionné en une seule
+passe : **4,63 → 0,29 ms, ×16**, résultat identique **au bit près**.
+
+Deux vérifications faites au passage, et toutes deux négatives — ce qui valait
+mieux que de les supposer :
+
+* la forme transposée du produit (`mul!(C, Aᵀ, Bᵀ)`) que le solveur tensoriel
+  emploie ne coûte que **16 %** de plus que la forme directe, et toutes les
+  formes tournent à 400–470 GFLOPS sous Accelerate ;
+* les six produits d'un solve ne font que **1,7 ms** — ce n'étaient jamais eux
+  le problème.
+
+`poisson!` passe de 21,4 à **12,1 ms**.
 
 ## Ce qu'il reste, par ordre de rendement
 
@@ -443,8 +481,8 @@ cela fait **×2,95**.
    raison qu'en 1997 : la localité des données.
 4. ~~Les forces du projectile~~ — **fait**, fusionnées dans le noyau des
    forces : 16 ms de moins sur le pas.
-5. **Les GEMM sur GPU** — sans objet : Accelerate les fait déjà en `Float64`,
-   et le GPU ne saurait pas.
+5. **Les GEMM sur GPU** — sans objet : Accelerate les fait déjà en `Float64` à
+   400–470 GFLOPS, et le GPU ne saurait pas. Ils ne font que 1,7 ms par solve.
 
 Une remarque de conception au passage : `ParticleCloud` range les positions en
 `Vector{NTuple{3,T}}`, qu'il faut réempaqueter en matrice `3×N` à chaque appel.
