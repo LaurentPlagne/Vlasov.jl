@@ -74,13 +74,12 @@ Demandé par l'auteur. ~6760 lignes sur 29 fichiers, et **rien n'est mécanique*
 presque chaque commentaire porte un fait mesuré ou un piège, à rendre avec sa
 nuance. Procéder fichier par fichier, en committant chacun.
 
-**Fait** : `gpu.jl`, `threading.jl`, `random.jl`, `collocation.jl`, `energy.jl`,
-`sorting.jl`, `meanfield.jl`, `particles.jl`, `mesh.jl`, `tensorsolver.jl`, `deposition.jl`, `initial.jl`, `projectile.jl`, `simulation.jl`, `poisson.jl`, `splines.jl`.
+**`src/` et `ext/` sont faits** — dix-huit fichiers, 4430 lignes. Contrôle :
 
-**Reste**, par taille croissante (`src/` puis `ext/`) :
+    grep -c "[éèêëàâçùûôîï]" src/*.jl ext/*.jl | grep -v ":0"
 
-`VlasovMetalExt.jl` 523.
-Puis `scripts/` et `test/`.
+**Reste** : `scripts/` (~1100 lignes) et `test/` (~1700). Ceux-là ne portent ni
+contrat ni piège — c'est de la traduction ordinaire.
 
 Vérifier après chaque fichier dans la session kaimon (Revise recharge, pas de
 démarrage Julia) ; lancer la suite complète tous les quelques fichiers.
