@@ -1,36 +1,35 @@
 """
-Base de splines cubiques d'Hermite locales, en 1D.
+Local cubic Hermite spline basis, in 1D.
 
-Chaque nœud `k` de la grille porte **deux** fonctions de base :
+Each knot `k` of the grid carries **two** basis functions:
 
-  * `Value` : vaut 1 en `g[k]`, de dérivée nulle ;
-  * `Slope` : vaut 0 en `g[k]`, de dérivée 1.
+  * `Value`: equals 1 at `g[k]`, with vanishing derivative;
+  * `Slope`: equals 0 at `g[k]`, with derivative 1.
 
-Le support d'une fonction de base est `[g[k-1], g[k+1]]` (deux intervalles).
-Le code Fortran d'origine encodait ce couple dans un unique entier
-`ido = 2k + isig`, d'où les `i/2` et `mod(i,2)` disséminés partout ; ici le
-couple est réifié dans [`BasisIndex`](@ref), et l'indice linéaire n'apparaît
-plus qu'au moment de remplir une matrice.
+The support of a basis function is `[g[k-1], g[k+1]]` (two intervals). The
+original Fortran encoded this pair in a single integer `ido = 2k + isig`, whence
+the `i/2` and `mod(i,2)` scattered everywhere; here the pair is reified in
+[`BasisIndex`](@ref), and the linear index appears only when filling a matrix.
 """
 
-"""Nature d'une fonction de base d'Hermite attachée à un nœud."""
+"""Nature of a Hermite basis function attached to a knot."""
 @enum HermiteKind Value = 0 Slope = 1
 
 """
     BasisIndex(knot, kind)
 
-Fonction de base d'Hermite : le nœud `knot` (indexé à partir de 1) et sa
-nature `kind`. Type `isbits`, donc sans coût à la construction.
+Hermite basis function: the knot `knot` (indexed from 1) and its nature `kind`.
+An `isbits` type, hence free to construct.
 """
 struct BasisIndex
     knot::Int
     kind::HermiteKind
 end
 
-"""Indice linéaire (1-based) de la fonction de base, tel qu'utilisé en colonne."""
+"""Linear (1-based) index of the basis function, as used for a column."""
 linearindex(b::BasisIndex) = 2 * (b.knot - 1) + Int(b.kind) + 1
 
-"""Inverse de [`linearindex`](@ref)."""
+"""Inverse of [`linearindex`](@ref)."""
 function BasisIndex(lin::Integer)
     q, r = divrem(lin - 1, 2)
     BasisIndex(q + 1, HermiteKind(r))
@@ -39,37 +38,37 @@ end
 """
     SplineAxis(knots, colloc)
 
-Un axe 1D : les nœuds de la grille et les points de collocation associés.
+A 1D axis: the grid knots and the associated collocation points.
 
-La base compte `2·length(knots)` fonctions, et il y a autant de points de
-collocation, ce qui rend carrées les matrices de collocation.
+The basis counts `2·length(knots)` functions, and there are as many collocation
+points, which is what makes the collocation matrices square.
 """
 struct SplineAxis{T<:AbstractFloat}
     knots::Vector{T}
     colloc::Vector{T}
 
     function SplineAxis(knots::Vector{T}, colloc::Vector{T}) where {T}
-        issorted(knots) || throw(ArgumentError("les nœuds doivent être croissants"))
+        issorted(knots) || throw(ArgumentError("knots must be increasing"))
         length(colloc) == 2length(knots) ||
-            throw(DimensionMismatch("il faut 2 points de collocation par nœud"))
+            throw(DimensionMismatch("2 collocation points per knot are required"))
         new{T}(knots, colloc)
     end
 end
 
-"""Nombre de nœuds."""
+"""Number of knots."""
 nknots(ax::SplineAxis) = length(ax.knots)
 
-"""Nombre de fonctions de base (= nombre de points de collocation)."""
+"""Number of basis functions (= number of collocation points)."""
 nbasis(ax::SplineAxis) = 2nknots(ax)
 
 Base.eachindex(ax::SplineAxis) = (BasisIndex(l) for l in 1:nbasis(ax))
 
 # ---------------------------------------------------------------------------
-# Formules d'Hermite de référence, sur la variable réduite a ∈ [0,1]
+# Reference Hermite formulas, on the reduced variable a ∈ [0,1]
 #
-# `a` vaut 0 à l'extrémité du support et 1 au nœud porteur ; `σ = ±1` oriente
-# le demi-support (droite/gauche). Ce sont les `formu`, `formu1` et `formu2`
-# du Fortran.
+# `a` equals 0 at the end of the support and 1 at the carrying knot; `σ = ±1`
+# orients the half-support (right/left). These are the Fortran's `formu`,
+# `formu1` and `formu2`.
 # ---------------------------------------------------------------------------
 
 @inline function hermite(kind::HermiteKind, a, h, σ)
@@ -87,7 +86,7 @@ end
 """
     support(ax, b) -> (xmin, xmax)
 
-Bornes du support de la fonction de base `b`.
+Bounds of the support of the basis function `b`.
 """
 function support(ax::SplineAxis, b::BasisIndex)
     g, n = ax.knots, nknots(ax)
@@ -97,17 +96,17 @@ function support(ax::SplineAxis, b::BasisIndex)
 end
 
 """
-    localcoords(ax, b, x) -> (a, h, σ) ou `nothing`
+    localcoords(ax, b, x) -> (a, h, σ) or `nothing`
 
-Coordonnée réduite de `x` dans le support de `b`, ou `nothing` hors support.
+Reduced coordinate of `x` within the support of `b`, or `nothing` outside it.
 """
 @inline function localcoords(ax::SplineAxis{T}, b::BasisIndex, x) where {T}
     g, n, k = ax.knots, nknots(ax), b.knot
-    if k > 1 && x <= g[k]          # demi-support gauche, orienté σ = -1
+    if k > 1 && x <= g[k]          # left half-support, oriented σ = -1
         x < g[k-1] && return nothing
         h = g[k] - g[k-1]
         return ((x - g[k-1]) / h, h, -one(T))
-    elseif k < n && x >= g[k]      # demi-support droit, orienté σ = +1
+    elseif k < n && x >= g[k]      # right half-support, oriented σ = +1
         x > g[k+1] && return nothing
         h = g[k+1] - g[k]
         return ((g[k+1] - x) / h, h, one(T))
@@ -118,8 +117,8 @@ end
 """
     evaluate(ax, b, x, Val(D)) -> NTuple{D+1}
 
-Valeur de la fonction de base `b` en `x` et ses `D` premières dérivées.
-Renvoie des zéros hors du support.
+Value of the basis function `b` at `x` and its first `D` derivatives. Returns
+zeros outside the support.
 """
 @inline function evaluate(ax::SplineAxis{T}, b::BasisIndex, x, ::Val{D}) where {T,D}
     loc = localcoords(ax, b, x)
@@ -132,29 +131,29 @@ Renvoie des zéros hors du support.
     end
 end
 
-"""Valeur de la fonction de base `b` en `x`."""
+"""Value of the basis function `b` at `x`."""
 @inline value(ax::SplineAxis, b::BasisIndex, x) = evaluate(ax, b, x, Val(0))[1]
 
 # ---------------------------------------------------------------------------
-# Construction d'un axe
+# Building an axis
 # ---------------------------------------------------------------------------
 
 """
-Nœuds de Gauss-Legendre à 2 points ramenés sur `[0,1]`.
+Two-point Gauss-Legendre nodes mapped onto `[0,1]`.
 
-C'est le choix de points de collocation du code d'origine : il rend la
-collocation par splines cubiques superconvergente.
+This is the original code's choice of collocation points: it makes cubic spline
+collocation superconvergent.
 """
 const GAUSS2_NODES = ((1 - 1 / sqrt(3)) / 2, (1 + 1 / sqrt(3)) / 2)
 
 """
     collocation_points(knots) -> Vector
 
-Points de collocation associés à des nœuds : les 2 points de Gauss de chaque
-intervalle, encadrés par les deux extrémités du domaine.
+Collocation points associated with a set of knots: the 2 Gauss points of each
+interval, bracketed by the two ends of the domain.
 
-Il y en a `2·length(knots)`, autant que de fonctions de base — c'est ce qui
-rend carrées les matrices de collocation.
+There are `2·length(knots)` of them, as many as basis functions — which is what
+makes the collocation matrices square.
 """
 collocation_points(knots::AbstractVector) =
     [knots[1];
@@ -165,18 +164,18 @@ collocation_points(knots::AbstractVector) =
 """
     knots_from_collocation(colloc) -> Vector
 
-Reconstruit les nœuds à partir des seuls points de collocation.
+Reconstructs the knots from the collocation points alone.
 
-Les deux points de Gauss d'un intervalle déterminent celui-ci sans ambiguïté :
-de `c₁ = a + h·u₁` et `c₂ = a + h·u₂` on tire `h = (c₂−c₁)/(u₂−u₁)` puis
+The two Gauss points of an interval determine it unambiguously: from
+`c₁ = a + h·u₁` and `c₂ = a + h·u₂` one gets `h = (c₂−c₁)/(u₂−u₁)` then
 `a = c₁ − h·u₁`.
 
-Utile pour rejouer un dump de l'oracle qui ne porte que sa grille de
-collocation : l'axe s'en déduit, sans avoir à deviner de quelle autre routine
-emprunter les nœuds.
+Useful for replaying an oracle dump that carries only its collocation grid: the
+axis follows from it, with no need to guess which other routine to borrow the
+knots from.
 """
 function knots_from_collocation(colloc::AbstractVector{T}) where {T}
-    n = length(colloc) ÷ 2 - 1                     # nombre d'intervalles
+    n = length(colloc) ÷ 2 - 1                     # number of intervals
     u1, u2 = GAUSS2_NODES
     knots = Vector{T}(undef, n + 1)
     knots[1] = colloc[1]
@@ -186,7 +185,7 @@ function knots_from_collocation(colloc::AbstractVector{T}) where {T}
         knots[j] = c1 - h * u1
         knots[j+1] = knots[j] + h
     end
-    knots[1] = colloc[1]                            # borne exacte du domaine
+    knots[1] = colloc[1]                            # exact bound of the domain
     knots[end] = colloc[end]
     knots
 end
@@ -194,7 +193,7 @@ end
 """
     axis_from_collocation(colloc) -> SplineAxis
 
-Axe reconstruit depuis ses seuls points de collocation.
+Axis reconstructed from its collocation points alone.
 """
 axis_from_collocation(colloc::AbstractVector) =
     SplineAxis(knots_from_collocation(colloc), collect(colloc))
@@ -202,8 +201,8 @@ axis_from_collocation(colloc::AbstractVector) =
 """
     uniform_axis(x0, xn, nintervals)
 
-Axe à pas constant sur `[x0, xn]` — la grille fine du code d'origine
-(`mkgri` avec une raison géométrique de 1).
+Constant-step axis over `[x0, xn]` — the original code's fine grid (`mkgri`
+with a geometric ratio of 1).
 """
 function uniform_axis(x0::T, xn::T, nintervals::Integer) where {T<:AbstractFloat}
     knots = collect(range(x0, xn; length = nintervals + 1))
@@ -213,26 +212,26 @@ end
 """
     stretch_ratio(h1, L, n) -> a
 
-Raison géométrique `a > 1` telle que `n` pas de raison `a` couvrent la
-longueur `L` en **démarrant** par un pas de longueur `h1` :
+Geometric ratio `a > 1` such that `n` steps of ratio `a` cover the length `L`
+**starting** with a step of length `h1`:
 
     L·(1 − a) / (1 − aⁿ) = h1
 
-C'est ce qui raccorde la zone étirée à la zone à pas constant sans rupture de
-pas. Résolu par dichotomie jusqu'à épuisement des flottants.
+This is what joins the stretched zone to the constant-step zone without a break
+in step size. Solved by bisection until the floating-point numbers run out.
 
-⚠️ Le Fortran (`findacc`) s'arrêtait à une tolérance de `1e-10` : la raison
-obtenue ici en diffère d'autant, et les nœuds étirés avec elle. C'est un écart
-*attendu*, pas une régression — voir `stretched_axis`.
+⚠️ The Fortran (`findacc`) stopped at a tolerance of `1e-10`: the ratio obtained
+here differs by that much, and so do the knots stretched with it. That is an
+*expected* discrepancy, not a regression — see `stretched_axis`.
 """
 function stretch_ratio(h1::T, L::T, n::Integer) where {T<:AbstractFloat}
     f(a) = L * (1 - a) / (1 - a^n) - h1
     lo, hi = nextfloat(one(T)), T(10)
     flo = f(lo)
     signbit(flo) == signbit(f(hi)) && throw(ArgumentError(
-        "pas de raison géométrique dans ]1, 10] pour h1=$h1, L=$L, n=$n"))
-    # Dichotomie jusqu'à épuisement des flottants : l'encadrement est réduit
-    # tant qu'il reste un flottant strictement entre les deux bornes.
+        "no geometric ratio in ]1, 10] for h1=$h1, L=$L, n=$n"))
+    # Bisection until the floats run out: the bracket is narrowed as long as a
+    # float remains strictly between the two bounds.
     while nextfloat(lo) < hi
         mid = (lo + hi) / 2
         (mid == lo || mid == hi) && break
@@ -244,19 +243,19 @@ end
 """
     stretched_axis(xinner, xouter, n_inner, n_outer)
 
-Axe symétrique à deux zones — la grille grossière du code d'origine
-(`mkgri2`) : pas constant sur `[0, xinner]`, puis pas géométriquement
-croissant jusqu'à `xouter`, le tout reflété autour de zéro.
+Symmetric two-zone axis — the original code's coarse grid (`mkgri2`): constant
+step over `[0, xinner]`, then geometrically growing steps up to `xouter`, the
+whole thing mirrored about zero.
 
-Le premier pas étiré vaut exactement le pas constant, ce qui évite une rupture
-de maillage à l'interface entre les deux zones.
+The first stretched step equals the constant step exactly, which avoids a break
+in the mesh at the interface between the two zones.
 
-⚠️ **Ne pas utiliser cet axe pour comparer l'aval à l'oracle.** La raison
-géométrique est ici résolue à la précision machine, là où `findacc` s'arrêtait
-à `1e-10` : les nœuds diffèrent d'autant, et tout calcul en aval hériterait de
-cet écart, masquant les vraies régressions à `1e-15`. Pour valider un opérateur
-sur la grille étirée, construire le `SplineAxis` **à partir des nœuds dumpés
-par l'oracle**.
+⚠️ **Do not use this axis to compare downstream results against the oracle.**
+The geometric ratio is solved here to machine precision, where `findacc` stopped
+at `1e-10`: the knots differ by that much, and any downstream computation would
+inherit the discrepancy, masking genuine regressions at `1e-15`. To validate an
+operator on the stretched grid, build the `SplineAxis` **from the knots dumped
+by the oracle**.
 """
 function stretched_axis(xinner::T, xouter::T, n_inner::Integer,
                         n_outer::Integer) where {T<:AbstractFloat}
@@ -265,12 +264,12 @@ function stretched_axis(xinner::T, xouter::T, n_inner::Integer,
     a = stretch_ratio(h1, L, n_outer)
     step = L * (1 - a) / (1 - a^n_outer)
 
-    # Demi-grille de 0 vers l'extérieur : la zone à pas constant, puis les pas
-    # géométriques cumulés.
+    # Half-grid from 0 outwards: the constant-step zone, then the accumulated
+    # geometric steps.
     half = [range(0, xinner; length = n_inner);
             xinner .+ cumsum(step .* a .^ (0:n_outer-1))]
 
-    # Reflet autour de zéro, le nœud central n'étant pas repris deux fois.
+    # Mirrored about zero, the central knot not being taken twice.
     knots = [-reverse(half[2:end]); half]
     SplineAxis(knots, collocation_points(knots))
 end
@@ -278,24 +277,24 @@ end
 # ---------------------------------------------------------------------------
 # Moments ∫ xᵏ φ(x) dx
 #
-# Ils portent les conditions aux limites multipolaires (monopôle, dipôle,
-# quadrupôle) du solveur de Poisson.
+# They carry the multipole boundary conditions (monopole, dipole, quadrupole) of
+# the Poisson solver.
 #
-# Le Fortran les obtenait par des primitives analytiques écrites à la main
-# (`prim`, `primx`, `primx2` et leurs `formp*`, ~290 lignes). On les intègre
-# ici par quadrature : `φ` est cubique, donc `x²φ` est de degré 5, et la
-# quadrature de Gauss-Legendre à 3 points est **exacte** jusqu'au degré 5.
-# Le résultat n'est donc pas une approximation.
+# The Fortran obtained them from hand-written analytic antiderivatives (`prim`,
+# `primx`, `primx2` and their `formp*`, ~290 lines). Here they are integrated by
+# quadrature: `φ` is cubic, so `x²φ` is of degree 5, and three-point
+# Gauss-Legendre quadrature is **exact** up to degree 5. The result is therefore
+# not an approximation.
 # ---------------------------------------------------------------------------
 
 const GAUSS3_NODES = (-sqrt(3 / 5), 0.0, sqrt(3 / 5))
 const GAUSS3_WEIGHTS = (5 / 9, 8 / 9, 5 / 9)
 
-"""Intègre `xᵏ φ_b(x)` sur `[a, c]` — exact car l'intégrande est de degré ≤ 5."""
+"""Integrates `xᵏ φ_b(x)` over `[a, c]` — exact, the integrand being of degree ≤ 5."""
 @inline function _gauss3(ax::SplineAxis{T}, b::BasisIndex, a, c, ::Val{k}) where {T,k}
     mid, half = (a + c) / 2, (c - a) / 2
-    # `map` sur deux tuples est déplié à la compilation : pas d'itérateur, pas
-    # d'accumulateur boxé.
+    # `map` over two tuples is unrolled at compile time: no iterator, no boxed
+    # accumulator.
     half * sum(map(GAUSS3_NODES, GAUSS3_WEIGHTS) do ξ, w
         x = mid + half * ξ
         w * x^k * value(ax, b, x)
@@ -305,11 +304,11 @@ end
 """
     moment(ax, b, Val(k)) -> T
 
-Moment d'ordre `k` de la fonction de base `b` : `∫ xᵏ φ_b(x) dx` sur tout son
-support. Exact pour `k ≤ 2`.
+Moment of order `k` of the basis function `b`: `∫ xᵏ φ_b(x) dx` over its whole
+support. Exact for `k ≤ 2`.
 
-Chaque demi-support est intégré séparément : `φ_b` y est un polynôme
-*différent*, une quadrature unique sur le support entier serait fausse.
+Each half-support is integrated separately: `φ_b` is a *different* polynomial on
+each, and a single quadrature over the whole support would be wrong.
 """
 function moment(ax::SplineAxis{T}, b::BasisIndex, ::Val{k}) where {T,k}
     g, n, kn = ax.knots, nknots(ax), b.knot
@@ -322,31 +321,31 @@ end
 """
     moments(ax, Val(k)) -> Vector
 
-Moments d'ordre `k` de toutes les fonctions de base, dans l'ordre des indices
-linéaires (les `psx`, `psxx` et `psx2` du Fortran pour `k = 0, 1, 2`).
+Moments of order `k` of every basis function, in linear index order (the
+Fortran's `psx`, `psxx` and `psx2` for `k = 0, 1, 2`).
 """
 moments(ax::SplineAxis, ::Val{k}) where {k} =
     [moment(ax, BasisIndex(lin), Val(k)) for lin in 1:nbasis(ax)]
 
-"""Dérivée première de `b` en `x`."""
+"""First derivative of `b` at `x`."""
 @inline derivative(ax::SplineAxis, b::BasisIndex, x) = evaluate(ax, b, x, Val(1))[2]
 
-"""Dérivée seconde de `b` en `x`."""
+"""Second derivative of `b` at `x`."""
 @inline curvature(ax::SplineAxis, b::BasisIndex, x) = evaluate(ax, b, x, Val(2))[3]
 
 """
     LocateTable(ax)
 
-Remplace la dichotomie de [`locate`](@ref) par une lecture de table.
+Replaces the bisection in [`locate`](@ref) by a table lookup.
 
-Un découpage **uniforme** de l'axe, assez fin pour qu'aucun intervalle de
-collocation n'en contienne moins d'un, donne directement une cellule candidate ;
-au plus un cran de correction suffit ensuite.
+A **uniform** subdivision of the axis, fine enough that no collocation interval
+contains fewer than one bin, gives a candidate cell directly; at most one step of
+correction is then needed.
 
-C'est rentable parce que la grille grossière, bien qu'**étirée**, ne l'est pas
-beaucoup : un facteur trois entre son plus petit et son plus grand pas, d'où une
-table de quelques centaines d'entrées. Mesuré à 800 000 particules : **×14,6**
-sur `locate`, qui faisait la moitié du dépôt grossier.
+It pays off because the coarse grid, though **stretched**, is not stretched by
+much: a factor of three between its smallest and largest step, hence a table of
+a few hundred entries. Measured at 800 000 particles: **×14.6** on `locate`,
+which accounted for half the coarse deposition.
 """
 struct LocateTable{T<:AbstractFloat}
     x0::T
@@ -365,10 +364,10 @@ function LocateTable(ax::SplineAxis{T}) where {T}
 end
 
 """
-    locate(tbl, ax, x) -> (cell, weight) ou `nothing`
+    locate(tbl, ax, x) -> (cell, weight) or `nothing`
 
-Même contrat que [`locate`](@ref), par table. Rend **exactement** le même
-résultat — vérifié, et c'est un test.
+Same contract as [`locate`](@ref), by table. Returns **exactly** the same result
+— verified, and that is a test.
 """
 @inline function locate(tbl::LocateTable{T}, ax::SplineAxis{T}, x) where {T}
     gt = ax.colloc
