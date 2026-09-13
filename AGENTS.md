@@ -81,6 +81,9 @@ manifeste — constaté ici, où il gardait les 33 dépendances transitives de `
 alors qu'une dépendance faible ne doit pas les tirer. Seule exception, parce
 qu'elle n'a pas d'API : le bloc `[extensions]`.
 
+📋 **Pour reprendre à froid : [`docs/reprise.md`](docs/reprise.md)** — état du
+projet, commandes, pièges qui reviendraient, et ce qui reste à faire.
+
 ⚠️ **Sur Apple Silicon, charger `AppleAccelerate` — ×1,31 pour une ligne**, et
 pas seulement sur les GEMM : les boucles particulaires gagnent 15 à 25 % parce que
 le pool de fils d'OpenBLAS cesse de leur disputer le processeur. Mais **jamais
