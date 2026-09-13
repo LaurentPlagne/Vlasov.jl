@@ -29,19 +29,21 @@ struct MetalForceAccelerator <: ForceAccelerator
     gradient::MtlArray{Float32,2}
     "Table du dépôt : la gaussienne aux huit points de collocation voisins."
     nodes::MtlArray{Float32,2}
-    pos::MtlArray{Float32,2}
     force::MtlArray{Float32,2}
     "Tampons hôtes réutilisés : convertir `csol` ou empaqueter les positions
      à chaque pas allouerait plusieurs mégaoctets par pas, et un ramasse-miettes
      à l'arrivée."
     hostcsol::Array{Float32,3}
-    hostpos::Matrix{Float32}
     hostforce::Matrix{Float32}
-    """Tri par maille et ce qu'il produit : colonnes de table dans l'ordre
-    trié, mailles occupées, bornes. Les colonnes restent calculées sur **hôte**,
-    en `Float64` : les former en `Float32` ferait basculer une colonne sur deux
-    mille (l'ULP à 78 a₀ vaut 0,22 % de leur largeur) et porterait l'écart de
-    densité de 1,5e-07 à 9,0e-05."""
+    """Positions sous la forme `(k, δ)` — voir [`_pack_kd!`](@ref). C'est cette
+    représentation, et non la position absolue, qui permet au GPU de choisir la
+    bonne colonne de table : `δ` est majoré par un demi-pas, donc codé en
+    `Float32` avec trente mille fois la finesse d'une colonne."""
+    hostknode::Matrix{Int32}
+    hostdelta::Matrix{Float32}
+    knode::MtlArray{Int32,2}
+    delta::MtlArray{Float32,2}
+    "Tri par maille : permutation, mailles occupées, bornes."
     sorter::CellSort{Float64}
     hostcols::Matrix{Int32}
     cols::MtlArray{Int32,2}
@@ -88,9 +90,10 @@ function Vlasov.ForceAccelerator(::Type{MtlArray}, fine::NTuple{3,SplineAxis{T}}
         MtlArray(zeros(Float32, n, n, n)),
         MtlArray(Float32.(sm.overlap)), MtlArray(Float32.(sm.gradient)),
         MtlArray(Float32.(sm.nodes)),
-        MtlArray(zeros(Float32, 3, npart)), MtlArray(zeros(Float32, 3, npart)),
-        Array{Float32,3}(undef, n, n, n),
-        Matrix{Float32}(undef, 3, npart), Matrix{Float32}(undef, 3, npart),
+        MtlArray(zeros(Float32, 3, npart)),
+        Array{Float32,3}(undef, n, n, n), Matrix{Float32}(undef, 3, npart),
+        Matrix{Int32}(undef, 3, npart), Matrix{Float32}(undef, 3, npart),
+        MtlArray(zeros(Int32, 3, npart)), MtlArray(zeros(Float32, 3, npart)),
         CellSort(fine[1], npart), Matrix{Int32}(undef, 3, npart),
         MtlArray(zeros(Int32, 3, npart)), Ref(MtlArray(zeros(Int32, 1))),
         Ref(MtlArray(zeros(Int32, 1))), MtlArray(zeros(Float32, n, n, n)),
@@ -100,17 +103,38 @@ function Vlasov.ForceAccelerator(::Type{MtlArray}, fine::NTuple{3,SplineAxis{T}}
         Float32(sm.spacing), Int32(sm.nbdt), Int32(size(sm.overlap, 2)), npart)
 end
 
-"""Empaquette `Vector{NTuple{3,T}}` en une matrice `3×N` de `Float32`.
+"""Empaquette les positions sous la forme `(k, δ)` : indice du nœud le plus
+proche, et **écart à ce nœud**.
 
-Séparée dans sa propre fonction pour que la boucle soit typée : écrite en
-place dans `forces!`, elle capturerait des variables dont le type n'est connu
-qu'à l'exécution."""
-function _pack!(dest::Matrix{Float32}, src::Vector{NTuple{3,T}}) where {T}
-    @inbounds for i in eachindex(src)
-        p = src[i]
-        dest[1, i] = p[1]; dest[2, i] = p[2]; dest[3, i] = p[3]
+⚠️ C'est le point qui décide de la justesse du portage. Une position vaut
+jusqu'à 78 a₀, où l'ULP de `Float32` est 7,6e-06 — soit 0,22 % de la largeur
+d'une colonne de table (0,00355 a₀). Former `x − knot` sur le GPU fait donc
+basculer une particule sur cinq cents sur la colonne voisine, ce qui n'est pas
+un arrondi qui se moyenne mais un **échantillon de gaussienne faux**.
+
+`δ` est majoré par un demi-pas, 1,8 a₀ : codé en `Float32`, sa résolution est
+1,2e-07, trente mille fois plus fine qu'une colonne. La soustraction se fait
+ici, en `Float64`, et une seule fois — les deux noyaux s'en servent.
+
+La position absolue se reconstruit au besoin par `x₀ + (k−1)h + δ`, ce qui ne
+perd rien de plus que ne perdait l'ancien empaquetage.
+
+Séparée dans sa propre fonction pour que la boucle soit typée : écrite en place
+dans `forces!`, elle capturerait des variables de type inconnu à la compilation.
+"""
+function _pack_kd!(knode::Matrix{Int32}, delta::Matrix{Float32},
+                   src::Vector{NTuple{3,T}}, x0::T, h::T, nk::Int) where {T}
+    Threads.@threads for i in eachindex(src)
+        @inbounds begin
+            p = src[i]
+            for d in 1:3
+                k = clamp(round(Int32, (p[d] - x0) / h) + Int32(1), Int32(1), Int32(nk))
+                knode[d, i] = k
+                delta[d, i] = Float32(p[d] - (x0 + (k - 1) * h))
+            end
+        end
     end
-    dest
+    nothing
 end
 
 """
@@ -124,7 +148,7 @@ pour la même raison qu'en 1997.
 Les particules dont le pochoir déborde de la grille écrivent un `NaN` : elles
 sont reprises par le CPU. Signaler vaut mieux que tronquer en silence.
 """
-function _field_kernel!(force, csol, ovl, grad, pos, x0, h, nknots,
+function _field_kernel!(force, csol, ovl, grad, knode, delta, x0, h,
                         spacing, nbdt, w, nc, npart,
                         px0, py0, pz0, coef, σ, red)
     i = thread_position_in_grid_1d()
@@ -139,12 +163,10 @@ function _field_kernel!(force, csol, ovl, grad, pos, x0, h, nknots,
     end
 
     @inbounds if i <= npart
-        px = pos[1, i]; py = pos[2, i]; pz = pos[3, i]
-
-        # Nœud le plus proche, calculé (grille uniforme) et non cherché.
-        kx = min(max(round(Int32, (px - x0) / h) + Int32(1), Int32(1)), nknots)
-        ky = min(max(round(Int32, (py - x0) / h) + Int32(1), Int32(1)), nknots)
-        kz = min(max(round(Int32, (pz - x0) / h) + Int32(1), Int32(1)), nknots)
+        # `(k, δ)` viennent de l'hôte, calculés en `Float64` : le noyau ne forme
+        # jamais `x − knot`, ce qui serait sa plus grosse perte de précision.
+        kx = knode[1, i]; ky = knode[2, i]; kz = knode[3, i]
+        dx0 = delta[1, i]; dy0 = delta[2, i]; dz0 = delta[3, i]
         bx = Int32(2) * kx - Int32(5)
         by = Int32(2) * ky - Int32(5)
         bz = Int32(2) * kz - Int32(5)
@@ -155,13 +177,15 @@ function _field_kernel!(force, csol, ovl, grad, pos, x0, h, nknots,
 
         fxp = NaN32; fyp = NaN32; fzp = NaN32
         if ok
+            # La colonne ne dépend que de `δ`, donc elle est **exacte** ici :
+            # plus aucune grande soustraction.
             half = spacing * 0.5f0
-            cx = min(max(floor(Int32, (px - (x0 + (kx - Int32(1)) * h) + half) /
-                              spacing * nbdt + 0.5f0) + Int32(1), Int32(1)), nc)
-            cy = min(max(floor(Int32, (py - (x0 + (ky - Int32(1)) * h) + half) /
-                              spacing * nbdt + 0.5f0) + Int32(1), Int32(1)), nc)
-            cz = min(max(floor(Int32, (pz - (x0 + (kz - Int32(1)) * h) + half) /
-                              spacing * nbdt + 0.5f0) + Int32(1), Int32(1)), nc)
+            cx = min(max(floor(Int32, (dx0 + half) / spacing * nbdt + 0.5f0) +
+                         Int32(1), Int32(1)), nc)
+            cy = min(max(floor(Int32, (dy0 + half) / spacing * nbdt + 0.5f0) +
+                         Int32(1), Int32(1)), nc)
+            cz = min(max(floor(Int32, (dz0 + half) / spacing * nbdt + 0.5f0) +
+                         Int32(1), Int32(1)), nc)
 
             fx = 0.0f0; fy = 0.0f0; fz = 0.0f0
             for kk in Int32(1):Int32(10)
@@ -188,6 +212,12 @@ function _field_kernel!(force, csol, ovl, grad, pos, x0, h, nknots,
         # Calculée pour **toutes** les particules, y compris celles que le CPU
         # reprendra : la réduction doit les compter. `coef = −poids·charge`.
         if coef != 0.0f0
+            # Position absolue reconstruite : `x₀ + (k−1)h + δ`. Elle porte la
+            # même précision que l'ancien empaquetage direct, et ne sert qu'ici
+            # — les colonnes, elles, n'en dépendent plus.
+            px = x0 + Float32(kx - Int32(1)) * h + dx0
+            py = x0 + Float32(ky - Int32(1)) * h + dy0
+            pz = x0 + Float32(kz - Int32(1)) * h + dz0
             dx = px0 - px; dy = py0 - py; dz = pz0 - pz
             d2 = dx * dx + dy * dy + dz * dz
             u2 = d2 / (σ * σ)
@@ -328,27 +358,24 @@ dépôt par un poids nul — plus simple qu'une liste à part, et sans branche d
 le noyau."""
 function _fill_columns!(acc::MetalForceAccelerator, mesh, sm, positions)
     knots = mesh.axes[1].knots
-    x0 = acc.sorter.x0; h = acc.sorter.h; nk = acc.sorter.nknots
     half = sm.spacing / 2
     lo = knots[2] + half; hi = knots[end-1] - half
     sp = sm.spacing; nbdt = sm.nbdt; ncol = size(sm.nodes, 2)
     perm = acc.sorter.perm
     cols = acc.hostcols
+    delta = acc.hostdelta
     nout = Threads.Atomic{Int}(0)
 
-    # ⚠️ Indice de nœud **calculé**, pas cherché : la grille est uniforme, et
-    # une dichotomie par particule et par direction coûtait quinze millisecondes
-    # de plus que tout le reste du dépôt réuni.
+    # `δ` a déjà été calculé en `Float64` par `_pack_kd!` : il ne reste qu'à le
+    # relire dans l'ordre trié. La colonne n'en dépend que de lui.
     Threads.@threads for s in eachindex(perm)
         @inbounds begin
-            p = positions[perm[s]]
+            i = perm[s]
+            p = positions[i]
             if lo <= p[1] <= hi && lo <= p[2] <= hi && lo <= p[3] <= hi
                 for d in 1:3
-                    u = p[d]
-                    k = clamp(round(Int, (u - x0) / h) + 1, 1, nk)
-                    # En `Float64`, délibérément : voir le champ `hostcols`.
-                    δ = u - (x0 + (k - 1) * h)
-                    cols[d, s] = clamp(floor(Int32, (δ + half) / sp * nbdt + 0.5) + Int32(1),
+                    cols[d, s] = clamp(floor(Int32, (Float64(delta[d, i]) + half) /
+                                             sp * nbdt + 0.5) + Int32(1),
                                        Int32(1), Int32(ncol))
                 end
             else
@@ -363,6 +390,12 @@ end
 function Vlasov.deposit_smoothed!(ρ::Array{T,3}, acc::MetalForceAccelerator,
                                   mesh::SplineMesh{3,T}, sm::GaussianSmoothing{T},
                                   positions; charge::T) where {T}
+    # Le dépôt ouvre le pas : c'est lui qui empaquette `(k, δ)`, dont `forces!`
+    # se resservira.
+    _pack_kd!(acc.hostknode, acc.hostdelta, positions,
+              acc.sorter.x0, acc.sorter.h, acc.sorter.nknots)
+    copyto!(acc.knode, acc.hostknode)
+    copyto!(acc.delta, acc.hostdelta)
     cellsort!(acc.sorter, positions)
     nout = _fill_columns!(acc, mesh, sm, positions)
 
@@ -388,15 +421,22 @@ function Vlasov.forces!(cloud::ParticleCloud{T}, acc::MetalForceAccelerator,
                         fine::NTuple{3,SplineAxis{T}}, csol_fine::Array{T,3},
                         coarse::NTuple{3,SplineAxis{T}}, csol_coarse::Array{T,3},
                         sm::GaussianSmoothing{T}; escaped::Integer = 0,
-                        projectile = nothing) where {T}
+                        projectile = nothing, packed::Bool = false) where {T}
     npart = length(cloud.positions)
     npart == acc.npart || throw(DimensionMismatch("accélérateur dimensionné pour $(acc.npart)"))
     w = Float32(cloud.weight)
 
     acc.hostcsol .= csol_fine
     copyto!(acc.csol, acc.hostcsol)
-    _pack!(acc.hostpos, cloud.positions)
-    copyto!(acc.pos, acc.hostpos)
+    # `packed = true` dit que le dépôt vient de le faire pour les mêmes
+    # positions — c'est le cas dans `update_forces!`, où il ouvre le pas.
+    # Refaire l'empaquetage coûterait deux millisecondes pour rien.
+    if !packed
+        _pack_kd!(acc.hostknode, acc.hostdelta, cloud.positions,
+                  acc.sorter.x0, acc.sorter.h, acc.sorter.nknots)
+        copyto!(acc.knode, acc.hostknode)
+        copyto!(acc.delta, acc.hostdelta)
+    end
 
     # Le projectile est fusionné dans ce noyau : ses arguments valent zéro
     # quand il n'y en a pas, et la branche disparaît.
@@ -407,8 +447,8 @@ function Vlasov.forces!(cloud::ParticleCloud{T}, acc::MetalForceAccelerator,
 
     groupsize = 256
     Metal.@sync @metal threads = groupsize groups = cld(npart, groupsize) _field_kernel!(
-        acc.force, acc.csol, acc.overlap, acc.gradient, acc.pos,
-        acc.x0, acc.h, acc.nknots, acc.spacing, acc.nbdt, w, acc.ncol, Int32(npart),
+        acc.force, acc.csol, acc.overlap, acc.gradient, acc.knode, acc.delta,
+        acc.x0, acc.h, acc.spacing, acc.nbdt, w, acc.ncol, Int32(npart),
         pp[1], pp[2], pp[3], coef, σ, acc.reduction)
 
     copyto!(acc.hostforce, acc.force)

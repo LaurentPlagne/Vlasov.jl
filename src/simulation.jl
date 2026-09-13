@@ -197,8 +197,10 @@ function update_forces!(sim::Simulation{T}; advance::Bool = true,
     else
         # Le projectile est fusionné dans le noyau des forces : le lui passer
         # ici évite un second passage sur toutes les particules.
+        # `packed = true` : le dépôt accéléré, qui ouvre le pas, a déjà
+        # empaqueté les positions pour le GPU.
         forces!(sim.cloud, accelerator, fine.axes, csolf, coarse.axes, csolc,
-                sim.smoothing; projectile = sim.projectile)
+                sim.smoothing; projectile = sim.projectile, packed = true)
     end
     advance && advance_projectile!(sim, accelerator)
 

@@ -512,6 +512,43 @@ grilles différentes.
 Depuis le point de départ — OpenBLAS, tout CPU, bilan à chaque pas, 307,9 ms —
 **×3,77**.
 
+## `(k, δ)` plutôt que la position absolue — un gain de justesse, pas de vitesse
+
+Les deux noyaux recevaient les positions absolues et en tiraient eux-mêmes
+l'indice de nœud et la colonne de table. Le second calcul forme `x − knot`, une
+soustraction de grands nombres : à 78 a₀ l'ULP de `Float32` vaut 7,6e-06, soit
+**0,22 % de la largeur d'une colonne**. Une particule sur cinq cents prenait
+donc la colonne voisine — un échantillon de gaussienne faux, pas un arrondi qui
+se moyenne.
+
+L'hôte calcule désormais `(k, δ)` en `Float64` et ne monte que cela. `δ` est
+majoré par un demi-pas (1,8 a₀) : en `Float32` sa résolution est 1,2e-07, trente
+mille fois plus fine qu'une colonne. La position absolue se reconstruit par
+`x₀ + (k−1)h + δ` là où le projectile en a besoin.
+
+| | avant | après |
+|---|---|---|
+| forces, écart en norme | 3,7e-05 | **8,3e-06** |
+| forces, écart médian | 1,9e-06 | 1,9e-06 |
+| perte d'énergie du projectile (20 pas) | 1,4e-06 | **4,8e-07** |
+| densité | 1,5e-07 | 6,5e-07 |
+| pas | 81,7 ms | 80,8 ms |
+
+**L'écart en norme des forces divise par 4,5, le médian ne bouge pas** — ce qui
+confirme le diagnostic : la médiane mesurait la contraction en `Float32`
+(irréductible), la norme était dominée par les quelques particules à colonne
+fausse.
+
+⚠️ **Aucun gain de vitesse.** J'en attendais quatre à cinq millisecondes, du
+calcul des colonnes qui devait disparaître de l'hôte ; il n'en disparaît que la
+moitié, et l'empaquetage ajoute ce qu'il économise. À porter au compte des
+attentes non tenues, pas des résultats.
+
+La densité se dégrade légèrement (1,5e-07 → 6,5e-07) : `δ` est arrondi en
+`Float32`, ce qui fait encore basculer trois particules sur cent mille. C'est
+cent quarante fois mieux que les 9,0e-05 qu'aurait donnés le calcul direct en
+`Float32`.
+
 ## Ce qu'il reste, par ordre de rendement
 
 1. ~~Apple Accelerate~~ — **fait**, ×1,31 pour une ligne.
