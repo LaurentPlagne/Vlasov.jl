@@ -81,6 +81,12 @@ manifeste — constaté ici, où il gardait les 33 dépendances transitives de `
 alors qu'une dépendance faible ne doit pas les tirer. Seule exception, parce
 qu'elle n'a pas d'API : le bloc `[extensions]`.
 
+⚠️ **Un profil dont les postes ne somment pas au total est faux.** Chronométrer
+chaque étage dans sa propre boucle lui laisse ses données chaudes ; la séquence
+réelle déborde le cache à chaque tour. Ce piège a coûté un profil entier ici —
+238 ms de postes pour un pas de 412, sans que ce soit ni du GC (0 %) ni des
+allocations. Mesurer **en séquence** : [`scripts/profil_pas.jl`](scripts/profil_pas.jl).
+
 📋 **Le portage GPU est documenté dans [`docs/gpu.md`](docs/gpu.md)**, profil à
 l'appui. ⚠️ Deux choses à savoir avant d'y toucher : les GEMM du solveur tensoriel
 ne font que **14 %** d'un pas à l'échelle de production — les porter plafonne à
