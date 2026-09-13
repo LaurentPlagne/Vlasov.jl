@@ -75,10 +75,10 @@ presque chaque commentaire porte un fait mesuré ou un piège, à rendre avec sa
 nuance. Procéder fichier par fichier, en committant chacun.
 
 **Fait** : `gpu.jl`, `threading.jl`, `random.jl`, `collocation.jl`, `energy.jl`,
-`sorting.jl`, `meanfield.jl`, `particles.jl`, `mesh.jl`, `tensorsolver.jl`, `deposition.jl`, `initial.jl`.
+`sorting.jl`, `meanfield.jl`, `particles.jl`, `mesh.jl`, `tensorsolver.jl`, `deposition.jl`, `initial.jl`, `projectile.jl`.
 
 **Reste**, par taille croissante (`src/` puis `ext/`) :
-`projectile.jl` 292,
+
 `simulation.jl` 292, `poisson.jl` 348, `splines.jl` 385, `VlasovMetalExt.jl` 523.
 Puis `scripts/` et `test/`.
 
