@@ -1,44 +1,43 @@
 """
-Solveur tensoriel par diagonalisation rapide (méthode TBSCM).
+Tensor solver by fast diagonalisation (the TBSCM method).
 
-Résout `(D₁⊗I⊗… + I⊗D₂⊗… + …) X = B` lorsque l'opérateur est **séparable**,
-en diagonalisant chaque opérateur 1D :
+Solves `(D₁⊗I⊗… + I⊗D₂⊗… + …) X = B` when the operator is **separable**, by
+diagonalising each 1D operator:
 
     Dᵈ = Mᵈ Λᵈ Mᵈ⁻¹   ⟹   X = (⨂ Mᵈ) ∘ diag(1/Σλ) ∘ (⨂ Mᵈ⁻¹) B
 
-Réf. : L. Plagne, J.-Y. Berthou, *Tensorial basis spline collocation method
-for Poisson's equation*, J. Comput. Phys. **157**(2), 419-440 (2000).
+Ref.: L. Plagne, J.-Y. Berthou, *Tensorial basis spline collocation method for
+Poisson's equation*, J. Comput. Phys. **157**(2), 419-440 (2000).
 
-Généralise `LidJul.PoissonTTSolver` sur deux points :
+Generalises `LidJul.PoissonTTSolver` on two points:
 
-  * **dimension quelconque** `N` (le code Vlasov est 3D) via un produit
-    mode-`d` générique, au lieu du jeu de `transpose` propre au 2D ;
-  * **opérateurs non symétriques** — les matrices de collocation spline ne
-    sont pas symétriques, contrairement aux laplaciens différences finies.
+  * **arbitrary dimension** `N` (the Vlasov code is 3D) through a generic
+    mode-`d` product, instead of the `transpose` interplay specific to 2D;
+  * **non-symmetric operators** — the spline collocation matrices are not
+    symmetric, unlike finite-difference Laplacians.
 """
 
 """
     DiagonalizedOperator(D)
 
-Diagonalisation d'un opérateur 1D `D` dont le spectre est réel.
+Diagonalisation of a 1D operator `D` whose spectrum is real.
 
-Le caractère réel est vérifié à la construction : c'est une propriété
-*constatée* de l'opérateur spline, pas une propriété structurelle garantie
-par le type, et une régression numérique doit être détectée ici plutôt que
-de se propager silencieusement.
+Realness is checked at construction: it is an *observed* property of the spline
+operator, not a structural one guaranteed by the type, and a numerical
+regression ought to be caught here rather than propagate silently.
 """
 struct DiagonalizedOperator{T<:AbstractFloat}
-    M::Matrix{T}       # vecteurs propres
-    Minv::Matrix{T}    # son inverse
-    λ::Vector{T}       # valeurs propres
+    M::Matrix{T}       # eigenvectors
+    Minv::Matrix{T}    # its inverse
+    λ::Vector{T}       # eigenvalues
 
     function DiagonalizedOperator(D::AbstractMatrix{T}; atol = 1e-10) where {T}
         E = eigen(D)
         imagmax = maximum(abs, imag.(E.values))
         scale = maximum(abs, real.(E.values))
         imagmax <= atol * max(scale, one(T)) || throw(ArgumentError(
-            "spectre non réel (max|Im λ| = $imagmax) : le solveur tensoriel " *
-            "réel ne s'applique pas"))
+            "non-real spectrum (max|Im λ| = $imagmax): the real tensor solver " *
+            "does not apply"))
         M = real.(E.vectors)
         new{T}(M, inv(M), real.(E.values))
     end
@@ -49,10 +48,10 @@ Base.size(d::DiagonalizedOperator) = length(d.λ)
 """
     TensorSolver(operators...)
 
-Solveur pour la somme tensorielle des `operators` (un par dimension).
+Solver for the tensor sum of the `operators` (one per dimension).
 
-Précalcule `1/(λ¹ᵢ + λ²ⱼ + …)`, qui est le cœur de la méthode : l'inversion
-d'un opérateur `N`-dimensionnel se ramène à une division terme à terme.
+Precomputes `1/(λ¹ᵢ + λ²ⱼ + …)`, which is the heart of the method: inverting an
+`N`-dimensional operator reduces to an element-wise division.
 """
 struct TensorSolver{N,T<:AbstractFloat}
     ops::NTuple{N,DiagonalizedOperator{T}}
@@ -66,9 +65,9 @@ function TensorSolver(ops::DiagonalizedOperator{T}...) where {T}
     dims = ntuple(d -> size(ops[d]), N)
 
     λsum = [sum(ops[d].λ[I[d]] for d in 1:N) for I in CartesianIndices(dims)]
-    singulier = findfirst(iszero, λsum)
-    singulier === nothing || throw(ArgumentError(
-        "somme de valeurs propres nulle en $(Tuple(singulier)) : opérateur singulier"))
+    singular = findfirst(iszero, λsum)
+    singular === nothing || throw(ArgumentError(
+        "eigenvalue sum vanishes at $(Tuple(singular)): singular operator"))
 
     TensorSolver{N,T}(ops, inv.(λsum),
                       Array{T,N}(undef, dims), Array{T,N}(undef, dims))
@@ -79,11 +78,11 @@ Base.size(s::TensorSolver) = size(s.invλsum)
 """
     apply_mode!(dest, A, src, d)
 
-Produit mode-`d` : applique la matrice `A` le long de la dimension `d` du
-tableau `src`, résultat dans `dest`. Sans allocation.
+Mode-`d` product: applies the matrix `A` along dimension `d` of the array `src`,
+result in `dest`. Allocation-free.
 
-Le tableau est vu comme `(L, nᵈ, R)` ; pour `d = 1` une seule `mul!` suffit,
-sinon on boucle sur les tranches — chacune reste contiguë en mémoire.
+The array is viewed as `(L, nᵈ, R)`; for `d = 1` a single `mul!` suffices,
+otherwise we loop over slices — each of which stays contiguous in memory.
 """
 function apply_mode!(dest::Array{T,N}, A::AbstractMatrix{T}, src::Array{T,N},
                      d::Integer) where {T,N}
@@ -105,21 +104,21 @@ function apply_mode!(dest::Array{T,N}, A::AbstractMatrix{T}, src::Array{T,N},
 end
 
 """
-    apply_rotating!(dest, A, src, dims) -> dims permutées
+    apply_rotating!(dest, A, src, dims) -> permuted dims
 
-Applique `A` le long de la **première** dimension, en un seul produit
-matrice-matrice, et rend les dimensions permutées circulairement.
+Applies `A` along the **first** dimension, in a single matrix-matrix product,
+and returns the dimensions cyclically permuted.
 
-    mul!(C, Xᵀ, Aᵀ)  calcule  C = (A·X)ᵀ
+    mul!(C, Xᵀ, Aᵀ)  computes  C = (A·X)ᵀ
 
-La transposition n'est pas un détour : c'est elle qui fait la permutation. Le
-résultat `(m, n)` se relit tel quel comme un tableau de dimensions
-`(d₂, d₃, …, d₁)`, sans déplacer un octet. Appliquer `N` fois ramène donc les
-dimensions dans leur ordre initial.
+The transposition is not a detour: it is what performs the permutation. The
+`(m, n)` result reads back as is as an array of dimensions `(d₂, d₃, …, d₁)`,
+without moving a single byte. Applying it `N` times therefore restores the
+dimensions to their original order.
 
-Deux conséquences : **une seule GEMM par dimension** au lieu d'une boucle de
-tranches pour les dimensions du milieu, et une forme — un gros produit
-matrice-matrice — qui est exactement ce qu'un GPU exécute le mieux.
+Two consequences: **one GEMM per dimension** instead of a loop over slices for
+the middle dimensions, and a shape — one large matrix-matrix product — which is
+exactly what a GPU runs best.
 """
 @inline function apply_rotating!(dest::Array{T,N}, A::AbstractMatrix{T},
                                  src::Array{T,N}, dims::NTuple{N,Int}) where {T,N}
@@ -132,24 +131,24 @@ end
 """
     apply_all_rotating!(dest, mats, src, work) -> dest
 
-Applique `mats[d]` le long de chaque dimension, par `N` rotations successives.
+Applies `mats[d]` along each dimension, by `N` successive rotations.
 
-Après `N` rotations les dimensions ont retrouvé leur ordre : c'est le seul
-motif dont le code ait besoin — le solveur tensoriel l'emploie deux fois, le
-passage aux coefficients spline une fois. Un unique noyau BLAS pour toute la
-boucle en temps, et un unique endroit à porter sur GPU le jour venu.
+After `N` rotations the dimensions have regained their order: this is the only
+pattern the code needs — the tensor solver uses it twice, the conversion to
+spline coefficients once. A single BLAS kernel for the whole time loop, and a
+single place to port to a GPU when the day comes.
 
-`work` est un tampon de la taille de `src`, fourni par l'appelant : cette
-fonction n'alloue rien. `dest` doit être distinct de `src`.
+`work` is a buffer the size of `src`, supplied by the caller: this function
+allocates nothing. `dest` must be distinct from `src`.
 
-⚠️ L'alternance entre `dest` et `work` se déduit de la **parité du nombre
-d'étapes restantes**, et non d'un compteur ad hoc. Un ping-pong à un seul
-tampon ferait coïncider source et destination dès la deuxième étape — la
-lecture et l'écriture se marcheraient dessus, silencieusement.
+⚠️ The alternation between `dest` and `work` follows from the **parity of the
+number of remaining steps**, not from an ad-hoc counter. A single-buffer
+ping-pong would make source and destination coincide from the second step on —
+reading and writing would tread on each other, silently.
 """
 function apply_all_rotating!(dest::Array{T,N}, mats, src::Array{T,N},
                              work::Array{T,N}) where {T,N}
-    dest === src && throw(ArgumentError("`dest` et `src` doivent être distincts"))
+    dest === src && throw(ArgumentError("`dest` and `src` must be distinct"))
     dims = size(src)
     cur = src
     for d in 1:N
@@ -163,28 +162,28 @@ end
 """
     solve!(X, B, solver)
 
-Résout l'opérateur tensoriel pour le second membre `B`, résultat dans `X`.
-`X` et `B` peuvent être le même tableau.
+Solves the tensor operator for the right-hand side `B`, result in `X`. `X` and
+`B` may be the same array.
 
-`2N` produits matrice-matrice et une division terme à terme, sans aucune
-allocation : les deux tampons appartiennent au solveur. Les allocations
-comptent double ici — elles ne coûtent pas que leur prix, elles déclenchent un
-ramasse-miettes qui met les fils à l'arrêt.
+`2N` matrix-matrix products and one element-wise division, with no allocation at
+all: both buffers belong to the solver. Allocations count double here — they do
+not merely cost their price, they trigger a garbage collection that brings the
+threads to a halt.
 """
 function solve!(X::Array{T,N}, B::Array{T,N}, s::TensorSolver{N,T}) where {T,N}
     size(X) == size(B) == size(s) ||
-        throw(DimensionMismatch("dimensions incompatibles avec le solveur"))
+        throw(DimensionMismatch("dimensions incompatible with the solver"))
 
-    # Transformée directe : passage dans la base propre de chaque dimension.
+    # Forward transform: into the eigenbasis of each dimension.
     apply_all_rotating!(s.work1, map(o -> o.Minv, s.ops), B, s.work2)
 
-    # Le cœur de la méthode : l'inversion devient une division terme à terme.
+    # The heart of the method: inversion becomes an element-wise division.
     s.work1 .*= s.invλsum
 
-    # Transformée inverse. `X` peut être `B` : le second membre a déjà été
-    # entièrement consommé par la transformée directe.
+    # Inverse transform. `X` may be `B`: the right-hand side has already been
+    # fully consumed by the forward transform.
     apply_all_rotating!(X, map(o -> o.M, s.ops), s.work1, s.work2)
 end
 
-"""Version allouante de [`solve!`](@ref)."""
+"""Allocating version of [`solve!`](@ref)."""
 solve(B::Array{T,N}, s::TensorSolver{N,T}) where {T,N} = solve!(similar(B), B, s)
