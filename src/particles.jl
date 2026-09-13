@@ -56,34 +56,47 @@ charge(c::ParticleCloud) = ELECTRON_CHARGE * c.weight
                         a[1] * b[2] - a[2] * b[1])
 
 """
-    step!(cloud, dt) -> (; kinetic, angular)
+    step!(cloud, dt; rcmax = Inf) -> (; kinetic, escaped, angular)
 
 Avance le nuage d'un pas de temps par Verlet en position :
 
     q(t+dt) = 2q(t) − q(t−dt) + dt²·F/M
 
-et renvoie les deux diagnostics que le Fortran calculait dans la même boucle
-— énergie cinétique et moment cinétique total. Ils sont obtenus du moment
-centré `p = M·(q(t+dt) − q(t−dt))/2dt`, qui n'existe qu'ici : le calculer
-après coup demanderait de conserver un état de plus.
+et renvoie les diagnostics que le Fortran calculait dans la même boucle —
+énergie cinétique, moment cinétique total, et la part de l'énergie cinétique
+portée par les particules **sorties**. Ils sont obtenus du moment centré
+`p = M·(q(t+dt) − q(t−dt))/2dt`, qui n'existe qu'ici : le calculer après coup
+demanderait de conserver un état de plus.
+
+`rcmax` est le rayon au-delà duquel une particule compte comme sortie, mesuré
+sur la position **avant** le pas — comme le `move` du Fortran, qui teste
+`ract` sur `qp` et non sur la position nouvelle. Il valait `100.d0` en dur
+jusqu'en 1997, et devient un paramètre d'entrée en 1998. Le défaut `Inf` ne
+compte rien comme sorti, ce qui laisse `escaped` nul pour qui ne s'en sert pas.
 """
-function step!(cloud::ParticleCloud{T}, dt::T) where {T}
+function step!(cloud::ParticleCloud{T}, dt::T; rcmax::Real = T(Inf)) where {T}
     M = mass(cloud)
     acc = dt^2 / M
     pfac = M / 2dt
+    r2max = T(rcmax)^2
     ekin = zero(T)
+    eout = zero(T)
     angular = ntuple(_ -> zero(T), 3)
 
     @inbounds for i in eachindex(cloud.positions)
         q, qold, f = cloud.positions[i], cloud.previous[i], cloud.forces[i]
         qnew = 2 .* q .- qold .+ acc .* f
         p = pfac .* (qnew .- qold)
-        ekin += (p[1]^2 + p[2]^2 + p[3]^2) / 2M
+        e = (p[1]^2 + p[2]^2 + p[3]^2) / 2M
+        ekin += e
+        # Comparaison des carrés : une racine par particule pour un simple
+        # seuil, c'est une racine de trop.
+        q[1]^2 + q[2]^2 + q[3]^2 > r2max && (eout += e)
         angular = angular .+ cross3(q, p)
         cloud.previous[i] = q
         cloud.positions[i] = qnew
     end
-    (; kinetic = ekin, angular)
+    (; kinetic = ekin, escaped = eout, angular)
 end
 
 """

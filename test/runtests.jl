@@ -410,6 +410,20 @@ end
         @test M == ELECTRON_MASS * w
         @test diag.kinetic ≈ M * (v[1]^2 + v[2]^2 + v[3]^2) / 2
 
+        # `rcmax` : scission interne/sortie de l'énergie cinétique. Sans
+        # rayon, rien n'est compté comme sorti.
+        @test step!(libre, dt).escaped == 0
+        # Trois particules identiques à des rayons croissants, au repos
+        # relatif nul : seules celles au-delà du rayon comptent.
+        trois = ParticleCloud([(1.0, 0.0, 0.0), (5.0, 0.0, 0.0), (9.0, 0.0, 0.0)], w)
+        for i in 1:3
+            trois.previous[i] = trois.positions[i] .- dt .* v
+        end
+        d = step!(trois, dt; rcmax = 6.0)
+        @test d.escaped ≈ d.kinetic / 3        # une seule des trois est dehors
+        # Le rayon est mesuré sur la position d'avant le pas, comme `move`.
+        @test step!(trois, dt; rcmax = 100.0).escaped == 0
+
         # Oscillateur harmonique : le Verlet ne conserve pas l'énergie
         # exactement, mais sans dérive — elle oscille dans une bande étroite.
         k = 3.0

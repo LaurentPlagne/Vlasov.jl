@@ -16,7 +16,12 @@ Paramètres d'une simulation. Les noms du Fortran sont rappelés en regard.
   * `rcluster`, `rbox` (`xclu`, `xboite`) — rayons des deux domaines ;
   * `nions`, `nelectrons` (`nbion`, `nbelec`) ;
   * `nparticles` (`npart`) — pseudo-particules ;
-  * `nsteps`, `dt` (`nbt`, `dltt`).
+  * `nsteps`, `dt` (`nbt`, `dltt`) ;
+  * `rcmax` — rayon au-delà duquel un électron est compté comme **sorti** de
+    l'agrégat. Codé en dur à `100.d0` jusqu'en 1997 ; devenu la 19ᵉ valeur de
+    `vlas.inp` dans la version 1998-01-05, où `vlas.inp` de production le
+    documente « rayon considéré comme inner cluster ». La valeur par défaut
+    reproduit donc le comportement d'avant.
 """
 Base.@kwdef struct SimulationParameters{T<:AbstractFloat}
     nfine::Int = 28
@@ -29,6 +34,7 @@ Base.@kwdef struct SimulationParameters{T<:AbstractFloat}
     nparticles::Int = 20_000
     nsteps::Int = 10
     dt::T = 1.0
+    rcmax::T = 100.0
 end
 
 """
@@ -48,11 +54,15 @@ function read_parameters(path::AbstractString)
     length(vals) >= 10 ||
         throw(ArgumentError("$path : 10 valeurs attendues, $(length(vals)) trouvées"))
     num(s) = parse(Float64, replace(s, "d" => "e", "D" => "e"))
+    # `rcmax` est la 19ᵉ valeur, absente des `vlas.inp` d'avant 1998 : on
+    # retombe alors sur le `100.d0` que le Fortran codait en dur.
+    rcmax = length(vals) >= 19 && !isempty(vals[19]) ? num(vals[19]) : 100.0
     SimulationParameters(
         nfine = Int(num(vals[1])), ninner = Int(num(vals[2])), nouter = Int(num(vals[3])),
         rcluster = num(vals[4]), rbox = num(vals[5]),
         nions = num(vals[6]), nelectrons = num(vals[7]),
-        nparticles = Int(num(vals[8])), nsteps = Int(num(vals[9])), dt = num(vals[10]))
+        nparticles = Int(num(vals[8])), nsteps = Int(num(vals[9])), dt = num(vals[10]),
+        rcmax = rcmax)
 end
 
 """
@@ -88,7 +98,7 @@ struct Simulation{T<:AbstractFloat,P}
     scatter::NTuple{2,ScatterBuffers{T,3}}
 end
 
-function Simulation(p::SimulationParameters{T}, profile::RadialProfile{T};
+function Simulation(p::SimulationParameters{T}, profile::PhaseSpaceProfile{T};
                     rng::Ran2 = Ran2(-1), consistent_startup::Bool = false,
                     projectile = nothing) where {T}
     fine = uniform_axis(-p.rcluster, p.rcluster, p.nfine)
@@ -197,10 +207,10 @@ le total silencieusement faux.
 """
 function step!(sim::Simulation{T}) where {T}
     hartree = update_forces!(sim)
-    diag = step!(sim.cloud, sim.params.dt)
+    diag = step!(sim.cloud, sim.params.dt; rcmax = sim.params.rcmax)
     total = interaction_energy(sim.cloud, sim.meshes[1].axes, sim.φ[1],
                                sim.meshes[2].axes, sim.φ[2], sim.smoothing)
-    energy_budget(sim.jellium, diag.kinetic, hartree, total)
+    energy_budget(sim.jellium, diag.kinetic, hartree, total, diag.escaped)
 end
 
 """

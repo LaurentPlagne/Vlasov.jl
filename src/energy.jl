@@ -73,6 +73,10 @@ struct EnergyBudget{T<:AbstractFloat}
     hartree::T
     meanfield::T
     ions::T
+    """Part de `kinetic` portée par les particules au-delà de `rcmax` — le
+    `ekinout` du Fortran. Nulle si l'appelant ne fournit pas de rayon : c'est
+    un diagnostic d'évaporation, il n'entre dans aucune somme."""
+    escaped::T
 end
 
 """
@@ -108,9 +112,9 @@ boucle, avant de s'appuyer sur ces énergies pour conclure quoi que ce soit de
 physique.
 """
 function energy_budget(jel::Jellium{T}, kinetic::T, hartree::T,
-                       total_interaction::T) where {T}
+                       total_interaction::T, escaped::T = zero(T)) where {T}
     meanfield = total_interaction - 2hartree
     ions = ion_self_energy(jel)
     EnergyBudget{T}(ions + kinetic + hartree + meanfield,
-                    kinetic, hartree, meanfield, ions)
+                    kinetic, hartree, meanfield, ions, escaped)
 end
