@@ -381,11 +381,35 @@ ponctuelle contre une **gaussienne** de largeur `σ_ion` (chapitre 2,
     g(r) = exp(−r²/2σ²) / (√(2π) σ)        (gaussienne normalisée à 1D)
 
 Le Fortran, lui, fait une **boule uniformément chargée** de rayon `cutoff` :
-Coulomb au-delà, force linéaire en deçà. C'est le cas dans les 43 versions,
-de 1996 à 1998.
+Coulomb au-delà, force linéaire en deçà. C'est le cas dans toutes les
+versions, `incproj` comme `forceproji`. (L'adoucissement de `docapture` diffère
+encore des deux — voir anomalie 9.)
 
-Or `erfsr(r, sigr)`, qui est *exactement* `Erf(r/(√2σ))/r`, **existe dans
-chaque fichier source et n'est appelée nulle part**. Écrite, jamais branchée.
+### Ce que `erfsr` raconte
+
+`erfsr(r, sigr)`, qui est *exactement* `Erf(r/(√2σ))/r`, existe dans chaque
+fichier source. Elle n'est appelée que dans **une** version sur 49 : la plus
+ancienne conservée, `it8/ttt/vlas.f` du 2 juillet 1996. Et elle y était **déjà
+tabulée** — l'erf ne se recalcule pas par paire :
+
+| routine | rôle |
+|---|---|
+| `maketaerf` → `erftab` | potentiel `Erf(r/√2σ)/r` tabulé sur `[0, 5σ]` |
+| `maketafor` → `fortab` | la **force**, tabulée sur `[0, 10σ]` |
+| `forcerad` | la calcule, par quadrature 2D sur la gaussienne — pas par la formule analytique |
+| `potdirect` | consomme `erftab` : Coulomb au-delà de `5σ`, table en deçà, par indice au plus proche |
+
+Ce n'était donc pas une intention non réalisée mais une **implémentation
+complète**, celle de la sommation directe paire à paire. À la date même du
+2 juillet 1996 elle est déjà commentée, remplacée par la voie sur grille
+(`maketable` / `maketaint`, qui tabulent la gaussienne contre les splines) —
+l'approche du chapitre TBSCM, en `O(N + grille)` au lieu de `O(N²)`.
+
+`erfsr` survit ensuite comme code mort dans les 48 versions suivantes. Quand
+le projectile est ajouté, plus tard, il reçoit une boule — pas la table.
+
+**L'anomalie n'est donc pas un oubli d'écriture, c'est un changement de voie
+dont le projectile n'a pas hérité.**
 
 ### Pourquoi cela compte
 

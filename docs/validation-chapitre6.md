@@ -73,9 +73,11 @@ fermée.
 
 **Et l'écart s'explique par la force.** La thèse pose une interaction
 projectile ↔ pseudo-particule gaussienne (éq. `Eforceproj2`) ; le Fortran
-implémente une boule uniformément chargée, dans ses 43 versions. La routine
-`erfsr`, qui est exactement le potentiel gaussien, existe partout et n'est
-jamais appelée. Détail en [anomalie 10](coquilles-fortran.md).
+implémente une boule uniformément chargée, dans ses 43 versions. La routine `erfsr`, qui est exactement le potentiel gaussien, n'est appelée
+que dans la version la plus ancienne (juillet 1996) — où elle était déjà
+**tabulée**, avec sa force, pour une sommation directe paire à paire
+abandonnée le mois même au profit de la voie sur grille. Le projectile,
+ajouté plus tard, n'a pas hérité de cette table. Détail en [anomalie 10](coquilles-fortran.md).
 
 Mesuré sur Na₁₉₆, proton 2 keV (`v = 0,283`), tout le reste égal :
 
