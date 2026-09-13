@@ -4,7 +4,8 @@ Reproduce figure 5.2 of the thesis: cross-sections of the electron density
 during central Na₁₀₀₀ + H⁺ collisions, at four projectile energies.
 
     julia --project=gpu -t auto scripts/figure52.jl [--particules=3200000]
-                                                    [--x=8] [--sortie=figure52.png]
+                                                    [--x=8] [--finesse=8]
+                                                    [--sortie=figure52.png]
 
 Where [`figure53.jl`](figure53.jl) tests the *integral* of the response — the
 stopping power — this one tests its **spatial structure**: the plasmon wake the
@@ -53,7 +54,7 @@ const GREY = RGBf(0.78, 0.78, 0.78)
 
 function parse_args(argv)
     o = Dict("particules" => "3200000", "x" => "8", "sortie" => "figure52.png",
-             "epaisseur" => "2")
+             "epaisseur" => "2", "finesse" => "8")
     for a in argv
         m = match(r"^--([a-z]+)=(.+)$", a)
         (m === nothing || !haskey(o, m[1])) && error("unrecognised argument: $a")
@@ -62,24 +63,41 @@ function parse_args(argv)
     o
 end
 
-"""Density averaged over the planes with `|z| ≤ halfwidth` — see
-`film_images.jl` for why the slab is thin: the wake fits inside one cell in `z`,
-so a thicker one dilutes the signal faster than it kills the noise."""
-function slab_z0(ρ, mesh, halfwidth)
-    gz = mesh.axes[3].colloc
-    ks = findall(z -> abs(z) <= halfwidth, gz)
-    isempty(ks) && (ks = [argmin(abs.(gz))])
-    out = zeros(Float32, size(ρ, 1), size(ρ, 2))
-    @inbounds for k in ks, j in axes(ρ, 2), i in axes(ρ, 1)
-        out[i, j] += Float32(ρ[i, j, k])
+"""Cut at `z = 0`, averaged over `|z| ≤ halfwidth` and **evaluated from the
+density's spline representation** on a grid `finesse` times finer than the
+collocation grid.
+
+Two separate reasons, both measured:
+
+  * the slab is thin because the wake fits inside one cell in `z`, so a thicker
+    one dilutes the signal faster than it kills the noise — see
+    `film_images.jl` for the table;
+  * the evaluation is refined because the cluster's surface is one or two cells
+    thick, and displaying collocation samples as cells turns it into a
+    staircase. At `finesse = 3` the step is still visible; at 8 it is not.
+    ⚠️ This changes nothing in the noise — it interpolates the same values."""
+function spline_cut(ρ, mesh, halfwidth, xs, ys)
+    csol = spline_coefficients(ρ, mesh)
+    ax = mesh.axes
+    zs = range(-halfwidth, halfwidth; length = 3)
+    out = zeros(Float32, length(xs), length(ys))
+    Threads.@threads for j in eachindex(ys)
+        @inbounds for i in eachindex(xs)
+            s = 0.0
+            for z in zs
+                v = spline_potential(ax, csol, (xs[i], ys[j], z))
+                v === nothing || (s += v)
+            end
+            out[i, j] = Float32(s / length(zs))
+        end
     end
-    out ./ length(ks)
+    out
 end
 
 """Run one crossing up to the instant the ion reaches `xsnap`, and return the
 slab there. All four panels are taken at the **same ion position**, not at the
 same time: that is what makes them comparable."""
-function snapshot(profile, npart, keV, xsnap, halfwidth)
+function snapshot(profile, npart, keV, xsnap, halfwidth, finesse)
     p = SimulationParameters(nfine = 44, ninner = 22, nouter = 22, rcluster = 78.0,
                              rbox = 235.0, nions = 1000.0, nelectrons = 1000.0,
                              nparticles = npart, nsteps = 0, dt = 1.0)
@@ -98,9 +116,12 @@ function snapshot(profile, npart, keV, xsnap, halfwidth)
     end
     @printf("%2d keV (v = %.2f) : %3d steps, ion at x = %.1f, %.0f s\n",
             keV, sqrt(2e / 1836.154), n, sim.projectile.position[1], time() - t0)
-    (rho = slab_z0(sim.ρ[1], fine, halfwidth),
+    cx, cy = fine.axes[1].colloc, fine.axes[2].colloc
+    outx = collect(range(cx[1], cx[end]; length = finesse * length(cx)))
+    outy = collect(range(cy[1], cy[end]; length = finesse * length(cy)))
+    (rho = spline_cut(sim.ρ[1], fine, halfwidth, outx, outy),
      x = sim.projectile.position[1],
-     gx = Float32.(fine.axes[1].colloc), gy = Float32.(fine.axes[2].colloc))
+     gx = Float32.(outx), gy = Float32.(outy))
 end
 
 function render(snaps, out)
@@ -135,6 +156,7 @@ function main(argv)
     npart = parse(Int, o["particules"])
     xsnap = parse(Float64, o["x"])
     halfwidth = parse(Float64, o["epaisseur"])
+    finesse = parse(Int, o["finesse"])
 
     grid, ρr = read_radial_density(joinpath(ROOT, "ref", "these", "rhorad.Na1000.dat"))
     profile = PotentialProfile(grid, ρr)
@@ -143,7 +165,7 @@ function main(argv)
     @printf("BLAS: %s    forces: %s\n",
             ACCELERATE ? "Accelerate" : "OpenBLAS", METAL ? "GPU (Float32)" : "CPU")
 
-    snaps = Dict(keV => snapshot(profile, npart, keV, xsnap, halfwidth)
+    snaps = Dict(keV => snapshot(profile, npart, keV, xsnap, halfwidth, finesse)
                  for keV in ENERGIES)
 
     out = joinpath(ROOT, o["sortie"])

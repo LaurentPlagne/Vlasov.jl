@@ -2,4 +2,5 @@
 AppleAccelerate = "13e28ba4-7ad8-5781-acae-3021b1ed3924"
 CairoMakie = "13f3f980-e62b-5c42-98c6-ff1f3baf88f0"
 Metal = "dde4c033-4e86-420c-a63e-0dd931031962"
+ProgressMeter = "92933f4c-e287-5a05-a399-4b506db050ca"
 Vlasov = "2b4e4dc6-bb65-44a8-9970-a8d90b7ff1a4"
