@@ -1,20 +1,20 @@
 """
-Comparaison au code Fortran d'origine.
+Comparison against the original Fortran code.
 
-Ces tests ne s'exécutent que si l'oracle a été produit :
+These tests only run if the oracle has been produced:
 
     cd ref/fortran && make oracle
 
-Ils sont ignorés sinon — les dumps binaires ne sont pas versionnés, et le
-reste de la suite valide déjà les mêmes propriétés sans référence extérieure
-(dérivée seconde exacte sur un cubique, convergence à l'ordre 4). L'oracle
-apporte autre chose : la certitude qu'on résout *le même problème* que la
-thèse, et pas seulement un problème correct.
+They are skipped otherwise — the binary dumps are not versioned, and the rest
+of the suite already validates the same properties without an external
+reference (exact second derivative on a cubic, fourth-order convergence). The
+oracle brings something else: the certainty that we are solving *the same
+problem* as the thesis, and not merely a correct one.
 """
 
 const ORACLE_DIR = joinpath(@__DIR__, "..", "ref", "fortran")
 
-"""Lit un vecteur dumpé : un `Int32` de taille, puis des `Float64`."""
+"""Read a dumped vector: an `Int32` length, then `Float64`s."""
 function read_dump_vector(name)
     open(joinpath(ORACLE_DIR, name)) do io
         n = Int(read(io, Int32))
@@ -22,7 +22,7 @@ function read_dump_vector(name)
     end
 end
 
-"""Lit une matrice carrée dumpée, en ordre colonne comme Fortran et Julia."""
+"""Read a dumped square matrix, column-major as in both Fortran and Julia."""
 function read_dump_matrix(name)
     open(joinpath(ORACLE_DIR, name)) do io
         n = Int(read(io, Int32))
@@ -36,24 +36,24 @@ end
 
 oracle_available() = isfile(joinpath(ORACLE_DIR, "dump_gx.bin"))
 
-"""Répertoire du second oracle : la version 1998-01-05, cible du portage."""
+"""Directory of the second oracle: the 1998-01-05 version, the port's target."""
 const ORACLE98_DIR = joinpath(@__DIR__, "..", "ref", "fortran98")
 
 oracle98_available() = isfile(joinpath(ORACLE98_DIR, "pot.dat"))
 
-# Écart relatif toléré. Le portage remplace des briques (NAG f02agf → `eigen`,
-# inversion explicite → factorisation), l'égalité bit-à-bit n'est donc pas
-# attendue ; au-delà de ce seuil, en revanche, c'est une régression.
+# Tolerated relative discrepancy. The port replaces building blocks (NAG f02agf
+# → `eigen`, explicit inversion → factorisation), so bit-for-bit equality is not
+# expected; beyond this threshold, on the other hand, it is a regression.
 const ORACLE_TOL = 1e-13
 
 reldiff(a, b) = norm(a - b) / norm(b)
 
 @testset "Oracle Fortran" begin
     if oracle_available()
-        @testset "Générateur ran2" begin
-            # Le seul test bit-à-bit de la suite : la moindre différence dans
-            # l'arithmétique entière — y compris le débordement volontaire —
-            # décalerait toute la séquence, et avec elle le tirage initial.
+        @testset "ran2 generator" begin
+            # The only bit-for-bit test in the suite: the slightest difference
+            # in the integer arithmetic — the deliberate overflow included —
+            # would shift the whole sequence, and the initial sampling with it.
             ref = read_dump_vector("rand2.bin")
             rng = Ran2(-1)
             @test all(i -> Float64(next!(rng)) === ref[i], eachindex(ref))
@@ -61,18 +61,18 @@ reldiff(a, b) = norm(a - b) / norm(b)
     end
 
     if !oracle_available()
-        @info "oracle absent — `cd ref/fortran && make oracle` pour l'activer"
+        @info "oracle missing — `cd ref/fortran && make oracle` to enable it"
         @test_skip false
     else
-        # `vlas.inp` : 28 intervalles sur [-xclu, xclu] avec xclu = 50.
+        # `vlas.inp`: 28 intervals on [-xclu, xclu] with xclu = 50.
         axf = uniform_axis(-50.0, 50.0, 28)
 
-        @testset "Grille fine" begin
+        @testset "Fine grid" begin
             @test reldiff(axf.knots, read_dump_vector("dump_gx.bin")) < ORACLE_TOL
             @test reldiff(axf.colloc, read_dump_vector("dump_gtx.bin")) < ORACLE_TOL
         end
 
-        @testset "Collocation et opérateur" begin
+        @testset "Collocation and operator" begin
             cm = CollocationMatrices(axf)
             @test reldiff(Matrix(cm.S), read_dump_matrix("dump_sx.bin")) < ORACLE_TOL
             @test reldiff(Matrix(cm.S″), read_dump_matrix("dump_s2x.bin")) < ORACLE_TOL
@@ -83,21 +83,21 @@ reldiff(a, b) = norm(a - b) / norm(b)
             λ = read_dump_vector("dump_lxr.bin")
             op = DiagonalizedOperator(D)
             @test reldiff(sort(op.λ), sort(λ)) < ORACLE_TOL
-            # Propriété que le Fortran calculait puis jetait (`lxi`, `mxi`).
+            # A property the Fortran computed and then threw away (`lxi`, `mxi`).
             @test all(<(0), op.λ)
         end
 
-        @testset "Moments multipolaires" begin
+        @testset "Multipole moments" begin
             for (k, file) in ((0, "dump_psx.bin"), (1, "dump_pxx.bin"), (2, "dump_px2.bin"))
                 @test reldiff(moments(axf, Val(k)), read_dump_vector(file)) < ORACLE_TOL
             end
         end
 
-        @testset "Grille grossière étirée" begin
-            # ⚠️ On part des nœuds DUMPÉS, pas d'un axe reconstruit : `findacc`
-            # arrêtait sa dichotomie à 1e-10, et `stretched_axis` résout à la
-            # précision machine. Reconstruire l'axe polluerait toute la
-            # comparaison à ~1e-12 et masquerait les vraies régressions.
+        @testset "Stretched coarse grid" begin
+            # ⚠️ We start from the DUMPED knots, not from a rebuilt axis:
+            # `findacc` stopped its bisection at 1e-10, whereas `stretched_axis`
+            # solves to machine precision. Rebuilding the axis would pollute the
+            # whole comparison at ~1e-12 and mask the real regressions.
             axb = SplineAxis(read_dump_vector("dumpb_gx.bin"),
                              read_dump_vector("dumpbgtx.bin"))
             cmb = CollocationMatrices(axb)
@@ -113,23 +113,23 @@ reldiff(a, b) = norm(a - b) / norm(b)
                 @test reldiff(moments(axb, Val(k)), read_dump_vector(file)) < ORACLE_TOL
             end
 
-            # La grille étirée reconstruite, elle, ne doit coller qu'à la
-            # tolérance de `findacc` — vérifier qu'on reste dans cet ordre.
+            # The rebuilt stretched grid, for its part, need only agree to
+            # `findacc`'s tolerance — check we stay in that range.
             axs = stretched_axis(50.0, 150.0, 7, 8)
             @test reldiff(axs.knots, read_dump_vector("dumpb_gx.bin")) < 1e-10
         end
 
-        @testset "Dépôt de charge" begin
-            # `makerho` dumpe les particules ET la densité de la même
-            # invocation : les deux restent donc cohérentes, quel que soit le
-            # moment de la simulation où le dump a été pris.
+        @testset "Charge deposit" begin
+            # `makerho` dumps the particles AND the density of the same
+            # invocation: the two therefore stay consistent, whatever moment of
+            # the simulation the dump was taken at.
             qp = read_dump_vector("dumpqp.bin")
             npart = length(qp) ÷ 3
             positions = [(qp[3i-2], qp[3i-1], qp[3i]) for i in 1:npart]
 
-            # L'axe est reconstruit depuis la collocation dumpée par `makerho`
-            # elle-même, et non empruntée à une autre routine : c'est ce qui
-            # rend la comparaison indépendante de l'ordre des appels.
+            # The axis is rebuilt from the collocation dumped by `makerho`
+            # itself, not borrowed from another routine: that is what makes the
+            # comparison independent of the order of the calls.
             axb = axis_from_collocation(read_dump_vector("dumprho_gt.bin"))
             mesh = SplineMesh(axb, axb, axb)
             n = nbasis(axb)
@@ -140,15 +140,15 @@ reldiff(a, b) = norm(a - b) / norm(b)
             @test nout == 0
             @test reldiff(ρ, ρref) < ORACLE_TOL
 
-            # L'observable de contrôle du code d'origine : « somme des charges ».
+            # The original code's control observable: "sum of the charges".
             @test total_charge(ρ, mesh) ≈ 196.0 rtol = 1e-12
         end
 
-        @testset "Poisson : densité → potentiel" begin
-            # `makerh2` dumpe sa densité, sa grille et son second membre ; le
-            # `solve` qui la suit dumpe le potentiel, apparié par un drapeau en
-            # COMMON (`solve` est aussi appelée après `makerhsf`, sur l'autre
-            # grille, et son csol ne correspondrait pas à cette densité-ci).
+        @testset "Poisson: density → potential" begin
+            # `makerh2` dumps its density, its grid and its right-hand side; the
+            # `solve` that follows dumps the potential, paired through a flag in
+            # COMMON (`solve` is also called after `makerhsf`, on the other
+            # grid, and its csol would not match this density).
             axb = SplineAxis(read_dump_vector("dumpb_gx.bin"),
                              read_dump_vector("dumpbgtx.bin"))
             @test read_dump_vector("dumprh2gt.bin") ≈ axb.colloc
@@ -157,8 +157,8 @@ reldiff(a, b) = norm(a - b) / norm(b)
             n = nbasis(axb)
             ρ = reshape(read_dump_vector("dumprh2.bin"), n, n, n)
 
-            # Moments multipolaires. Le quadrupôle tolère un peu plus : sa
-            # forme sans trace (2∫x² − ∫y² − ∫z²) compense de grands nombres.
+            # Multipole moments. The quadrupole tolerates a little more: its
+            # traceless form (2∫x² − ∫y² − ∫z²) cancels large numbers.
             mp = multipole(ρ, mesh)
             @test mp.charge ≈ read_dump_vector("dumpq.bin")[1] rtol = 1e-12
             @test reldiff(collect(mp.center), read_dump_vector("dumpbari.bin")) < 1e-11
@@ -166,8 +166,8 @@ reldiff(a, b) = norm(a - b) / norm(b)
             @test reldiff(collect(mp.quadrupole[1:3]), [Q[1, 1], Q[2, 2], Q[3, 3]]) < 1e-11
             @test reldiff(collect(mp.quadrupole[4:6]), [Q[1, 2], Q[1, 3], Q[2, 3]]) < 1e-11
 
-            # Potentiel de bord : seules les faces sont écrites par `makerh2`,
-            # l'intérieur du tableau `phi` sert de tampon à `solve`.
+            # Boundary potential: only the faces are written by `makerh2`, the
+            # interior of the `phi` array serving `solve` as a buffer.
             φbord = boundary_potential!(similar(ρ), mesh, mp)
             φref = reshape(read_dump_vector("dumpphi.bin"), n, n, n)
             faces = falses(n, n, n)
@@ -179,14 +179,14 @@ reldiff(a, b) = norm(a - b) / norm(b)
             @test reldiff(poisson_rhs(ρ, mesh),
                           reshape(read_dump_vector("dumprhs.bin"), size(mesh)...)) < 1e-11
 
-            # La chaîne complète, et ses coefficients spline (`csol`).
+            # The complete chain, and its spline coefficients (`csol`).
             φ = poisson(ρ, mesh)
             @test reldiff(φ, reshape(read_dump_vector("dumpphi2.bin"), n, n, n)) < 1e-11
             @test reldiff(spline_coefficients(φ, mesh),
                           reshape(read_dump_vector("dumpcsol.bin"), n, n, n)) < 1e-11
         end
 
-        @testset "Pas de Verlet" begin
+        @testset "Verlet step" begin
             triplets(v) = [(v[3i-2], v[3i-1], v[3i]) for i in 1:length(v)÷3]
             flat(t) = collect(Iterators.flatten(t))
 
@@ -195,8 +195,8 @@ reldiff(a, b) = norm(a - b) / norm(b)
             forces = triplets(read_dump_vector("mv_fp.bin"))
             dt = read_dump_vector("mv_par.bin")[1]
 
-            # `move` dumpe aussi `coef` = 1/2M : de quoi retrouver la masse de
-            # la pseudo-particule sans la supposer.
+            # `move` also dumps `coef` = 1/2M: enough to recover the
+            # pseudo-particle's mass without assuming it.
             M = 1 / (2 * read_dump_vector("mv_nb.bin")[1])
             cloud = ParticleCloud(q0, M / ELECTRON_MASS)
             @test mass(cloud) ≈ M
@@ -210,7 +210,7 @@ reldiff(a, b) = norm(a - b) / norm(b)
             @test reldiff(collect(diag.angular), read_dump_vector("mv_lcin.bin")) < 1e-12
         end
 
-        @testset "Champs et forces" begin
+        @testset "Fields and forces" begin
             triplets(v) = [(v[3i-2], v[3i-1], v[3i]) for i in 1:length(v)÷3]
             flat(t) = collect(Iterators.flatten(t))
 
@@ -219,13 +219,13 @@ reldiff(a, b) = norm(a - b) / norm(b)
             fine = SplineAxis(gx, collocation_points(gx))
             coarse = SplineAxis(gxb, collocation_points(gxb))
 
-            # Tables de convolution gaussienne.
+            # Gaussian convolution tables.
             sm = GaussianSmoothing(fine)
             @test sm.spacing ≈ read_dump_vector("fg_pas.bin")[1]
             @test reldiff(sm.overlap, reshape(read_dump_vector("fg_it1.bin"), 10, :)) < 1e-11
             @test reldiff(sm.gradient, reshape(read_dump_vector("fg_it2.bin"), 10, :)) < 1e-11
 
-            # Forces sur les pseudo-particules.
+            # Forces on the pseudo-particles.
             n = nbasis(fine)
             csol = reshape(read_dump_vector("fg_csol.bin"), n, n, n)
             csolb = reshape(read_dump_vector("fg_csolb.bin"), n, n, n)
@@ -234,14 +234,14 @@ reldiff(a, b) = norm(a - b) / norm(b)
             nout = forces!(cloud, (fine, fine, fine), csol,
                            (coarse, coarse, coarse), csolb, sm;
                            escaped = Int(read_dump_vector("fg_n.bin")[1]))
-            # Sur ce dump, toutes les particules sont dans la grille fine ; les
-            # régimes grossier et monopolaire sont couverts par la suite
-            # autonome, pas ici.
+            # On this dump every particle is inside the fine grid; the coarse
+            # and monopole regimes are covered by the standalone suite, not
+            # here.
             @test nout == 0
             @test reldiff(flat(cloud.forces), read_dump_vector("fg_fp.bin")) < 1e-11
         end
 
-        @testset "Dépôt lissé" begin
+        @testset "Smoothed deposit" begin
             triplets(v) = [(v[3i-2], v[3i-1], v[3i]) for i in 1:length(v)÷3]
 
             gx = read_dump_vector("rg_gx.bin")
@@ -259,10 +259,10 @@ reldiff(a, b) = norm(a - b) / norm(b)
             @test reldiff(ρ, reshape(read_dump_vector("rg_rho.bin"), n, n, n)) < 1e-12
         end
 
-        @testset "Tirage initial des pseudo-particules" begin
-            # `ran2` étant reproduit bit à bit, la comparaison se fait
-            # particule par particule et non sur des statistiques — seule
-            # façon de distinguer un bug d'un bruit d'échantillonnage.
+        @testset "Initial sampling of the pseudo-particles" begin
+            # `ran2` being reproduced bit for bit, the comparison is made
+            # particle by particle and not on statistics — the only way to tell
+            # a bug from sampling noise.
             flat(t) = collect(Iterators.flatten(t))
             prof = read_radial_profile(joinpath(ORACLE_DIR, "data"))
             @test length(prof.quantiles) == length(prof.density) == 1001
@@ -271,10 +271,10 @@ reldiff(a, b) = norm(a - b) / norm(b)
             npart, nbelec = 20_000, 196.0
             pos, mom = sample_thomas_fermi(prof, npart, nbelec / npart)
 
-            # ⚠️ Tolérance à 1e-11 et non 1e-13 : le Fortran déclare
-            # `pi = 3.141592653589d0`, tronqué de trois décimales, et les
-            # angles du tirage en héritent. Avec ce π-là l'accord tombe à
-            # 4e-17 — l'écart vient de là et de rien d'autre.
+            # ⚠️ Tolerance at 1e-11 and not 1e-13: the Fortran declares
+            # `pi = 3.141592653589d0`, three decimals short, and the sampling
+            # angles inherit it. With that π the agreement falls to 4e-17 — the
+            # discrepancy comes from there and from nothing else.
             @test reldiff(flat(pos), read_dump_vector("in_rt.bin")) < 1e-11
             @test reldiff(flat(mom), read_dump_vector("in_pt.bin")) < 1e-11
         end
@@ -293,15 +293,15 @@ reldiff(a, b) = norm(a - b) / norm(b)
             pos0 = trip(read_dump_vector("ip_pos0.bin"))[1]
             proj = Projectile(; mass = scal("ip_par.bin"), charge = scal("ip_cha.bin"),
                               energy = 73.498, x0 = pos0[1], impact = pos0[2], dt, cutoff)
-            # L'état réel du dump, et non celui qu'aurait construit `initpro` :
-            # le dump peut venir de n'importe quel pas de la trajectoire.
+            # The dump's actual state, not the one `initpro` would have built:
+            # the dump may come from any step of the trajectory.
             proj.position = pos0
             proj.previous = trip(read_dump_vector("ip_old0.bin"))[1]
 
             force, eel, ejel = projectile_forces!(cloud, proj, Jellium(scal("ip_nbion.bin")))
             @test eel ≈ scal("ip_eel.bin") rtol = 1e-13
             @test ejel ≈ scal("ip_ejel.bin") rtol = 1e-13
-            # La réaction sur les pseudo-particules, souvent oubliée.
+            # The back-reaction on the pseudo-particles, easily forgotten.
             @test reldiff(flat(cloud.forces), read_dump_vector("ip_fp1.bin")) < 1e-13
 
             step!(proj, force, dt)
@@ -310,10 +310,10 @@ reldiff(a, b) = norm(a - b) / norm(b)
             @test kinetic_energy(proj) ≈ scal("ip_ekin.bin") rtol = 1e-13
         end
 
-        @testset "Bilan d'énergie" begin
-            # `enertot2g` n'est appelée qu'un pas sur dix : tout ce dont elle a
-            # besoin est dumpé À SON ENTRÉE, sinon les instantanés viendraient
-            # d'itérations différentes et ne seraient pas comparables.
+        @testset "Energy budget" begin
+            # `enertot2g` is called only one step in ten: everything it needs is
+            # dumped ON ENTRY, otherwise the snapshots would come from different
+            # iterations and would not be comparable.
             triplets(v) = [(v[3i-2], v[3i-1], v[3i]) for i in 1:length(v)÷3]
             gxf, gxb = read_dump_vector("et_gx.bin"), read_dump_vector("et_gxb.bin")
             axf = SplineAxis(gxf, collocation_points(gxf))
@@ -338,30 +338,30 @@ reldiff(a, b) = norm(a - b) / norm(b)
             @test budget.ions ≈ 3 * 196.0^2 / (5 * jel.radius)
         end
 
-        @testset "Champ moyen : échange-corrélation et jellium" begin
+        @testset "Mean field: exchange-correlation and jellium" begin
             ax = axis_from_collocation(read_dump_vector("ps_gt.bin"))
             mesh = SplineMesh(ax, ax, ax)
             n = nbasis(ax)
             ρ = reshape(read_dump_vector("ps_rho.bin"), n, n, n)
             jel = Jellium(read_dump_vector("ps_nbion.bin")[1])
 
-            # Le potentiel effectif aux points de collocation.
+            # The effective potential at the collocation points.
             g = ax.colloc
             ech = [xc_potential(ρ[i, j, k]) +
                    Vlasov.potential(jel, sqrt(g[i]^2 + g[j]^2 + g[k]^2))
                    for i in 1:n, j in 1:n, k in 1:n]
             @test reldiff(ech, reshape(read_dump_vector("ps_ech.bin"), n, n, n)) < 1e-13
 
-            # Puis son ajout au potentiel de Hartree, en coefficients.
+            # Then its addition to the Hartree potential, in coefficients.
             csol = reshape(read_dump_vector("ps_csol0.bin"), n, n, n)
-            avant = copy(csol)
+            before = copy(csol)
             effective_potential!(csol, ρ, mesh, jel)
             @test reldiff(csol, reshape(read_dump_vector("ps_csol.bin"), n, n, n)) < 1e-11
-            # Ce terme n'est pas une correction : il pèse autant que Hartree.
-            @test norm(csol - avant) / norm(avant) > 0.5
+            # This term is not a correction: it weighs as much as Hartree does.
+            @test norm(csol - before) / norm(before) > 0.5
         end
 
-        @testset "Raccord entre grilles" begin
+        @testset "Matching between grids" begin
             gxf = read_dump_vector("fg_gx.bin")
             gxc = read_dump_vector("sf_gxc.bin")
             axf = axis_from_collocation(read_dump_vector("sf_gt.bin"))
@@ -374,7 +374,7 @@ reldiff(a, b) = norm(a - b) / norm(b)
             ρf = reshape(read_dump_vector("sf_rho.bin"), n, n, n)
             csolc = reshape(read_dump_vector("sf_csolc.bin"), n, n, n)
 
-            # Les valeurs de bord lues dans la solution grossière.
+            # The boundary values read off the coarse solution.
             φ = Array{Float64,3}(undef, n, n, n)
             boundary_from_coarse!(φ, fine, coarse, csolc)
             φref = reshape(read_dump_vector("sf_phi.bin"), n, n, n)
@@ -387,7 +387,7 @@ reldiff(a, b) = norm(a - b) / norm(b)
             @test reldiff(poisson_rhs!(Array{Float64,3}(undef, size(fine)), ρf, fine, φ),
                           reshape(read_dump_vector("sf_rhs.bin"), size(fine)...)) < 1e-12
 
-            # La chaîne complète à deux niveaux, depuis les deux densités.
+            # The complete two-level chain, from both densities.
             ρc = reshape(read_dump_vector("dumprh2.bin"), n, n, n)
             φs = (Array{Float64,3}(undef, n, n, n), Array{Float64,3}(undef, n, n, n))
             poisson!(φs, (ρf, ρc), nested)
@@ -398,18 +398,18 @@ reldiff(a, b) = norm(a - b) / norm(b)
 end
 
 # ---------------------------------------------------------------------------
-# Oracle « version tardive » (1998-01-05)
+# "Late version" oracle (1998-01-05)
 # ---------------------------------------------------------------------------
 #
 #   cd ref/fortran98 && make && python3 make_pot.py && ./vlas98 > run98.log
 #
-# Les valeurs de référence ci-dessous sont recopiées de `run98.log` : la
-# routine `initialise4` imprime d'elle-même la pseudo-particule 109 et le taux
-# d'acceptation, ce qui évite d'instrumenter le source.
+# The reference values below are copied from `run98.log`: the `initialise4`
+# routine prints pseudo-particle 109 and the acceptance rate of its own accord,
+# which spares us instrumenting the source.
 
-@testset "Oracle 1998 — tirage par rejet" begin
+@testset "1998 oracle — rejection sampling" begin
     if !oracle98_available()
-        @info "Oracle 98 absent (ref/fortran98/pot.dat) — tests ignorés"
+        @info "1998 oracle missing (ref/fortran98/pot.dat) — tests skipped"
     else
         prof = read_potential_profile(joinpath(ORACLE98_DIR, "pot.dat"))
         @test prof.rmax == 35.0
@@ -420,18 +420,18 @@ end
         npart, nbelec = 20_000, 196.0
         pos, mom = sample_thomas_fermi(prof, npart, nbelec / npart)
 
-        # Pseudo-particule 109, telle que l'oracle l'imprime.
+        # Pseudo-particle 109, as the oracle prints it.
         r = sqrt(sum(abs2, pos[109]))
         p = sqrt(sum(abs2, mom[109]))
-        # `r` et `p` sont **identiques au bit près** : ils ne passent par
-        # aucune fonction transcendante, donc leur égalité prouve que la
-        # boucle de rejet a consommé le flux aléatoire exactement comme
-        # l'oracle — rejet pour rejet.
+        # `r` and `p` are **identical to the bit**: they pass through no
+        # transcendental function, so their equality proves that the rejection
+        # loop consumed the random stream exactly as the oracle did —
+        # rejection for rejection.
         @test r == 18.535201405644546
         @test p == 3.7169869799140247e-3
 
-        # Les composantes passent par cos/sin : écart de bibliothèque,
-        # au niveau déjà constaté sur le reste du portage.
+        # The components go through cos/sin: a library discrepancy, at the
+        # level already observed on the rest of the port.
         @test reldiff(collect(pos[109]),
                       [11.908010207778275, 13.479312950281439, 4.4789626508412743]) < 1e-12
         @test reldiff(collect(mom[109]),

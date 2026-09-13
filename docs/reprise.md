@@ -68,21 +68,30 @@ Tous consignés dans les documents ci-dessus, mais voici ceux qui reviendraient 
 * **Le GPU Apple n'a pas de `Float64`.** Le chemin CPU reste la référence, seule
   à pouvoir se comparer à l'oracle à `1e-13`.
 
-## En cours : traduction des commentaires en anglais
+## Fait : traduction des commentaires en anglais
 
-Demandé par l'auteur. ~6760 lignes sur 29 fichiers, et **rien n'est mécanique** :
-presque chaque commentaire porte un fait mesuré ou un piège, à rendre avec sa
-nuance. Procéder fichier par fichier, en committant chacun.
+Demandé par l'auteur. ~7200 lignes sur 29 fichiers, et **rien n'était
+mécanique** : presque chaque commentaire porte un fait mesuré ou un piège, à
+rendre avec sa nuance.
 
-**`src/` et `ext/` sont faits** — dix-huit fichiers, 4430 lignes. Contrôle :
+**Tout est fait** — `src/`, `ext/`, `scripts/`, `test/`. Contrôle :
 
-    grep -c "[éèêëàâçùûôîï]" src/*.jl ext/*.jl | grep -v ":0"
+    grep -n "[éèêëàâçùûôîïÉÈÊÀÂÇÙÛÔÎÏ]" src/*.jl ext/*.jl scripts/*.jl test/*.jl
 
-**Reste** : `scripts/` (~1100 lignes) et `test/` (~1700). Ceux-là ne portent ni
-contrat ni piège — c'est de la traduction ordinaire.
+Les 4750 tests passent après la traduction, sans changement de compte. Deux
+choses volontairement laissées en français, parce qu'elles sont des interfaces
+et non de la prose :
 
-Vérifier après chaque fichier dans la session kaimon (Revise recharge, pas de
-démarrage Julia) ; lancer la suite complète tous les quelques fichiers.
+* les noms d'options de `scripts/traversee.jl`, `figure53.jl`, `film*.jl`
+  (`--profil`, `--pas`, `--graine`, `--champ`, `--sortie`) — une ligne le dit
+  dans chaque docstring concernée ;
+* les noms de fichiers (`traversee.jl`, `profil_pas.jl`, `depot_gpu.jl`,
+  `film.jl`), que `docs/` et l'historique git citent.
+
+Deux corrections que la relecture a imposées : la docstring d'`energy_budget`
+présentait encore la coquille n°8 comme une question ouverte (elle est
+élucidée), et celle de `GaussianSoftening` affirmait qu'`erfsr` n'est appelée
+dans aucune version — elle l'est dans celle de juillet 1996.
 
 ## Ce qui reste, par ordre
 
