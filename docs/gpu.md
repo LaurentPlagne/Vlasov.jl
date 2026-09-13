@@ -266,6 +266,46 @@ données. Mesuré sur le chemin **CPU**, sans une ligne de GPU :
 
 Soit 19,7 ms économisées par pas pour un tri à 6,7 ms.
 
+### Les colonnes de table : le `Float32` bute ici
+
+Le plus gros morceau restant de la préparation est le calcul des colonnes de
+table — l'indice, pour chaque particule et chaque direction, de l'échantillon
+de gaussienne à employer. Purement particulaire, donc porté sur GPU sans peine :
+
+| | ms | écart sur la densité |
+|---|---|---|
+| colonnes sur CPU (`Float64`) | 4,82 | 1,5e-07 |
+| **colonnes sur GPU (`Float32`)** | **0,76** | **9,0e-05** |
+
+Six fois plus rapide, six cents fois moins juste. La cause n'est pas une
+maladresse d'écriture, elle est **structurelle** :
+
+| | |
+|---|---|
+| largeur d'une colonne | 0,00355 a₀ |
+| ULP de `Float32` à 78 a₀ | 7,6e-06 |
+| rapport | **0,22 %** |
+
+Une particule sur cinq cents est donc à moins d'un ULP d'une frontière de
+colonne ; mesuré, **0,052 % basculent** sur la voisine. Ce n'est pas une erreur
+d'arrondi qui se moyenne, c'est un **choix discret faux** : la particule reçoit
+le mauvais échantillon de gaussienne.
+
+Aucune réécriture ne le corrige — diviser par le pas avant de soustraire donne
+la même précision relative. Ce qu'il faudrait, c'est ne jamais former la
+différence en `Float32` : calculer sur l'hôte, en `Float64`, l'indice de nœud
+`k` et l'écart `δ = u − knot` (lequel, majoré par 1,8, se code en `Float32` avec
+une résolution de 1,2e-07), et ne monter que ceux-là.
+
+Cela vaudrait d'être fait pour une autre raison : **le noyau des forces a besoin
+des deux mêmes quantités**, et les recalcule aujourd'hui à partir de la position
+absolue, donc avec la même faiblesse. Monter `(k, δ)` plutôt que `(x, y, z)`
+servirait les deux noyaux et rendrait les deux plus justes.
+
+En attendant, les colonnes restent sur CPU : 9,0e-05 sur la densité se propage
+en ~1e-04 sur les forces, davantage que les 3,7e-05 déjà consentis, et pour
+gagner 4 ms sur un pas de 133.
+
 ### PSRS : pourquoi la thèse en avait besoin, et pas nous
 
 Le tri par échantillonnage régulier est plus rapide sur une séquence **déjà

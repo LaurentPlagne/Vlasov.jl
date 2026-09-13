@@ -135,6 +135,40 @@ function kernel_atomic!(ρ, nodes, pos, x0, h, nknots, spacing, nbdt, nc, lo, hi
     nothing
 end
 
+"""Colonnes de table, sur GPU.
+
+C'est le plus gros morceau de la préparation du tri — 3,63 ms sur CPU — et il
+n'a rien à y faire : il est purement particulaire, et les positions sont déjà
+montées pour les forces. Seule la **permutation** doit monter, ce qui est un
+vecteur d'entiers.
+
+⚠️ **Ce noyau n'est pas retenu.** Calculé en `Float32`, il fait basculer 0,05 %
+des colonnes sur leur voisine et porte l'écart de densité de 1,5e-07 à 9,0e-05.
+La cause est structurelle : l'ULP de `Float32` à 78 a₀ vaut 7,6e-06, soit 0,22 %
+de la largeur d'une colonne (0,00355 a₀). Une particule sur cinq cents est à
+moins d'un ULP d'une frontière, et le mauvais échantillon de gaussienne lui est
+appliqué — un choix discret faux, pas un arrondi qui se moyenne.
+
+Il est gardé ici pour que la mesure soit rejouable. Voir `docs/gpu.md` pour ce
+qu'il faudrait faire à la place : monter `(k, δ)` calculés en `Float64` sur
+l'hôte, plutôt que les positions absolues.
+"""
+function kernel_cols!(cols, pos, perm, x0, h, nk, spacing, nbdt, nc, npart)
+    s = thread_position_in_grid_1d()
+    s > npart && return nothing
+    @inbounds begin
+        i = perm[s]
+        half = spacing * 0.5f0
+        for d in Int32(1):Int32(3)
+            u = pos[d, i]
+            k = min(max(round(Int32, (u - x0) / h) + Int32(1), Int32(1)), nk)
+            cols[d, s] = min(max(floor(Int32, (u - (x0 + (k - Int32(1)) * h) + half) /
+                                 spacing * nbdt + 0.5f0) + Int32(1), Int32(1)), nc)
+        end
+    end
+    nothing
+end
+
 """Version **triée** : un groupe de 512 fils par maille occupée, chaque fil
 propriétaire d'un point du pochoir.
 
@@ -236,6 +270,11 @@ function main()
         occ = occupied_cells(total)
         slice_offsets!(offsets, partial, total, occ)
         place!(perm, keys, offsets, chunks)
+        occ
+    end
+
+    """Les colonnes, à l'ancienne : sur CPU, pour comparaison."""
+    function cols_cpu!()
         Threads.@threads for s in 1:NPART
             @inbounds begin
                 q = pos[perm[s]]
@@ -247,7 +286,6 @@ function main()
                 end
             end
         end
-        occ
     end
     occ = sort!()
     offs = Int32[0]; acc = Int32(0)
@@ -262,7 +300,13 @@ function main()
         q = pos[i]; hostpos[1, i] = q[1]; hostpos[2, i] = q[2]; hostpos[3, i] = q[3]
     end
     copyto!(gpos, hostpos)
+    cols_cpu!()
     gcols = MtlArray(cols); gcells = MtlArray(occ); goffs = MtlArray(offs)
+    gperm = MtlArray(perm)
+
+    run_cols() = Metal.@sync @metal threads=256 groups=cld(NPART, 256) kernel_cols!(
+        gcols, gpos, gperm, Float32(x0), Float32(h), Int32(nk), Float32(sm.spacing),
+        Int32(sm.nbdt), Int32(size(sm.nodes, 2)), Int32(NPART))
 
     gs = 256
     run_atomic() = (fill!(gρ, 0f0); Metal.@sync @metal threads=gs groups=cld(NPART, gs) kernel_atomic!(
@@ -296,7 +340,17 @@ function main()
         e = ρ === nothing ? "" : @sprintf("%.1e", norm(ρ - ρref) / norm(ρref))
         @printf("%-34s %9.1f %14s\n", nom, t, e)
     end
-    @printf("\n%-34s %9.1f\n", "tri complet (préparation)", chrono(sort!; k = 4))
+    @printf("\n%-34s %9.2f\n", "tri : permutation (CPU)", chrono(sort!; k = 4))
+    @printf("%-34s %9.2f\n", "colonnes de table (CPU)", chrono(cols_cpu!))
+    @printf("%-34s %9.2f\n", "colonnes de table (GPU)", chrono(run_cols))
+
+    # Les colonnes calculées en Float32 désignent-elles les mêmes ?
+    cols_cpu!(); ref_cols = copy(cols)
+    run_cols(); gpu_cols = Array(gcols)
+    diff = count(!=(0), gpu_cols .- ref_cols)
+    ρ_gpu = normalised(run_sorted)
+    @printf("\ncolonnes différentes : %d sur %d (%.3f %%)\n", diff, 3NPART, 100diff / (3NPART))
+    @printf("écart sur la densité : %.1e\n", norm(ρ_gpu - ρref) / norm(ρref))
 end
 
 main()
