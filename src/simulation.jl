@@ -195,9 +195,12 @@ function update_forces!(sim::Simulation{T}; advance::Bool = true,
     if accelerator === nothing
         forces!(sim.cloud, fine.axes, csolf, coarse.axes, csolc, sim.smoothing)
     else
-        forces!(sim.cloud, accelerator, fine.axes, csolf, coarse.axes, csolc, sim.smoothing)
+        # Le projectile est fusionné dans le noyau des forces : le lui passer
+        # ici évite un second passage sur toutes les particules.
+        forces!(sim.cloud, accelerator, fine.axes, csolf, coarse.axes, csolc,
+                sim.smoothing; projectile = sim.projectile)
     end
-    advance && advance_projectile!(sim)
+    advance && advance_projectile!(sim, accelerator)
 
     # Le potentiel total sert ensuite au bilan : on le garde sous la main.
     sim.φ[1] .= csolf
@@ -275,10 +278,13 @@ pseudo-particules — puis l'avance d'un pas.
 Sans projectile, ne fait rien : le corps est éliminé à la compilation, la
 boucle de l'agrégat isolé n'en paie pas le prix.
 """
-advance_projectile!(::Simulation{T,Nothing}) where {T} = nothing
+advance_projectile!(::Simulation{T,Nothing}, accelerator = nothing) where {T} = nothing
 
-function advance_projectile!(sim::Simulation{T,<:Projectile{T}}) where {T}
-    force, _, _ = projectile_forces!(sim.cloud, sim.projectile, sim.jellium)
+function advance_projectile!(sim::Simulation{T,<:Projectile{T}},
+                             accelerator = nothing) where {T}
+    force, _, _ = accelerator === nothing ?
+        projectile_forces!(sim.cloud, sim.projectile, sim.jellium) :
+        projectile_forces!(sim.cloud, accelerator, sim.projectile, sim.jellium)
     step!(sim.projectile, force, sim.params.dt)
     nothing
 end

@@ -386,6 +386,50 @@ trois directions, cela coûtait plus que tout le reste du dépôt réuni : le ga
 tombait à ×1,26. La grille fine étant uniforme, l'indice se calcule. C'est la
 deuxième fois que ce piège coûte dans ce chantier.
 
+## Le projectile, fusionné dans le noyau des forces
+
+Plutôt qu'un second passage sur 800 000 particules, l'interaction
+projectile ↔ pseudo-électron est calculée **dans le noyau des forces**, sur des
+positions déjà chargées : quelques opérations de plus par particule, aucune
+lecture supplémentaire. La force que subit le projectile et l'énergie
+d'interaction sortent par une réduction en arbre dans le groupe, puis une seule
+atomique par groupe.
+
+`projectile_forces!` sur accélérateur ne calcule donc plus rien sur les
+particules — il ne lui reste que la part jellium, qui est un scalaire.
+
+Validé sur vingt pas, contre le chemin CPU `Float64` :
+
+| | CPU | GPU |
+|---|---|---|
+| position du projectile | −21,601650366 | −21,601650355 |
+| perte d'énergie | 8,663683 eV | **8,663671 eV** |
+
+Soit **1,4e-06** sur l'observable qui compte. La réduction en arbre tient bien
+en `Float32` — une sommation naïve de 800 000 termes ne l'aurait pas fait.
+
+⚠️ **Deux pièges de ce noyau.** Tous les fils doivent atteindre chaque
+`threadgroup_barrier` : plus de `return` anticipé, seulement des drapeaux — un
+fil qui sort tôt laisse les autres attendre indéfiniment. Et la part projectile
+se calcule pour **toutes** les particules, y compris celles que le CPU reprend
+au bord, sans quoi la réduction en oublierait ; la reprise CPU doit alors leur
+réinjecter la réaction, que le noyau n'a pas pu ajouter à une force qu'il n'a
+pas calculée.
+
+## Où on en est
+
+Accelerate partout, minimum sur deux tours alternés, 800 000 particules.
+
+| configuration | ms/pas |
+|---|---|
+| CPU, bilan à chaque pas | 230,7 |
+| GPU, bilan à chaque pas | 165,3 |
+| CPU, bilan 1 pas sur 10 | 175,7 |
+| **GPU, bilan 1 pas sur 10** | **104,4** |
+
+Depuis le point de départ — OpenBLAS, tout CPU, bilan à chaque pas, 307,9 ms —
+cela fait **×2,95**.
+
 ## Ce qu'il reste, par ordre de rendement
 
 1. ~~Apple Accelerate~~ — **fait**, ×1,31 pour une ligne.
@@ -397,8 +441,8 @@ deuxième fois que ce piège coûte dans ce chantier.
    des atomiques, ou **trier les particules par cellule** pour en faire une
    réduction segmentée. Le tri de la thèse revient ici, pour exactement la même
    raison qu'en 1997 : la localité des données.
-4. **Les forces du projectile** (4 %) — une réduction sur toutes les
-   particules, triviale à porter.
+4. ~~Les forces du projectile~~ — **fait**, fusionnées dans le noyau des
+   forces : 16 ms de moins sur le pas.
 5. **Les GEMM sur GPU** — sans objet : Accelerate les fait déjà en `Float64`,
    et le GPU ne saurait pas.
 

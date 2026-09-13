@@ -9,10 +9,11 @@ module VlasovMetalExt
 using Vlasov
 using Metal
 
-import Vlasov: ForceAccelerator, forces!, deposit_smoothed!, smoothed_field,
+import Vlasov: ForceAccelerator, forces!, deposit_smoothed!, projectile_forces!,
+               smoothed_field, Projectile, GaussianSoftening, Jellium, erf,
                spline_field, nearest_knot, table_column, GaussianSmoothing,
                SplineAxis, SplineMesh, ParticleCloud, CellSort, cellsort!,
-               total_charge
+               total_charge, uniform_sphere_potential
 
 """
 Tables et tampons résidents sur le GPU.
@@ -50,6 +51,13 @@ struct MetalForceAccelerator <: ForceAccelerator
     bounds::Base.RefValue{MtlVector{Int32,Metal.PrivateStorage}}
     rho::MtlArray{Float32,3}
     hostrho::Array{Float32,3}
+    hostreduction::Vector{Float32}
+    """Réduction du projectile : les trois composantes de la force qu'il subit,
+    puis l'énergie d'interaction avec les pseudo-électrons. Fusionnée dans le
+    noyau des forces, elle ne coûte que quelques opérations sur des données déjà
+    chargées — un second passage sur 800 000 particules en coûterait dix fois
+    plus."""
+    reduction::MtlArray{Float32,1}
     x0::Float32                   # premier nœud de la grille fine
     h::Float32                    # pas (grille uniforme)
     nknots::Int32
@@ -87,6 +95,7 @@ function Vlasov.ForceAccelerator(::Type{MtlArray}, fine::NTuple{3,SplineAxis{T}}
         MtlArray(zeros(Int32, 3, npart)), Ref(MtlArray(zeros(Int32, 1))),
         Ref(MtlArray(zeros(Int32, 1))), MtlArray(zeros(Float32, n, n, n)),
         Array{Float32,3}(undef, n, n, n),
+        Vector{Float32}(undef, 4), MtlArray(zeros(Float32, 4)),
         Float32(fine[1].knots[1]), Float32(h), Int32(length(fine[1].knots)),
         Float32(sm.spacing), Int32(sm.nbdt), Int32(size(sm.overlap, 2)), npart)
 end
@@ -116,62 +125,123 @@ Les particules dont le pochoir déborde de la grille écrivent un `NaN` : elles
 sont reprises par le CPU. Signaler vaut mieux que tronquer en silence.
 """
 function _field_kernel!(force, csol, ovl, grad, pos, x0, h, nknots,
-                        spacing, nbdt, w, nc, npart)
+                        spacing, nbdt, w, nc, npart,
+                        px0, py0, pz0, coef, σ, red)
     i = thread_position_in_grid_1d()
-    i > npart && return nothing
+    tid = thread_index_in_threadgroup()
+    nthr = Int32(256)
 
-    @inbounds begin
+    # ⚠️ Tampon de réduction du groupe. Tous les fils doivent atteindre chaque
+    # barrière : pas de `return` anticipé dans ce noyau, seulement des drapeaux.
+    sh = MtlThreadGroupArray(Float32, 4 * 256)
+    @inbounds for c in Int32(0):Int32(3)
+        sh[c * nthr + tid] = 0.0f0
+    end
+
+    @inbounds if i <= npart
         px = pos[1, i]; py = pos[2, i]; pz = pos[3, i]
 
         # Nœud le plus proche, calculé (grille uniforme) et non cherché.
         kx = min(max(round(Int32, (px - x0) / h) + Int32(1), Int32(1)), nknots)
         ky = min(max(round(Int32, (py - x0) / h) + Int32(1), Int32(1)), nknots)
         kz = min(max(round(Int32, (pz - x0) / h) + Int32(1), Int32(1)), nknots)
-
         bx = Int32(2) * kx - Int32(5)
         by = Int32(2) * ky - Int32(5)
         bz = Int32(2) * kz - Int32(5)
 
         nn = Int32(size(csol, 1))
-        if bx < Int32(1) || by < Int32(1) || bz < Int32(1) ||
-           bx + Int32(9) > nn || by + Int32(9) > nn || bz + Int32(9) > nn
-            force[1, i] = NaN32; force[2, i] = NaN32; force[3, i] = NaN32
-            return nothing
+        ok = bx >= Int32(1) && by >= Int32(1) && bz >= Int32(1) &&
+             bx + Int32(9) <= nn && by + Int32(9) <= nn && bz + Int32(9) <= nn
+
+        fxp = NaN32; fyp = NaN32; fzp = NaN32
+        if ok
+            half = spacing * 0.5f0
+            cx = min(max(floor(Int32, (px - (x0 + (kx - Int32(1)) * h) + half) /
+                              spacing * nbdt + 0.5f0) + Int32(1), Int32(1)), nc)
+            cy = min(max(floor(Int32, (py - (x0 + (ky - Int32(1)) * h) + half) /
+                              spacing * nbdt + 0.5f0) + Int32(1), Int32(1)), nc)
+            cz = min(max(floor(Int32, (pz - (x0 + (kz - Int32(1)) * h) + half) /
+                              spacing * nbdt + 0.5f0) + Int32(1), Int32(1)), nc)
+
+            fx = 0.0f0; fy = 0.0f0; fz = 0.0f0
+            for kk in Int32(1):Int32(10)
+                k = bz + kk - Int32(1)
+                oz = ovl[kk, cz]; gz = grad[kk, cz]
+                for jj in Int32(1):Int32(10)
+                    j = by + jj - Int32(1)
+                    oy = ovl[jj, cy]; gy = grad[jj, cy]
+                    dxp = 0.0f0; val = 0.0f0
+                    for ii in Int32(1):Int32(10)
+                        c = csol[bx + ii - Int32(1), j, k]
+                        dxp = fma(c, grad[ii, cx], dxp)
+                        val = fma(c, ovl[ii, cx], val)
+                    end
+                    fx = fma(oy * oz, dxp, fx)
+                    fy = fma(gy * oz, val, fy)
+                    fz = fma(oy * gz, val, fz)
+                end
+            end
+            fxp = -w * fx; fyp = -w * fy; fzp = -w * fz
         end
 
-        half = spacing * 0.5f0
-        cx = min(max(floor(Int32, (px - (x0 + (kx - Int32(1)) * h) + half) /
-                          spacing * nbdt + 0.5f0) + Int32(1), Int32(1)), nc)
-        cy = min(max(floor(Int32, (py - (x0 + (ky - Int32(1)) * h) + half) /
-                          spacing * nbdt + 0.5f0) + Int32(1), Int32(1)), nc)
-        cz = min(max(floor(Int32, (pz - (x0 + (kz - Int32(1)) * h) + half) /
-                          spacing * nbdt + 0.5f0) + Int32(1), Int32(1)), nc)
-
-        fx = 0.0f0; fy = 0.0f0; fz = 0.0f0
-        for kk in Int32(1):Int32(10)
-            k = bz + kk - Int32(1)
-            oz = ovl[kk, cz]; gz = grad[kk, cz]
-            for jj in Int32(1):Int32(10)
-                j = by + jj - Int32(1)
-                oy = ovl[jj, cy]; gy = grad[jj, cy]
-                dxp = 0.0f0; val = 0.0f0
-                for ii in Int32(1):Int32(10)
-                    c = csol[bx + ii - Int32(1), j, k]
-                    dxp = fma(c, grad[ii, cx], dxp)
-                    val = fma(c, ovl[ii, cx], val)
+        # --- projectile ↔ pseudo-électron, fusionné -------------------------
+        # Calculée pour **toutes** les particules, y compris celles que le CPU
+        # reprendra : la réduction doit les compter. `coef = −poids·charge`.
+        if coef != 0.0f0
+            dx = px0 - px; dy = py0 - py; dz = pz0 - pz
+            d2 = dx * dx + dy * dy + dz * dz
+            u2 = d2 / (σ * σ)
+            # Près de zéro, les deux termes de la force gaussienne s'annulent à
+            # l'ordre dominant : la série évite la soustraction.
+            kf = if u2 <= 0.25f0
+                    q = 1.0f0 / 685440.0f0
+                    q = -1.0f0 / 49920.0f0 + u2 * q
+                    q =  1.0f0 / 4224.0f0  + u2 * q
+                    q = -1.0f0 / 432.0f0   + u2 * q
+                    q =  1.0f0 / 56.0f0    + u2 * q
+                    q = -1.0f0 / 10.0f0    + u2 * q
+                    q =  1.0f0 / 3.0f0     + u2 * q
+                    0.7978845608f0 * q / (σ * σ * σ)
+                else
+                    r = sqrt(d2)
+                    (erf(r / 1.4142135624f0 / σ) -
+                     0.7978845608f0 * (r / σ) * exp(-u2 * 0.5f0)) / (d2 * r)
                 end
-                fx = fma(oy * oz, dxp, fx)
-                fy = fma(gy * oz, val, fy)
-                fz = fma(oy * gz, val, fz)
+            m = coef * kf
+            fx2 = m * dx; fy2 = m * dy; fz2 = m * dz
+            if ok
+                fxp -= fx2; fyp -= fy2; fzp -= fz2       # réaction
+            end
+            r = sqrt(d2)
+            sh[tid]            = fx2
+            sh[nthr + tid]     = fy2
+            sh[2 * nthr + tid] = fz2
+            sh[3 * nthr + tid] = r < 1.0f-4 * σ ? 0.7978845608f0 / σ :
+                                 erf(r / 1.4142135624f0 / σ) / r
+        end
+
+        force[1, i] = fxp; force[2, i] = fyp; force[3, i] = fzp
+    end
+
+    # Réduction en arbre, puis une seule atomique par groupe.
+    threadgroup_barrier(Metal.MemoryFlagThreadGroup)
+    stride = nthr ÷ Int32(2)
+    while stride > Int32(0)
+        if tid <= stride
+            @inbounds for c in Int32(0):Int32(3)
+                sh[c * nthr + tid] += sh[c * nthr + tid + stride]
             end
         end
-        force[1, i] = -w * fx
-        force[2, i] = -w * fy
-        force[3, i] = -w * fz
+        threadgroup_barrier(Metal.MemoryFlagThreadGroup)
+        stride ÷= Int32(2)
+    end
+    if tid == Int32(1)
+        @inbounds for c in Int32(0):Int32(3)
+            Metal.@atomic red[c + Int32(1)] += sh[c * nthr + Int32(1)]
+        end
     end
     nothing
 end
-
 
 """
 Noyau de dépôt, version **triée**.
@@ -317,7 +387,8 @@ end
 function Vlasov.forces!(cloud::ParticleCloud{T}, acc::MetalForceAccelerator,
                         fine::NTuple{3,SplineAxis{T}}, csol_fine::Array{T,3},
                         coarse::NTuple{3,SplineAxis{T}}, csol_coarse::Array{T,3},
-                        sm::GaussianSmoothing{T}; escaped::Integer = 0) where {T}
+                        sm::GaussianSmoothing{T}; escaped::Integer = 0,
+                        projectile = nothing) where {T}
     npart = length(cloud.positions)
     npart == acc.npart || throw(DimensionMismatch("accélérateur dimensionné pour $(acc.npart)"))
     w = Float32(cloud.weight)
@@ -327,14 +398,26 @@ function Vlasov.forces!(cloud::ParticleCloud{T}, acc::MetalForceAccelerator,
     _pack!(acc.hostpos, cloud.positions)
     copyto!(acc.pos, acc.hostpos)
 
+    # Le projectile est fusionné dans ce noyau : ses arguments valent zéro
+    # quand il n'y en a pas, et la branche disparaît.
+    pp = projectile === nothing ? (0f0, 0f0, 0f0) : Float32.(projectile.position)
+    coef = projectile === nothing ? 0f0 : Float32(-cloud.weight * projectile.charge)
+    σ = projectile === nothing ? 1f0 : Float32(Vlasov.scale(projectile.softening))
+    fill!(acc.reduction, 0f0)
+
     groupsize = 256
     Metal.@sync @metal threads = groupsize groups = cld(npart, groupsize) _field_kernel!(
         acc.force, acc.csol, acc.overlap, acc.gradient, acc.pos,
-        acc.x0, acc.h, acc.nknots, acc.spacing, acc.nbdt, w, acc.ncol, Int32(npart))
+        acc.x0, acc.h, acc.nknots, acc.spacing, acc.nbdt, w, acc.ncol, Int32(npart),
+        pp[1], pp[2], pp[3], coef, σ, acc.reduction)
 
     copyto!(acc.hostforce, acc.force)
+    copyto!(acc.hostreduction, acc.reduction)
 
-    # Reprise CPU de ce que le GPU a refusé — les bords, et eux seuls.
+    # Reprise CPU de ce que le GPU a refusé — les bords, et eux seuls. ⚠️ Il
+    # faut y **réinjecter la réaction du projectile** : le noyau l'a comptée
+    # dans la réduction mais n'a pas pu l'ajouter à une force qu'il n'a pas
+    # calculée.
     n = 0
     ww = T(cloud.weight); w2 = ww * ww
     @inbounds for i in 1:npart
@@ -342,18 +425,47 @@ function Vlasov.forces!(cloud::ParticleCloud{T}, acc::MetalForceAccelerator,
             n += 1
             p = cloud.positions[i]
             E = spline_field(coarse, csol_coarse, p)
-            cloud.forces[i] = if E === nothing
+            f = if E === nothing
                 r3 = (p[1]^2 + p[2]^2 + p[3]^2)^T(1.5)
                 (-w2 * escaped / r3) .* p
             else
                 ww .* E
             end
+            if projectile !== nothing
+                d = projectile.position .- p
+                m = -cloud.weight * projectile.charge *
+                    Vlasov.force_kernel(projectile.softening, sum(abs2, d))
+                f = f .- m .* d
+            end
+            cloud.forces[i] = f
         else
             cloud.forces[i] = (T(acc.hostforce[1, i]), T(acc.hostforce[2, i]),
                                T(acc.hostforce[3, i]))
         end
     end
     n
+end
+
+"""
+    projectile_forces!(cloud, acc, proj, jel) -> (force, e_electrons, e_jellium)
+
+Ne calcule **rien** sur les particules : la somme a déjà été faite par le noyau
+des forces, qui la fusionne au lieu d'ouvrir un second passage sur 800 000
+particules. Ne reste ici que la part jellium, qui est un scalaire.
+
+⚠️ Suppose donc que [`forces!`](@ref) vient d'être appelée sur le **même**
+accélérateur, avec ce projectile.
+"""
+function Vlasov.projectile_forces!(cloud::ParticleCloud{T}, acc::MetalForceAccelerator,
+                                   proj::Projectile{T}, jel::Jellium{T}) where {T}
+    p = proj.position
+    q = proj.charge
+    r2 = sum(abs2, p)
+    modf = r2 > jel.radius^2 ? jel.nions * q / r2^T(1.5) : q / Vlasov.WIGNER_SEITZ_NA^3
+    fjel = modf .* p
+    fel = ntuple(d -> T(acc.hostreduction[d]), 3)
+    (fjel .+ fel, T(cloud.weight) * q * T(acc.hostreduction[4]),
+     q * Vlasov.potential(jel, sqrt(r2)))
 end
 
 end # module
