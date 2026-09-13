@@ -8,14 +8,22 @@ BandedMatrices = "aae01518-5342-5314-be14-df237901396f"
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 SpecialFunctions = "276daf66-3868-5448-9aa4-cd146d93841b"
 
+[weakdeps]
+Metal = "dde4c033-4e86-420c-a63e-0dd931031962"
+
+[extensions]
+VlasovMetalExt = "Metal"
+
 [compat]
 BandedMatrices = "1.12.0"
 LinearAlgebra = "1.12.0"
+Metal = "1.11.0"
 SpecialFunctions = "2.9.0"
 julia = "^1"
 
 [extras]
+Metal = "dde4c033-4e86-420c-a63e-0dd931031962"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [targets]
-test = ["Test"]
+test = ["Metal", "Test"]

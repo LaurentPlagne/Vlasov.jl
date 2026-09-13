@@ -74,6 +74,13 @@ toléraient (un `integer` relisant un réel, un appel avec un argument de trop e
 Fortran sur 600 pas, `dE/dx` à 0,5 %. Les comparaisons ponctuelles à `1e-13` ne disaient
 rien de l'accord après des centaines de pas enchaînés ; celle-ci le dit.
 
+📋 **Le portage GPU est documenté dans [`docs/gpu.md`](docs/gpu.md)**, profil à
+l'appui. ⚠️ Deux choses à savoir avant d'y toucher : les GEMM du solveur tensoriel
+ne font que **14 %** d'un pas à l'échelle de production — les porter plafonne à
+×1,16, le travail particulaire fait 79 % — et les GPU Apple **n'ont pas de double
+précision**, donc le chemin CPU `Float64` reste seul à pouvoir se comparer à
+l'oracle. `Metal` est une dépendance faible ; l'environnement `gpu/` la porte.
+
 📋 **La chronologie des ~43 versions Fortran est dans
 [`docs/chronologie-versions-fortran.md`](docs/chronologie-versions-fortran.md)**. Le
 portage part du **1997-06-06** ; la cible est le **1998-01-05**

@@ -14,6 +14,7 @@ include("deposition.jl")
 include("poisson.jl")
 include("particles.jl")
 include("fields.jl")
+include("gpu.jl")
 include("meanfield.jl")
 include("initial.jl")
 include("energy.jl")
@@ -46,6 +47,7 @@ export EnergyBudget, energy_budget, interaction_energy, hartree_energy, ion_self
 export SimulationParameters, read_parameters, Simulation, run!
 export Projectile, projectile_forces!, energy_loss, kinetic_energy, HARTREE_TO_EV
 export Softening, BallSoftening, GaussianSoftening, force_kernel, pair_potential
+export ForceAccelerator
 export enclosed_charge, capture!, advance_projectile!
 
 end # module
