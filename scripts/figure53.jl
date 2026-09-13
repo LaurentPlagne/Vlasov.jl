@@ -1,48 +1,48 @@
 #!/usr/bin/env julia
 """
-Reproduit la courbe de freinage de la thèse : Na₁₀₀₀, σ_ion = 1 u.a.
+Reproduce the stopping-power curve of the thesis: Na₁₀₀₀, σ_ion = 1 a.u.
 
     julia --project=. -t auto scripts/figure53.jl [--particules=200000] [--kev=1,4,9,16,25]
 
-La grandeur tracée est celle que définit la thèse — une **pente locale au
-centre**, pas la perte totale :
+The quantity plotted is the one the thesis defines — a **local slope at the
+centre**, not the total loss:
 
-    dE/dx ≃ [E_k(+Δx/2) − E_k(−Δx/2)] / Δx,   Δx = 4 u.a.
+    dE/dx ≃ [E_k(+Δx/2) − E_k(−Δx/2)] / Δx,   Δx = 4 a.u.
 
-Les valeurs publiées sont dans [`ref/these/`](../ref/these/) : `desdx.dat.1000`
-donne le résultat, `Ekproj.dat.N` les trajectoires dont il est tiré.
+The published values are in [`ref/these/`](../ref/these/): `desdx.dat.1000`
+gives the result, `Ekproj.dat.N` the trajectories it is drawn from.
 
-L'état initial vient de `rhorad.Na1000.dat`, la densité radiale d'équilibre
-archivée (octobre 1998, 998,7 électrons intégrés) : le `pot.dat` qu'attendait
-`initialise4` n'a pas survécu, mais la densité suffit — voir
+The initial state comes from `rhorad.Na1000.dat`, the archived equilibrium
+radial density (October 1998, 998.7 electrons when integrated): the `pot.dat`
+that `initialise4` expected did not survive, but the density is enough — see
 [`PotentialProfile`](@ref).
 
-⚠️ La force est celle de la **thèse** (gaussienne), pas celle du Fortran
-(boule). C'est tout l'objet de l'anomalie 10.
+⚠️ The force is the **thesis's** (Gaussian), not the Fortran's (ball). That is
+the whole subject of anomaly 10.
 """
 
 using Vlasov
 using Printf
 
 const ROOT = dirname(@__DIR__)
-const KEV = 1000 / HARTREE_TO_EV        # 1 keV en hartree
+const KEV = 1000 / HARTREE_TO_EV        # 1 keV in hartree
 
-# Grille : h = 2·rcluster/nfine ≈ 3,55, la résolution validée sur Na₁₉₆, mais
-# étendue pour contenir Na₁₀₀₀ (R = 40 a₀) et le projectile dès son entrée.
+# Grid: h = 2·rcluster/nfine ≈ 3.55, the resolution validated on Na₁₉₆, but
+# widened to hold Na₁₀₀₀ (R = 40 a₀) and the projectile from the moment it enters.
 const GRID = (nfine = 44, ncoarse = 22, rcluster = 78.0, rbox = 235.0)
-const X0 = -65.0                        # départ, comme les trajectoires archivées
+const X0 = -65.0                        # start, as in the archived trajectories
 
 function parse_args(argv)
     o = Dict("particules" => "200000", "kev" => "1,4,9,16,25")
     for a in argv
         m = match(r"^--([a-z]+)=(.+)$", a)
-        (m === nothing || !haskey(o, m[1])) && error("argument non reconnu : $a")
+        (m === nothing || !haskey(o, m[1])) && error("unrecognised argument: $a")
         o[m[1]] = m[2]
     end
     o
 end
 
-"""Parcourt une traversée et rend `(xs, eks)` — position et énergie cinétique."""
+"""Run one crossing and return `(xs, eks)` — position and kinetic energy."""
 function traverse(profile, npart, keV)
     p = SimulationParameters(nfine = GRID.nfine, ninner = GRID.ncoarse,
                              nouter = GRID.ncoarse, rcluster = GRID.rcluster,
@@ -54,8 +54,8 @@ function traverse(profile, npart, keV)
                       softening = GaussianSoftening(1.0))
     sim = Simulation(p, profile; projectile = proj)
 
-    # Assez de pas pour ressortir : la distance à parcourir divisée par la
-    # vitesse, plus une marge — le projectile ralentit.
+    # Enough steps to come out the other side: the distance to cover divided by
+    # the velocity, plus a margin — the projectile slows down.
     v = sqrt(2energy / 1836.154)
     nsteps = ceil(Int, 1.1 * (80 - X0) / v)
 
@@ -70,12 +70,12 @@ function traverse(profile, npart, keV)
     (xs, eks)
 end
 
-"""Pente locale au centre sur `Δx`, en eV/a₀ — la définition de la thèse.
+"""Local slope at the centre over `Δx`, in eV/a₀ — the thesis's definition.
 
-⚠️ Sur quatre bohrs seulement, cet estimateur est **très sensible au bruit de
-tirage** : à 20 000 pseudo-particules il rend des valeurs négatives alors que
-la trajectoire complète est correcte à 3 %. C'est pourquoi la production en
-employait 800 000. [`fitted_power`](@ref) sert de garde-fou.
+⚠️ Over four bohr only, this estimator is **very sensitive to sampling noise**:
+with 20 000 pseudo-particles it returns negative values while the full
+trajectory is correct to 3 %. That is why production runs used 800 000.
+[`fitted_power`](@ref) acts as a guard rail.
 """
 function stopping_power(xs, eks; Δx = 4.0)
     nearest(t) = argmin(abs.(xs .- t))
@@ -83,9 +83,9 @@ function stopping_power(xs, eks; Δx = 4.0)
     (eks[i] - eks[j]) * HARTREE_TO_EV / (xs[j] - xs[i])
 end
 
-"""Même pente, par moindres carrés sur une fenêtre plus large — moins fidèle à
-la recette de la thèse, mais moins bruitée. Si les deux divergent, c'est que la
-statistique ne suffit pas."""
+"""The same slope, by least squares over a wider window — less faithful to the
+thesis's recipe, but less noisy. If the two disagree, the statistics are not
+sufficient."""
 function fitted_power(xs, eks; half = 10.0)
     k = findall(x -> -half <= x <= half, xs)
     length(k) < 3 && return NaN
@@ -94,7 +94,7 @@ function fitted_power(xs, eks; half = 10.0)
     -sum((x .- x̄) .* (e .- ē)) / sum(abs2, x .- x̄)
 end
 
-"""Valeurs publiées : `desdx.dat.1000`, colonnes keV puis deux mesures."""
+"""Published values: `desdx.dat.1000`, a keV column then two measurements."""
 function published()
     d = Dict{Int,Tuple{Float64,Float64}}()
     for l in eachline(joinpath(ROOT, "ref", "these", "desdx.dat.1000"))
@@ -113,10 +113,10 @@ function main(argv)
     profile = PotentialProfile(grid, ρ)
     ref = published()
 
-    @printf("Na1000, σ_ion = 1, %d pseudo-particules, grille %d (h = %.2f a₀)\n\n",
+    @printf("Na1000, σ_ion = 1, %d pseudo-particles, grid %d (h = %.2f a₀)\n\n",
             npart, GRID.nfine, 2GRID.rcluster / GRID.nfine)
     @printf("%-5s %-7s %-9s %-9s %-18s %-8s %s\n",
-            "keV", "v", "Δx=4", "fit ±10", "thèse", "écart", "temps")
+            "keV", "v", "Δx=4", "fit ±10", "thesis", "error", "time")
     for keV in energies
         t0 = time()
         xs, eks = traverse(profile, npart, keV)

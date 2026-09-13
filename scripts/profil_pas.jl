@@ -1,14 +1,14 @@
 #!/usr/bin/env julia
 """
-Profil d'un pas de temps, étage par étage, **dans l'ordre réel**.
+Profile of one time step, stage by stage, **in the real order**.
 
     julia --project=. -t auto scripts/profil_pas.jl
 
-⚠️ Chronométrer chaque étage dans sa propre boucle donne des chiffres qui ne
-somment pas au total : la répétition laisse les données chaudes, alors que la
-séquence réelle déborde le cache à chaque tour. Une première version du profil
-perdait 42 % du pas de cette façon. Ici chaque étage est mesuré à sa place dans
-la séquence, et la somme boucle à 99,8 %.
+⚠️ Timing each stage in a loop of its own gives numbers that do not add up to
+the total: the repetition leaves the data hot, whereas the real sequence
+overflows the cache on every turn. An early version of this profile lost 42 %
+of the step that way. Here each stage is measured in its place in the
+sequence, and the sum closes at 99.8 %.
 """
 
 using Vlasov, Printf
@@ -23,9 +23,9 @@ proj = Projectile(mass = 1836.154, charge = 1.0, energy = 147.0, x0 = -30.0,
 sim = Simulation(p, PotentialProfile(grid, ρr); projectile = proj)
 step!(sim)
 
-"""Rejoue le corps de `update_forces!` dans l'ordre, en chronométrant chaque
-étage **en séquence** — c'est-à-dire avec les caches que la séquence laisse,
-et non ceux qu'une boucle sur une seule fonction entretient."""
+"""Replay the body of `update_forces!` in order, timing each stage **in
+sequence** — that is, with the caches the sequence leaves behind, not the ones
+a loop over a single function keeps warm."""
 function timed_step!(sim, acc)
     fine, coarse = sim.meshes[1], sim.meshes[2]
     ρf, ρc = sim.ρ; w = sim.cloud.weight
@@ -50,17 +50,17 @@ function timed_step!(sim, acc)
 end
 
 acc = zeros(11); k = 6
-timed_step!(sim, zeros(11))                       # chauffe
+timed_step!(sim, zeros(11))                       # warm-up
 t0 = time(); for _ in 1:k; timed_step!(sim, acc); end
 tot = 1000(time() - t0) / k
 acc ./= k
 
-noms = ("dépôt lissé (fine)", "dépôt (grossière)", "poisson!", "coefficients spline",
-        "énergie (Hartree)", "champ moyen", "forces", "projectile",
-        "recopie φ ← csol", "Verlet", "énergie (totale)")
-@printf("%-24s %8s %7s\n", "étage", "ms", "%")
+stages = ("smoothed deposit (fine)", "deposit (coarse)", "poisson!", "spline coefficients",
+          "energy (Hartree)", "mean field", "forces", "projectile",
+          "copy φ ← csol", "Verlet", "energy (total)")
+@printf("%-24s %8s %7s\n", "stage", "ms", "%")
 for i in 1:11
-    @printf("%-24s %8.1f %6.1f%%\n", noms[i], acc[i], 100acc[i]/tot)
+    @printf("%-24s %8.1f %6.1f%%\n", stages[i], acc[i], 100acc[i]/tot)
 end
-@printf("%-24s %8.1f %6.1f%%\n", "--- somme", sum(acc), 100sum(acc)/tot)
-@printf("%-24s %8.1f\n", "pas mesuré", tot)
+@printf("%-24s %8.1f %6.1f%%\n", "--- sum", sum(acc), 100sum(acc)/tot)
+@printf("%-24s %8.1f\n", "measured step", tot)

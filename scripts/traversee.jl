@@ -1,25 +1,28 @@
 #!/usr/bin/env julia
 """
-Traversée d'un agrégat par un projectile, et pouvoir d'arrêt `dE/dx`.
+A projectile crossing a cluster, and the stopping power `dE/dx`.
 
     julia --project=. scripts/traversee.jl [--profil=radial|rejet] [--pas=600]
                                           [--graine=-1] [--sigma=0] [--n=196]
 
-`--sigma` bascule l'adoucissement projectile ↔ pseudo-particule : `0` garde la
-boule uniforme du Fortran (rayon `cutoff = 1`), une valeur positive prend la
-gaussienne de la thèse, de largeur `σ_ion`. Les deux ne donnent pas le même
-pouvoir d'arrêt, et c'est le sujet.
+(The command-line flags keep their French names — `profil`, `pas`, `graine`
+— since they are the script's interface, not prose.)
 
-`--profil` choisit l'échantillonnage initial, donc la version du code
-reproduite : `radial` est le `initialise` de 1997 (inversion d'une densité
-tabulée, `ref/fortran/`), `rejet` le `initialise4` de 1998 (rejet dans
-l'espace des phases, `ref/fortran98/pot.dat`). C'est le seul changement de
-physique entre la version portée et la cible — ce script est là pour mesurer
-ce qu'il déplace.
+`--sigma` switches the projectile ↔ pseudo-particle softening: `0` keeps the
+Fortran's uniform ball (radius `cutoff = 1`), a positive value takes the
+thesis's Gaussian, of width `σ_ion`. The two do not give the same stopping
+power, and that is the point.
 
-`dE/dx` est rapporté de deux façons, parce que la thèse ne dit pas laquelle
-elle trace : perte totale sur la traversée `[−R, +R]`, et plateau local au
-cœur. Voir `docs/validation-chapitre6.md`.
+`--profil` selects the initial sampling, hence which version of the code is
+reproduced: `radial` is the 1997 `initialise` (inversion of a tabulated
+density, `ref/fortran/`), `rejet` the 1998 `initialise4` (rejection sampling
+in phase space, `ref/fortran98/pot.dat`). This is the only change of physics
+between the ported version and the target — this script is here to measure
+what it shifts.
+
+`dE/dx` is reported two ways, because the thesis does not say which one it
+plots: total loss over the crossing `[−R, +R]`, and the local plateau at the
+core. See `docs/validation-chapitre6.md`.
 """
 
 using Vlasov
@@ -32,8 +35,8 @@ function parse_args(argv)
                 "sigma" => "0", "n" => "0")
     for a in argv
         m = match(r"^--([a-z]+)=(-?[a-z0-9.]+)$", a)
-        m === nothing && error("argument non reconnu : $a")
-        haskey(opts, m[1]) || error("option inconnue : --$(m[1])")
+        m === nothing && error("unrecognised argument: $a")
+        haskey(opts, m[1]) || error("unknown option: --$(m[1])")
         opts[m[1]] = m[2]
     end
     opts
@@ -43,7 +46,7 @@ function build(profil, params)
     profil == "radial" && return read_radial_profile(joinpath(ROOT, "ref", "fortran"))
     profil == "rejet" && return read_potential_profile(
         joinpath(ROOT, "ref", "fortran98", "pot.dat"))
-    error("profil inconnu : $profil (radial ou rejet)")
+    error("unknown profile: $profil (radial or rejet)")
 end
 
 function main(argv)
@@ -55,17 +58,17 @@ function main(argv)
     params = read_parameters(joinpath(ROOT, "ref", "fortran", "vlas.inp"))
     profile = build(opts["profil"], params)
 
-    # Paramètres du projectile : ceux de `vlas.inp`, proton 2 keV, impact nul.
+    # Projectile parameters: those of `vlas.inp`, 2 keV proton, zero impact.
     soft = σion > 0 ? GaussianSoftening(σion) : BallSoftening(1.0)
     proj = Projectile(mass = 1836.154, charge = 1.0, energy = 73.498,
                       impact = 0.0, x0 = -70.0, dt = params.dt, softening = soft)
 
-    @printf("profil = %s, graine = %d, %d particules, %d pas, dt = %g\n",
+    @printf("profile = %s, seed = %d, %d particles, %d steps, dt = %g\n",
             opts["profil"], seed, params.nparticles, nsteps, params.dt)
-    @printf("adoucissement : %s\n", soft)
+    @printf("softening: %s\n", soft)
     sim = Simulation(params, profile; projectile = proj, rng = Ran2(seed))
 
-    # Trajectoire : x et énergie cinétique à chaque pas.
+    # Trajectory: x and kinetic energy at every step.
     xs = Float64[proj.position[1]]
     es = Float64[kinetic_energy(proj)]
     t0 = time()
@@ -74,25 +77,25 @@ function main(argv)
         push!(xs, proj.position[1])
         push!(es, kinetic_energy(proj))
     end
-    @printf("  %d pas en %.1f s\n", nsteps, time() - t0)
+    @printf("  %d steps in %.1f s\n", nsteps, time() - t0)
 
     R = WIGNER_SEITZ_NA * cbrt(params.nions)
     H = HARTREE_TO_EV
 
-    """Perte entre les deux premiers instants où `x` franchit `a` puis `b`."""
+    """Loss between the first two instants where `x` crosses `a` then `b`."""
     function loss(a, b)
         i = findfirst(>=(a), xs); j = findfirst(>=(b), xs)
         (i === nothing || j === nothing || j <= i) && return (NaN, NaN)
         ((es[i] - es[j]) * H, xs[j] - xs[i])
     end
 
-    @printf("\nrayon de l'agrégat (r_s·N^⅓) : %.2f a₀\n", R)
-    @printf("perte totale : %.2f eV\n", (es[1] - es[end]) * H)
-    for (a, b, nom) in ((-2.0, 2.0, "centre Δx=4 (thèse)"), (-R, R, "traversée ±R"),
-                        (-10.0, 10.0, "cœur ±10"), (xs[1], xs[end], "trajectoire entière"))
+    @printf("\ncluster radius (r_s·N^⅓): %.2f a₀\n", R)
+    @printf("total loss: %.2f eV\n", (es[1] - es[end]) * H)
+    for (a, b, label) in ((-2.0, 2.0, "centre Δx=4 (thesis)"), (-R, R, "crossing ±R"),
+                          (-10.0, 10.0, "core ±10"), (xs[1], xs[end], "whole trajectory"))
         ΔE, Δx = loss(a, b)
-        isnan(ΔE) || @printf("  %-20s ΔE = %7.2f eV sur %6.1f a₀  →  dE/dx = %.4f eV/a₀\n",
-                             nom, ΔE, Δx, ΔE / Δx)
+        isnan(ΔE) || @printf("  %-20s ΔE = %7.2f eV over %6.1f a₀  →  dE/dx = %.4f eV/a₀\n",
+                             label, ΔE, Δx, ΔE / Δx)
     end
 end
 

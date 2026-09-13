@@ -1,26 +1,26 @@
 #!/usr/bin/env julia
 """
-Produit les images d'un film de traversée : coupes de la densité électronique.
+Produce the frames of a crossing movie: slices of the electron density.
 
     julia --project=. -t auto scripts/film_images.jl [--kev=4] [--images=400] [--particules=800000]
 
-C'est la vue des figures `snappro` de la thèse — une **coupe** de la densité
-dans le plan `z = 0`, celui que parcourt le projectile. Ce qu'on y voit est la
-déformation du nuage à son passage, et son **asymétrie** : le sillage traîne
-derrière l'ion, et d'autant plus que sa vitesse est grande.
+This is the view of the thesis's `snappro` figures — a **slice** of the density
+in the plane `z = 0`, the one the projectile travels through. What it shows is
+the deformation of the cloud as the ion passes, and its **asymmetry**: the wake
+trails behind the ion, the more so the faster it goes.
 
-Les images ne sont pas prises à chaque pas — un pas dure 0,4 u.a. de temps et il
-en faut quelques centaines pour la traversée, alors qu'un film de vingt secondes
-en demande cinq cents. Le pas d'échantillonnage est calculé pour tomber juste.
+Frames are not taken at every step — one step lasts 0.4 a.u. of time and a few
+hundred are needed for the crossing, whereas a twenty-second movie calls for
+five hundred. The sampling stride is computed to land right.
 
-Deux champs sont conservés par image :
+Two fields are kept per frame:
 
-  * `ρ` — la densité elle-même, comme la thèse la trace ;
-  * `δρ = ρ − ρ₀` — l'écart à l'état initial, qui **montre bien mieux** la
-    déformation : celle-ci vaut quelques pour cent d'un fond mille fois plus
-    grand, et se noie dans une échelle absolue.
+  * `ρ` — the density itself, as the thesis plots it;
+  * `δρ = ρ − ρ₀` — the departure from the initial state, which **shows the
+    deformation far better**: it amounts to a few per cent of a background a
+    thousand times larger, and drowns on an absolute scale.
 
-Sortie : `film.jls` (Serialization, stdlib — pas de dépendance ajoutée), lu par
+Output: `film.jls` (Serialization, stdlib — no dependency added), read by
 [`film.jl`](film.jl).
 """
 
@@ -35,16 +35,16 @@ function parse_args(argv)
     o = Dict("kev" => "4", "images" => "400", "particules" => "800000")
     for a in argv
         m = match(r"^--([a-z]+)=(.+)$", a)
-        (m === nothing || !haskey(o, m[1])) && error("argument non reconnu : $a")
+        (m === nothing || !haskey(o, m[1])) && error("unrecognised argument: $a")
         o[m[1]] = m[2]
     end
     o
 end
 
-"""Coupe `z = 0` de la densité, ramenée en `Float32`.
+"""Slice of the density at `z = 0`, narrowed to `Float32`.
 
-Le plan est choisi au point de collocation le plus proche de zéro : la grille
-n'en contient pas forcément un exactement, les points étant aux nœuds de Gauss.
+The plane is chosen at the collocation point nearest zero: the grid does not
+necessarily hold one exactly, the points being at the Gauss nodes.
 """
 function slice_z0(ρ, mesh)
     gz = mesh.axes[3].colloc
@@ -76,7 +76,7 @@ function main(argv)
     gy = Float32.(fine.axes[2].colloc)
     ρ0, kplane = slice_z0(sim.ρ[1], fine)
 
-    @printf("Na1000, %d keV (v = %.2f), %d particules, %d pas, une image tous les %d\n",
+    @printf("Na1000, %d keV (v = %.2f), %d particles, %d steps, one frame every %d\n",
             keV, v, npart, nsteps, stride)
 
     frames = Matrix{Float32}[]
@@ -91,13 +91,13 @@ function main(argv)
         end
         sim.projectile.position[1] > 80 && break
     end
-    @printf("  %d images en %.0f s\n", length(frames), time() - t0)
+    @printf("  %d frames in %.0f s\n", length(frames), time() - t0)
 
     out = joinpath(ROOT, "film.jls")
     serialize(out, (; gx, gy, kplane, rho0 = ρ0, frames, xs, eks,
                     keV, v, npart, stride, dt = p.dt,
                     e0 = proj.initial_energy, hartree = HARTREE_TO_EV))
-    @printf("→ %s (%.1f Mo)\n", out, filesize(out) / 2^20)
+    @printf("→ %s (%.1f MB)\n", out, filesize(out) / 2^20)
 end
 
 main(ARGS)

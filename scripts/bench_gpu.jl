@@ -1,13 +1,13 @@
 #!/usr/bin/env julia
 """
-Compare l'évaluation du champ lissé sur CPU (`Float64`) et sur GPU (`Float32`).
+Compare the smoothed-field evaluation on CPU (`Float64`) and on GPU (`Float32`).
 
     julia --project=gpu -t auto scripts/bench_gpu.jl
 
-Deux choses à la fois, parce qu'elles ne se séparent pas : **de combien** le
-GPU va plus vite, et **ce qu'il en coûte** en précision. Un gain de vitesse
-sans l'écart en regard ne voudrait rien dire — les GPU Apple n'ont pas de
-double précision, la comparaison est donc entre deux arithmétiques.
+Two things at once, because they cannot be separated: **how much** faster the
+GPU is, and **what it costs** in accuracy. A speed-up without the discrepancy
+beside it would mean nothing — Apple GPUs have no double precision, so the
+comparison is between two arithmetics.
 """
 
 using Vlasov, Metal, Printf, LinearAlgebra
@@ -26,7 +26,7 @@ function setup(npart)
     sim
 end
 
-"""Chronométrage : on chauffe, puis on moyenne."""
+"""Timing: warm up first, then average."""
 function timed(f, k = 5)
     f()
     t0 = time()
@@ -36,7 +36,7 @@ end
 
 function main()
     @printf("%-10s %-10s %-10s %-8s %-12s %s\n",
-            "particules", "CPU (ms)", "GPU (ms)", "gain", "écart norme", "écart médian")
+            "particles", "CPU (ms)", "GPU (ms)", "speed-up", "norm error", "median error")
     for npart in (200_000, 400_000, 800_000)
         sim = setup(npart)
         fine, coarse = sim.meshes[1], sim.meshes[2]
