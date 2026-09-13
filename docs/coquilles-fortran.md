@@ -79,6 +79,7 @@ voir davantage. Ni des runs longs, où un biais sous le bruit peut s'accumuler.
 | 7 | `ceq3d.f` | `π` tronqué à 12 décimales | ~1e-12 partout | non reproduite |
 | 8 | `pspech2` | `rr` périmé dans la branche `ρ ≤ 1e-7` | **mesurée : ‖csol‖ 6,3 → 704,4** | corrigée en 1998-01-05 |
 | 9 | `docapture` | adoucissement différent d'`incproj` | énergie de compte rendu | — |
+| **10** | **`forceproji`** | **boule uniforme là où la thèse pose une gaussienne** | **`dE/dx` ×1,3** | `GaussianSoftening` |
 
 Les points 4 et 5 sont corrigés dans `modernize.patch`, sans quoi le code ne
 compile pas ; voir [`ref/fortran/README.md`](../ref/fortran/README.md).
@@ -364,6 +365,64 @@ y valent `−q/c` — mais vaut `4/3` de l'autre au centre.
 **Portée.** Faible : `einterne` ne sert qu'au compte rendu, et `docapture`
 n'est appelée qu'une fois, quand le projectile a quitté la boîte. Le portage
 reproduit les deux formes, en les signalant l'une à l'autre.
+
+---
+
+## 10. `forceproji` — le code n'applique pas la force de la thèse
+
+**La plus lourde du relevé, et la seule qui change une conclusion physique.**
+
+La thèse pose l'interaction projectile ↔ pseudo-particule comme une charge
+ponctuelle contre une **gaussienne** de largeur `σ_ion` (chapitre 2,
+éq. `Eforceproj2`) :
+
+    V(r) = Erf(r / (√2 σ)) / r
+    f⃗   = −Q·Q′ · [Erf(r/(√2σ)) − 2 g(r) r] / r³ · r⃗,
+    g(r) = exp(−r²/2σ²) / (√(2π) σ)        (gaussienne normalisée à 1D)
+
+Le Fortran, lui, fait une **boule uniformément chargée** de rayon `cutoff` :
+Coulomb au-delà, force linéaire en deçà. C'est le cas dans les 43 versions,
+de 1996 à 1998.
+
+Or `erfsr(r, sigr)`, qui est *exactement* `Erf(r/(√2σ))/r`, **existe dans
+chaque fichier source et n'est appelée nulle part**. Écrite, jamais branchée.
+
+### Pourquoi cela compte
+
+À rayon égal (`σ = cutoff = 1`), les deux forces ne se ressemblent qu'au loin :
+
+| r | boule | gaussienne | rapport |
+|---|---|---|---|
+| 0,25 | 0,250 | 0,065 | 0,26 |
+| 0,50 | 0,500 | 0,123 | 0,25 |
+| 1,00 | 1,000 | 0,199 | **0,20** |
+| 2,00 | 0,250 | 0,185 | 0,74 |
+| 3,00 | 0,111 | 0,108 | 0,97 |
+
+La gaussienne est **cinq fois plus faible au contact**, et c'est là que naît
+le freinage. Le chapitre le dit sans détour : « la perte d'énergie des ions
+traversant l'agrégat **dépend fortement de ce lissage** », et `σ_ion = 1` a
+été choisi « afin de reproduire les résultats de ce modèle [Lindhard] ».
+
+Mesuré sur Na₁₉₆, proton 2 keV (`v = 0,283`), même graine, même tout :
+
+| adoucissement | `dE/dx` (Δx = 4, centre) |
+|---|---|
+| boule, `cutoff = 1` (le Fortran) | **1,01 eV/a₀** |
+| gaussienne, `σ_ion = 1` (la thèse) | **0,78 eV/a₀** |
+| thèse, Na₁₀₀₀, interpolé à `v = 0,283` | ~0,70 |
+| Lindhard | 0,64 |
+
+### Ce que le portage fait
+
+Les deux formes coexistent, en types : `BallSoftening` reproduit le Fortran —
+c'est ce contre quoi l'oracle valide — et `GaussianSoftening` applique la
+thèse. Le choix se fait à la construction du `Projectile`, et le noyau de
+force se spécialise à la compilation.
+
+⚠️ **Aucune des deux n'est « la bonne » par défaut.** Comparer à l'oracle
+demande la boule ; comparer aux figures demande la gaussienne. Dire lequel on
+emploie fait partie du résultat.
 
 ---
 

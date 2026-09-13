@@ -1,6 +1,7 @@
 using Vlasov
 using LinearAlgebra
 using Test
+import SpecialFunctions
 
 """Grille non uniforme de test, dans l'esprit de celle du code d'origine."""
 function testaxis(n = 8; L = 1.0)
@@ -1069,6 +1070,66 @@ end
         @test Vlasov.potential(jel, 5.0) == uniform_sphere_potential(196.0, jel.radius, 5.0)
     end
 
+    @testset "Adoucissement projectile-électron" begin
+        σ = 1.3
+        g = GaussianSoftening(σ)
+        b = BallSoftening(σ)
+
+        # Forme directe, celle de la thèse : [Erf(r/√2σ) − 2g(r)r]/r³ avec
+        # g la gaussienne normalisée **à une dimension**.
+        gauss1d(r) = exp(-r^2 / 2σ^2) / (sqrt(2π) * σ)
+        direct(r) = (SpecialFunctions.erf(r / (sqrt(2)σ)) - 2gauss1d(r) * r) / r^3
+
+        # La série et la forme directe doivent coïncider dans le recouvrement
+        # — mais c'est `direct` qui fixe la tolérance, pas la série : à
+        # u = 0,49 la soustraction a déjà perdu une décimale et demie, et
+        # c'est précisément pour cela que le seuil existe.
+        for u in (0.3, 0.45, 0.49)
+            r = u * σ
+            @test force_kernel(g, r^2) ≈ direct(r) rtol = 1e-9
+        end
+        # Au-delà du seuil, `force_kernel` EST la forme directe.
+        for u in (0.6, 1.0, 2.0, 5.0)
+            r = u * σ
+            @test force_kernel(g, r^2) ≈ direct(r) rtol = 1e-14
+        end
+
+        # Limite en zéro : √(2/π)/(3σ³), sans annulation catastrophique.
+        @test force_kernel(g, 0.0) ≈ sqrt(2 / π) / (3σ^3) rtol = 1e-14
+        # …et la série y est plus juste que la soustraction directe, qui perd
+        # ses chiffres. C'est la raison d'être du seuil.
+        @test isfinite(force_kernel(g, 1e-20))
+
+        # Comportement coulombien au loin : k·r² → 1/r.
+        for r in (8σ, 15σ)
+            @test force_kernel(g, r^2) * r^3 ≈ 1 rtol = 1e-10
+        end
+
+        # Potentiel : Erf(r/√2σ)/r, de limite √(2/π)/σ.
+        @test pair_potential(g, 1.0, 0.0) ≈ sqrt(2 / π) / σ rtol = 1e-14
+        @test pair_potential(g, 2.0, 3σ) ≈ 2 * SpecialFunctions.erf(3 / sqrt(2)) / 3σ
+
+        # La boule reste ce qu'elle était : Coulomb dehors, linéaire dedans.
+        @test force_kernel(b, (2σ)^2) ≈ 1 / (2σ)^3
+        @test force_kernel(b, (σ / 2)^2) ≈ 1 / σ^3
+        @test pair_potential(b, 1.0, 2σ) ≈ uniform_sphere_potential(1.0, σ, 2σ)
+
+        # Le point qui motive tout : à rayon égal, la gaussienne est
+        # nettement plus faible au contact. C'est là que naît l'écart de
+        # pouvoir d'arrêt entre le code (boule) et la thèse (gaussienne).
+        @test force_kernel(g, σ^2) * σ < 0.25 * force_kernel(b, σ^2) * σ
+        # …et les deux se rejoignent loin.
+        @test force_kernel(g, (6σ)^2) ≈ force_kernel(b, (6σ)^2) rtol = 1e-6
+
+        # Le projectile porte son adoucissement, et refuse l'ambiguïté.
+        kw = (mass = 1836.0, charge = 1.0, energy = 73.5, x0 = -70.0, dt = 1.0)
+        @test Projectile(; kw..., cutoff = 1.0).softening === BallSoftening(1.0)
+        @test Projectile(; kw..., softening = g).softening === g
+        @test_throws ArgumentError Projectile(; kw...)
+        @test_throws ArgumentError Projectile(; kw..., cutoff = 1.0, softening = g)
+        @test Vlasov.cutoff(Projectile(; kw..., softening = g)) == σ
+    end
+
     @testset "Projectile" begin
         dt = 1.0
         E0 = 73.498
@@ -1115,7 +1176,7 @@ end
         # …et l'énergie d'interaction y reste finie, égale à celle du centre
         # d'une boule uniformément chargée.
         _, e_contact, _ = projectile_forces!(ParticleCloud([proj.position], w), proj, jel)
-        @test e_contact ≈ w * (-3 * proj.charge / (2 * proj.cutoff))
+        @test e_contact ≈ w * (-3 * proj.charge / (2 * Vlasov.cutoff(proj)))
     end
 
     @testset "Produit mode-d" begin

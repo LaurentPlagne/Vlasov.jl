@@ -2,6 +2,7 @@ module Vlasov
 
 using LinearAlgebra
 using BandedMatrices
+using SpecialFunctions: erf
 
 include("threading.jl")
 include("random.jl")
@@ -43,6 +44,7 @@ export PotentialProfile, read_potential_profile, initial_cloud, FERMI_COEFFICIEN
 export EnergyBudget, energy_budget, interaction_energy, hartree_energy, ion_self_energy
 export SimulationParameters, read_parameters, Simulation, run!
 export Projectile, projectile_forces!, energy_loss, kinetic_energy, HARTREE_TO_EV
+export Softening, BallSoftening, GaussianSoftening, force_kernel, pair_potential
 export enclosed_charge, capture!, advance_projectile!
 
 end # module

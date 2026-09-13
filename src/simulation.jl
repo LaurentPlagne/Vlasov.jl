@@ -241,7 +241,7 @@ boucle de l'agrégat isolé n'en paie pas le prix.
 """
 advance_projectile!(::Simulation{T,Nothing}) where {T} = nothing
 
-function advance_projectile!(sim::Simulation{T,Projectile{T}}) where {T}
+function advance_projectile!(sim::Simulation{T,<:Projectile{T}}) where {T}
     force, _, _ = projectile_forces!(sim.cloud, sim.projectile, sim.jellium)
     step!(sim.projectile, force, sim.params.dt)
     nothing

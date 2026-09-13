@@ -58,7 +58,60 @@ garantit qu'il ait produit une figure publiée.
 pseudo-particules, `dE/dx` reste entre 0,985 et 1,006 — convergé à ±1 %, sans
 la moindre dérive vers 0,72.
 
-## Tranché par les données archivées
+## Tranché : le code n'applique pas la force de la thèse
+
+Les points **effectivement tracés** des figures du chapitre ont été retrouvés,
+dans le répertoire de travail xmgr de la thèse, et versionnés sous
+[`ref/these/`](../ref/these/) — voir son README pour le détail. L'axe porte
+`dE/dx (eV/a₀)`, ce qui lève l'ambiguïté d'unité, et la recette est explicite :
+
+    dE/dx ≃ [E_k(+2) − E_k(−2)] / 4      (pente locale au centre)
+
+Appliquée aux trajectoires archivées `Ekproj.dat.N`, elle redonne
+`desdx.dat.1000` à 1–3 % près. La chaîne figure → données → recette est donc
+fermée.
+
+**Et l'écart s'explique par la force.** La thèse pose une interaction
+projectile ↔ pseudo-particule gaussienne (éq. `Eforceproj2`) ; le Fortran
+implémente une boule uniformément chargée, dans ses 43 versions. La routine
+`erfsr`, qui est exactement le potentiel gaussien, existe partout et n'est
+jamais appelée. Détail en [anomalie 10](coquilles-fortran.md).
+
+Mesuré sur Na₁₉₆, proton 2 keV (`v = 0,283`), tout le reste égal :
+
+| | `dE/dx` (eV/a₀) |
+|---|---|
+| Portage, boule `cutoff = 1` (le Fortran) | **1,01** |
+| Portage, gaussienne `σ_ion = 1` (la thèse) | **0,78** |
+| Thèse, Na₁₀₀₀, interpolé à `v = 0,283` | ~0,70 |
+| Lindhard | 0,64 |
+
+Le facteur 1,4 qui séparait le portage des figures vient donc de là, et non
+d'un défaut de portage : le portage reproduisait fidèlement un Fortran qui ne
+suivait pas sa propre thèse.
+
+⚠️ **Ce n'est pas encore une reproduction de la figure.** Un point, sur Na₁₉₆
+là où la figure trace Na₁₀₀₀, avec 20 000 pseudo-particules là où la
+production en utilisait 800 000. L'accord à 12 % est encourageant et rien de
+plus. Reproduire la courbe demande Na₁₀₀₀ aux cinq vitesses (1, 4, 9, 16,
+25 keV), ce qui suppose un profil initial pour Na₁₀₀₀ — `rhorad.dat` existe
+dans l'archive (`…/majrel2/initial/1000/`).
+
+## Sur l'initialisation de 1998
+
+Mesuré, trois graines par variante, traversée ±R sur Na₁₉₆ :
+
+| graine | `initialise` (1997) | `initialise4` (1998) |
+|---|---|---|
+| −1 | 1,010 | 0,972 |
+| −2 | 0,971 | 0,949 |
+| −3 | 1,021 | 0,969 |
+
+Le tirage par rejet abaisse `dE/dx` de ~3,7 %, pour une dispersion entre
+graines de ±2,5 %. L'effet existe mais reste du même ordre que le bruit : il
+ne pesait rien face au facteur 1,4 de la force.
+
+## Étape antérieure — les trajectoires archivées
 
 `temp/…/lucifer/Eloss/` conserve les **sorties de production de l'époque**, sous le nom
 que le code fabrique lui-même : `Em1q1e002i000.dat` = masse 1, charge 1, 2 keV, impact 0.

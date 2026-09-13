@@ -2,7 +2,13 @@
 """
 Traversée d'un agrégat par un projectile, et pouvoir d'arrêt `dE/dx`.
 
-    julia --project=. scripts/traversee.jl [--profil=radial|rejet] [--pas=600] [--graine=-1]
+    julia --project=. scripts/traversee.jl [--profil=radial|rejet] [--pas=600]
+                                          [--graine=-1] [--sigma=0] [--n=196]
+
+`--sigma` bascule l'adoucissement projectile ↔ pseudo-particule : `0` garde la
+boule uniforme du Fortran (rayon `cutoff = 1`), une valeur positive prend la
+gaussienne de la thèse, de largeur `σ_ion`. Les deux ne donnent pas le même
+pouvoir d'arrêt, et c'est le sujet.
 
 `--profil` choisit l'échantillonnage initial, donc la version du code
 reproduite : `radial` est le `initialise` de 1997 (inversion d'une densité
@@ -22,9 +28,10 @@ using Printf
 const ROOT = dirname(@__DIR__)
 
 function parse_args(argv)
-    opts = Dict("profil" => "radial", "pas" => "600", "graine" => "-1")
+    opts = Dict("profil" => "radial", "pas" => "600", "graine" => "-1",
+                "sigma" => "0", "n" => "0")
     for a in argv
-        m = match(r"^--([a-z]+)=(-?[a-z0-9]+)$", a)
+        m = match(r"^--([a-z]+)=(-?[a-z0-9.]+)$", a)
         m === nothing && error("argument non reconnu : $a")
         haskey(opts, m[1]) || error("option inconnue : --$(m[1])")
         opts[m[1]] = m[2]
@@ -43,16 +50,19 @@ function main(argv)
     opts = parse_args(argv)
     nsteps = parse(Int, opts["pas"])
     seed = parse(Int, opts["graine"])
+    σion = parse(Float64, opts["sigma"])
 
     params = read_parameters(joinpath(ROOT, "ref", "fortran", "vlas.inp"))
     profile = build(opts["profil"], params)
 
     # Paramètres du projectile : ceux de `vlas.inp`, proton 2 keV, impact nul.
+    soft = σion > 0 ? GaussianSoftening(σion) : BallSoftening(1.0)
     proj = Projectile(mass = 1836.154, charge = 1.0, energy = 73.498,
-                      impact = 0.0, x0 = -70.0, dt = params.dt, cutoff = 1.0)
+                      impact = 0.0, x0 = -70.0, dt = params.dt, softening = soft)
 
     @printf("profil = %s, graine = %d, %d particules, %d pas, dt = %g\n",
             opts["profil"], seed, params.nparticles, nsteps, params.dt)
+    @printf("adoucissement : %s\n", soft)
     sim = Simulation(params, profile; projectile = proj, rng = Ran2(seed))
 
     # Trajectoire : x et énergie cinétique à chaque pas.
@@ -78,8 +88,8 @@ function main(argv)
 
     @printf("\nrayon de l'agrégat (r_s·N^⅓) : %.2f a₀\n", R)
     @printf("perte totale : %.2f eV\n", (es[1] - es[end]) * H)
-    for (a, b, nom) in ((-R, R, "traversée ±R"), (-10.0, 10.0, "cœur ±10"),
-                        (xs[1], xs[end], "trajectoire entière"))
+    for (a, b, nom) in ((-2.0, 2.0, "centre Δx=4 (thèse)"), (-R, R, "traversée ±R"),
+                        (-10.0, 10.0, "cœur ±10"), (xs[1], xs[end], "trajectoire entière"))
         ΔE, Δx = loss(a, b)
         isnan(ΔE) || @printf("  %-20s ΔE = %7.2f eV sur %6.1f a₀  →  dE/dx = %.4f eV/a₀\n",
                              nom, ΔE, Δx, ΔE / Δx)
