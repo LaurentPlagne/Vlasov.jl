@@ -135,7 +135,7 @@ qui fasse encore une collision (`initpro`, `incproj`, `force2g`, `enerele2g`).
 | `makeinit` appelle **`initialise4`** au lieu de `initialise` | échantillonnage par **rejet dans l'espace des phases 6D** : on tire `r = rmax·x₁^{1/3}`, `p = pmax·x₄^{1/3}` et on accepte si `p²/2 + V(r) < E_F`. C'est la distribution de Thomas-Fermi exacte, là où l'ancienne inversait un profil radial tabulé (`hm1.dat`, `rhoinit.dat`). |
 | `griech` : `nbprem` **10 → 2** | change la grille d'échantillonnage `gtech` |
 | `initialise` : `integer rmax` → **`real*8 rmax`** | corrige la coquille n°4 |
-| `initialise` : `sqrt`/`cos`/`sin` → `dsqrt`/`dcos`/`dsin` | intrinsèques simple précision sur des `real*8` |
+| `initialise` : `sqrt`/`cos`/`sin` → `dsqrt`/`dcos`/`dsin` | ⚠️ **aucun effet** : `SQRT` est générique en F77, donc identique sur `real*8` (vérifié). Style seul. |
 | `pspech2` : `rr` sort du `if (rho > 1e-7)` | avant, `rr` gardait la valeur du point précédent quand la densité était négligeable |
 
 **Nouveau paramètre d'entrée `rcmax`**, lu en fin de `vlas.inp` (deux lignes de plus) et

@@ -36,6 +36,11 @@ end
 
 oracle_available() = isfile(joinpath(ORACLE_DIR, "dump_gx.bin"))
 
+"""Répertoire du second oracle : la version 1998-01-05, cible du portage."""
+const ORACLE98_DIR = joinpath(@__DIR__, "..", "ref", "fortran98")
+
+oracle98_available() = isfile(joinpath(ORACLE98_DIR, "pot.dat"))
+
 # Écart relatif toléré. Le portage remplace des briques (NAG f02agf → `eigen`,
 # inversion explicite → factorisation), l'égalité bit-à-bit n'est donc pas
 # attendue ; au-delà de ce seuil, en revanche, c'est une régression.
@@ -389,5 +394,50 @@ reldiff(a, b) = norm(a - b) / norm(b)
             @test reldiff(φs[1], reshape(read_dump_vector("sf_phi2.bin"), n, n, n)) < 1e-11
             @test reldiff(φs[2], reshape(read_dump_vector("dumpphi2.bin"), n, n, n)) < 1e-11
         end
+    end
+end
+
+# ---------------------------------------------------------------------------
+# Oracle « version tardive » (1998-01-05)
+# ---------------------------------------------------------------------------
+#
+#   cd ref/fortran98 && make && python3 make_pot.py && ./vlas98 > run98.log
+#
+# Les valeurs de référence ci-dessous sont recopiées de `run98.log` : la
+# routine `initialise4` imprime d'elle-même la pseudo-particule 109 et le taux
+# d'acceptation, ce qui évite d'instrumenter le source.
+
+@testset "Oracle 1998 — tirage par rejet" begin
+    if !oracle98_available()
+        @info "Oracle 98 absent (ref/fortran98/pot.dat) — tests ignorés"
+    else
+        prof = read_potential_profile(joinpath(ORACLE98_DIR, "pot.dat"))
+        @test prof.rmax == 35.0
+        @test prof.fermi == 0.0
+        @test prof.potential[1] ≈ -0.11552990 atol = 1e-9
+        @test prof.potential[end] == 0.0
+
+        npart, nbelec = 20_000, 196.0
+        pos, mom = sample_thomas_fermi(prof, npart, nbelec / npart)
+
+        # Pseudo-particule 109, telle que l'oracle l'imprime.
+        r = sqrt(sum(abs2, pos[109]))
+        p = sqrt(sum(abs2, mom[109]))
+        # `r` et `p` sont **identiques au bit près** : ils ne passent par
+        # aucune fonction transcendante, donc leur égalité prouve que la
+        # boucle de rejet a consommé le flux aléatoire exactement comme
+        # l'oracle — rejet pour rejet.
+        @test r == 18.535201405644546
+        @test p == 3.7169869799140247e-3
+
+        # Les composantes passent par cos/sin : écart de bibliothèque,
+        # au niveau déjà constaté sur le reste du portage.
+        @test reldiff(collect(pos[109]),
+                      [11.908010207778275, 13.479312950281439, 4.4789626508412743]) < 1e-12
+        @test reldiff(collect(mom[109]),
+                      [1.1166910985229179e-3, 9.4449849564513094e-4,
+                       -3.4171502441441093e-3]) < 1e-12
+        @test isapprox(pos[1][1], 20.103859205517573; rtol = 1e-12)
+        @test isapprox(mom[1][1], -3.3382689538331450e-3; rtol = 1e-12)
     end
 end

@@ -12,8 +12,14 @@ collision**. La plus récente par la date (1998-01-07, `lucifer/initial/`) n'app
 
 ## Construire et lancer
 
-    make          # -> vlas98
-    ./vlas98      # lit vlas.inp, écrit Eloss/Em1q1e002i000.dat
+    make                  # -> vlas98
+    python3 make_pot.py   # -> pot.dat, sans lequel le programme s'arrête
+    ./vlas98 > run98.log  # lit vlas.inp, écrit Eloss/Em1q1e002i000.dat
+
+`initialise4` imprime d'elle-même la pseudo-particule 109 et le taux
+d'acceptation : `run98.log` sert donc de référence sans instrumentation. C'est ce
+que compare le testset « Oracle 1998 » de [`../../test/oracle.jl`](../../test/oracle.jl),
+ignoré si `pot.dat` est absent.
 
 `modernize.patch` (12 lignes) montre exactement ce qui a été changé pour que gfortran
 accepte le source : descripteurs de format `I` et `3I` sans largeur, et deux chemins

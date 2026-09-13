@@ -361,8 +361,12 @@ Vérifié en comparant la version portée (1997-06-06) à la cible de production
 Deux corrections silencieuses s'ajoutent, non relevées jusqu'ici parce qu'elles
 n'existaient pas dans la version portée :
 
-* **`initialise`** troque `sqrt`/`cos`/`sin` contre `dsqrt`/`dcos`/`dsin` — les
-  intrinsèques simple précision s'appliquaient à des `real*8`.
+* **`initialise`** troque `sqrt`/`cos`/`sin` contre `dsqrt`/`dcos`/`dsin`. ⚠️ **Sans
+  effet numérique** : en FORTRAN 77 `SQRT` est un intrinsèque *générique*, résolu sur le
+  type de l'argument, donc `sqrt(x)` sur un `real*8` **est** `dsqrt(x)` — vérifié avec
+  gfortran. C'est un changement de style, pas une correction. `initialise4` garde
+  d'ailleurs un `sqrt` pour l'angle polaire des impulsions à côté d'un `dsqrt` pour celui
+  des positions : l'incohérence est visuelle seulement.
 * **`pspech2`** sort le calcul de `rr` du `if (rho > 1e-7)`. Avant, aux points de densité
   négligeable, `rr` gardait la valeur du **point précédent** : le potentiel de jellium y
   était évalué au mauvais rayon.
@@ -373,21 +377,6 @@ complète de Gunnarsson-Lundqvist) au lieu du potentiel, et corrige le double co
 Hartree par `csol ← ½csol + echsol`. C'est précisément la correction que réclame
 l'anomalie 8 — **mais elle n'est appelée nulle part**. L'auteur l'avait écrite sans la
 brancher. Reproduire fidèlement la cible veut donc dire la porter et la laisser morte.
-
-## Nouvelle : `initialise4` mélange les précisions
-
-Dans `initialise4` (1998-01-05), la position utilise `dsqrt` et le moment `sqrt`, dans la
-même routine, à quatre lignes d'écart :
-
-```fortran
-stheta = dsqrt(1.d0-(2.d0*x(3)-1.d0)**2.d0)   ! position
-...
-stheta = sqrt(1.d0-(2.d0*x(6)-1.d0)**2.d0)    ! moment
-```
-
-L'auteur venait de remplacer `sqrt` par `dsqrt` dans `initialise` ; la ligne du moment a
-été oubliée. Effet : l'angle polaire des vitesses est tiré avec une précision de `real*4`.
-À porter tel quel tant que l'oracle 98 sert de référence.
 
 ## Ce qui reste à examiner
 

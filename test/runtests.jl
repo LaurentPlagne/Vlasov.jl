@@ -820,6 +820,48 @@ end
         @test all(i -> all(cloud.previous[i] .≈ pos4[i] .- (dt / 2M) .* mom4[i]), 1:500)
     end
 
+    @testset "Tirage par rejet (initialise4, version 1998)" begin
+        # Profil analytique : V(r) = −p_F²/2 constant dans une boule, donc le
+        # critère `p²/2 + V < E_F` se réduit à `p < p_F`. On sait alors ce que
+        # le tirage doit produire, sans dépendre d'un fichier.
+        R, n = 10.0, 1001
+        pf = 0.4
+        grid = collect(range(0, R; length = n))
+        potential = fill(-pf^2 / 2, n)
+        prof = PotentialProfile(grid, potential, R, pf, 0.0)
+        @test prof isa PhaseSpaceProfile
+
+        npart, nbelec = 20_000, 100.0
+        w = nbelec / npart
+        pos, mom = sample_thomas_fermi(prof, npart, w)
+        @test length(pos) == length(mom) == npart
+
+        # Toute la boule est acceptée (V est constant), donc r³ reste uniforme…
+        r = [sqrt(sum(abs2, p)) for p in pos]
+        @test maximum(r) <= R + 1e-9
+        @test abs(sum(x -> (x / R)^3, r) / npart - 0.5) < 0.02
+        # …et p est borné par p_F, uniforme en volume.
+        pn = [sqrt(sum(abs2, p)) / w for p in mom]
+        @test maximum(pn) <= pf * (1 + 1e-9)
+        @test abs(sum(x -> (x / pf)^3, pn) / npart - 0.5) < 0.02
+
+        # Le rejet doit mordre : avec E_F sous le fond du puits, rien ne passe
+        # au-delà d'un rayon fini. Ici on coupe la sphère de Fermi de moitié.
+        prof2 = PotentialProfile(grid, potential, R, pf, -pf^2 / 2 + pf^2 / 8)
+        _, mom2 = sample_thomas_fermi(prof2, 5_000, w)
+        @test maximum(sqrt(sum(abs2, p)) / w for p in mom2) <= pf / 2 * (1 + 1e-9)
+
+        # Reproductibilité, y compris à travers les rejets.
+        a = sample_thomas_fermi(prof, 200, w; rng = Ran2(-1))
+        b = sample_thomas_fermi(prof, 200, w; rng = Ran2(-1))
+        @test a == b
+
+        # `initial_cloud` accepte les deux profils : c'est le point du
+        # supertype `PhaseSpaceProfile`.
+        cloud = initial_cloud(prof, 300, nbelec, 0.5)
+        @test length(cloud) == 300
+    end
+
     @testset "Bilan d'énergie" begin
         jel = Jellium(196.0)
 
