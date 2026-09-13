@@ -103,6 +103,37 @@ Thomas-Fermi, poser `V = −p_F²/2` rend le critère de rejet équivalent à
 Rejouable par [`scripts/figure53.jl`](../scripts/figure53.jl) ; sortie brute
 dans [`ref/these/resultat-portage.txt`](../ref/these/resultat-portage.txt).
 
+## Figure 5.2 reproduite — le sillage
+
+La 5.3 teste l'**intégrale** de la réponse ; la 5.2 en teste la **structure
+spatiale** : le sillage de plasmon que laisse l'ion, de longueur d'onde
+`2πv/ω_p`. Un champ moyen faux pourrait encore s'intégrer en un `dE/dx`
+plausible ; il ne mettrait pas les nœuds du sillage au bon endroit.
+
+Même progression que les panneaux publiés : à 1 et 4 keV l'ion traîne un amas
+compact et rien d'autre ; le sillage s'amorce à 9 keV et il est net à 16. C'est
+un effet de **vitesse** — d'où le fait qu'il soit invisible dans le panneau
+qu'on choisirait spontanément.
+
+Trois choix d'affichage comptent, et ils ont été **mesurés**, pas devinés :
+
+* **`ρ`, pas `δρ`.** À 3,2 M de pseudo-particules une maille fine en contient
+  ~530, donc 4,4 % de bruit de tirage — l'ordre de grandeur de la déformation
+  elle-même. Sur `δρ` cela donne un S/B de 3 par maille, illisible ; sur `ρ` le
+  même grain ne se voit pas.
+* **Vide masqué, sommet d'échelle à `1,45 ρ_bulk`.** De 0 au maximum, le cœur de
+  l'agrégat occupe 89 % de la plage et sort uni : tout le contraste est dépensé
+  sur du vide.
+* **Aucun lissage.** Un flou d'une maille ne divise le bruit que par 1,4 et
+  fabrique de fausses structures cohérentes. Moyenner selon `z` échoue
+  symétriquement : le sillage tient dans **une** maille en z, donc élargir la
+  tranche dilue le signal plus vite qu'elle ne tue le bruit — optimum mesuré à
+  `|z| ≤ 2 a₀`, qui vaut 23 %, et la projection complète est *pire* qu'un plan
+  unique (S/B 1,24 contre 3,02).
+
+Rejouable par [`scripts/figure52.jl`](../scripts/figure52.jl) — ~2 min 30 sur le
+chemin GPU.
+
 ## Ce qui a permis d'y arriver — la force
 
 Les points **effectivement tracés** des figures du chapitre ont été retrouvés,
