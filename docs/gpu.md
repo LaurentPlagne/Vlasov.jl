@@ -218,14 +218,77 @@ les ramène à 28,4 et fait passer le dépôt devant.
 Les deux dépôts cumulent **52,4 ms, soit 39 % du pas** : c'est le premier poste,
 et de loin.
 
+## Le dépôt — les deux voies, mesurées
+
+Prototype dans [`scripts/depot_gpu.jl`](../scripts/depot_gpu.jl), pas encore
+branché dans `update_forces!`.
+
+Le dépôt est un **scatter** : chaque particule écrit dans 8³ = 512 points, et
+les particules voisines écrivent aux mêmes endroits.
+
+| version | ms | écart à la référence |
+|---|---|---|
+| CPU, ordre courant | 35,9 | — |
+| CPU, **ordre trié** | 27,3 | 2,2e-15 |
+| **GPU atomique** | **117,8** | 6,0e-06 |
+| **GPU trié** | **8,7** | 1,5e-07 |
+| *tri (préparation)* | *6,7* | |
+
+**La voie atomique perd, et largement** — trois fois plus lente que le CPU.
+800 000 × 512 = 410 millions d'additions atomiques en conflit : le GPU passe son
+temps à sérialiser.
+
+**La voie triée gagne ×4 sur le noyau**, et ×2,3 en comptant la préparation. Le
+principe est un renversement de boucle : un groupe de 512 fils par maille
+occupée, et **chaque fil possède un des 512 points du pochoir**. Il parcourt
+toutes les particules de la maille en accumulant dans un registre, et ne fait
+qu'**une seule** atomique à la fin. Les atomiques sont divisées non par deux ou
+trois mais par le nombre de particules par maille — ici **106**.
+
+Elle est aussi plus **juste** : 1,5e-07 contre 6,0e-06, parce que l'accumulation
+se fait en registre et non par additions atomiques successives en `Float32`.
+
+Ce chiffre de 106 tient à une observation qui ne se devine pas : sur
+91 125 mailles, **7 525 seulement sont occupées**. L'agrégat (rayon 40) n'occupe
+qu'une fraction de la boîte (±78), et les particules s'y entassent.
+
+### Le tri profite à tout le reste
+
+C'est le tri de la thèse, et pour la même raison qu'en 1997 : la localité des
+données. Mesuré sur le chemin **CPU**, sans une ligne de GPU :
+
+| étage | ordre courant | ordre trié | gain |
+|---|---|---|---|
+| dépôt lissé | 37,3 | 27,8 | ×1,34 |
+| dépôt grossier | 13,0 | 10,1 | ×1,28 |
+| énergie d'interaction | 35,4 | 31,9 | ×1,11 |
+| forces | 64,5 | 60,7 | ×1,06 |
+
+Soit 19,7 ms économisées par pas pour un tri à 6,7 ms.
+
+### Deux pièges du tri par comptage
+
+**Remettre les compteurs à zéro.** `count_cells!` accumule ; une mesure répétée
+les cumulait, les décalages devenaient faux et le placement écrivait hors
+bornes.
+
+**Ne pas écrire les totaux dans `partial[1]`.** `total = partial[1]` puis
+`total .+= partial[t]` détruit les compteurs de la première tranche, dont le
+calcul des décalages a besoin. Coût de l'oubli : une faute de segmentation.
+
+Et une optimisation qui compte : le placement utilisait un `Dict` interrogé par
+particule — **10,6 ms à lui seul**. Un `Vector` indexé par maille le ramène à
+**0,5 ms**, vingt fois moins.
+
 ## Ce qu'il reste, par ordre de rendement
 
 1. ~~Apple Accelerate~~ — **fait**, ×1,31 pour une ligne.
 2. ~~Rendre le bilan d'énergie périodique~~ — **fait**, ×1,32 à lui seul.
    `interaction_energy` sort du même coup de la liste GPU : appelée un pas sur
    dix, elle ne vaut plus la peine d'être portée.
-3. **Le dépôt** (39 % du pas optimal, les deux grilles réunies) — le premier
-   poste. C'est un *scatter*, et c'est le morceau difficile. Nos
+3. ~~Le dépôt~~ — **prototypé et mesuré** (ci-dessus) : la voie triée donne ×4
+   sur le noyau. Reste à la brancher dans `update_forces!`, ce qui suppose de
+   porter le tri dans le paquet — il profite aussi au CPU. Nos
    tampons par fil (5,6 Mo chacun) ne passent pas à l'échelle GPU. Deux voies :
    des atomiques, ou **trier les particules par cellule** pour en faire une
    réduction segmentée. Le tri de la thèse revient ici, pour exactement la même
