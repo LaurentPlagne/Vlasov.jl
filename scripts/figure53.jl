@@ -2,7 +2,11 @@
 """
 Reproduce the stopping-power curve of the thesis: Na₁₀₀₀, σ_ion = 1 a.u.
 
-    julia --project=. -t auto scripts/figure53.jl [--particules=200000] [--kev=1,4,9,16,25]
+    julia --project=gpu -t auto scripts/figure53.jl [--particules=200000] [--kev=1,4,9,16,25]
+
+Under `--project=gpu` it picks up **AppleAccelerate**; the trajectory is
+unchanged, only faster. ⚠️ It does **not** use the GPU: that path is `Float32`,
+and this figure is the one compared against published values.
 
 The quantity plotted is the one the thesis defines — a **local slope at the
 centre**, not the total loss:
@@ -23,6 +27,13 @@ the whole subject of anomaly 10.
 
 using Vlasov
 using Printf
+
+# AppleAccelerate, when the environment carries it (`gpu/`). One line, ×1.31 on
+# a time step — and not only on the GEMMs: the particle loops gain 15–25 %
+# because OpenBLAS's thread pool stops competing with them for the cores.
+# ⚠️ Never `BLAS.lbt_forward(libacc)` raw: that binds Accelerate's old LAPACK,
+# `inv` returns garbage and the cluster explodes. `using` is enough.
+const ACCELERATE = try; @eval using AppleAccelerate; true; catch; false; end
 
 const ROOT = dirname(@__DIR__)
 const KEV = 1000 / HARTREE_TO_EV        # 1 keV in hartree
@@ -113,8 +124,9 @@ function main(argv)
     profile = PotentialProfile(grid, ρ)
     ref = published()
 
-    @printf("Na1000, σ_ion = 1, %d pseudo-particles, grid %d (h = %.2f a₀)\n\n",
-            npart, GRID.nfine, 2GRID.rcluster / GRID.nfine)
+    @printf("Na1000, σ_ion = 1, %d pseudo-particles, grid %d (h = %.2f a₀), BLAS: %s\n\n",
+            npart, GRID.nfine, 2GRID.rcluster / GRID.nfine,
+            ACCELERATE ? "Accelerate" : "OpenBLAS")
     @printf("%-5s %-7s %-9s %-9s %-18s %-8s %s\n",
             "keV", "v", "Δx=4", "fit ±10", "thesis", "error", "time")
     for keV in energies

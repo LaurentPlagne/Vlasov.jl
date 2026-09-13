@@ -2,7 +2,7 @@
 """
 Profile of one time step, stage by stage, **in the real order**.
 
-    julia --project=. -t auto scripts/profil_pas.jl
+    julia --project=gpu -t auto scripts/profil_pas.jl    # with AppleAccelerate
 
 ⚠️ Timing each stage in a loop of its own gives numbers that do not add up to
 the total: the repetition leaves the data hot, whereas the real sequence
@@ -12,6 +12,13 @@ sequence, and the sum closes at 99.8 %.
 """
 
 using Vlasov, Printf
+
+# AppleAccelerate, when the environment carries it (`gpu/`). One line, ×1.31 on
+# a time step — and not only on the GEMMs: the particle loops gain 15–25 %
+# because OpenBLAS's thread pool stops competing with them for the cores.
+# ⚠️ Never `BLAS.lbt_forward(libacc)` raw: that binds Accelerate's old LAPACK,
+# `inv` returns garbage and the cluster explodes. `using` is enough.
+const ACCELERATE = try; @eval using AppleAccelerate; true; catch; false; end
 const ROOT = dirname(@__DIR__)
 grid, ρr = read_radial_density(joinpath(ROOT, "ref/these/rhorad.Na1000.dat"))
 npart = 800_000
@@ -58,6 +65,7 @@ acc ./= k
 stages = ("smoothed deposit (fine)", "deposit (coarse)", "poisson!", "spline coefficients",
           "energy (Hartree)", "mean field", "forces", "projectile",
           "copy φ ← csol", "Verlet", "energy (total)")
+@printf("BLAS: %s\n", ACCELERATE ? "Accelerate" : "OpenBLAS")
 @printf("%-24s %8s %7s\n", "stage", "ms", "%")
 for i in 1:11
     @printf("%-24s %8.1f %6.1f%%\n", stages[i], acc[i], 100acc[i]/tot)

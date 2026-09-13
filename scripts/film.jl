@@ -13,12 +13,24 @@ they are the script's interface, not prose.)
 
 The window carries a slider, a play button, and the choice of field:
 
-  * **`δρ`** (default) — the departure from the initial state. This is the one
-    to watch: the deformation amounts to a few per cent of a background a
-    thousand times larger, and an absolute scale drowns it. The colour scale is
-    **diverging and centred on zero**, so the wake (a deficit) and the pile-up
-    are told apart.
-  * **`ρ`** — the density itself, as the thesis's `snappro` figures plot it.
+  * **`ρ`** (default) — the density itself, as the thesis's `snappro` figures
+    plot it. On an absolute scale the sampling grain is barely visible and the
+    clump the ion drags along stands out on its own.
+  * **`δρ`** — the departure from the initial state. In principle it isolates
+    the deformation; in practice, at 800 000 pseudo-particles, it is
+    **noise-limited**. A fine-grid cell holds about 134 of them, so the shot
+    noise on `δρ` is 9.6 % of `ρ₀` — the same order as the deformation itself,
+    giving a signal-to-noise of 3 per cell. The picture then reads as salt and
+    pepper. Useful for reading off the sign of a local feature, not for a film.
+
+!!! warning "Do not smooth `δρ` to rescue it"
+    A box blur over one cell divides the noise by only 1.4, and turns the grain
+    into large coherent blobs that **look like** structure. It makes the picture
+    prettier and the reading wrong. Averaging over `z` fails for the same reason
+    in reverse: the wake fits inside a single cell in `z`, so a thicker slab
+    dilutes the signal faster than it kills the noise — measured, the optimum is
+    `|z| ≤ 2 a₀`, worth 23 %, and a full-depth projection is **worse** than a
+    single plane.
 
 The lower panel tracks the projectile's energy: its slope is the stopping
 power, and the vertical line marks the instant on display.
@@ -32,7 +44,7 @@ using Serialization
 const ROOT = dirname(@__DIR__)
 
 function parse_args(argv)
-    o = Dict("champ" => "delta", "video" => "", "fps" => "24", "sortie" => "film.mp4")
+    o = Dict("champ" => "rho", "video" => "", "fps" => "24", "sortie" => "film.mp4")
     for a in argv
         if a == "--video"
             o["video"] = "oui"
@@ -70,8 +82,22 @@ function main(argv)
     @printf("%d frames, Na1000 at %d keV (v = %.2f), %d particles\n",
             n, d.keV, d.v, d.npart)
 
-    lim = color_limit(d.frames, d.rho0, o["champ"])
-    rlim = color_limit(d.frames, d.rho0, "rho")
+    # ⚠️ Two independent bounds, one per field. Deriving the diverging bound
+    # from whichever field happens to be the default washed out `δρ` as soon as
+    # the menu switched to it.
+    lim = color_limit(d.frames, d.rho0, "delta")
+
+    # `ρ` is displayed the way figure 5.2 of the thesis does it: rainbow palette,
+    # top of the scale at 1.45·ρ_bulk so the cluster body lands in the orange and
+    # the wake's oscillation spans green→red, and **vacuum masked** rather than
+    # coloured. From 0 → max the bulk sits at 89 % of full scale, the whole
+    # cluster is one flat colour, and the range is spent on empty space.
+    bulk = let c = sort(filter(>(0), vec(d.rho0)))
+        c[round(Int, 0.75 * length(c))]
+    end
+    rhi = Float32(1.45bulk)
+    void = Float32(0.04bulk)
+    GREY = RGBf(0.78, 0.78, 0.78)
 
     fig = Figure(size = (1000, 780))
     idx = Observable(1)
@@ -83,22 +109,30 @@ function main(argv)
                                      d.keV, d.xs[$idx],
                                      (d.e0 - d.eks[$idx]) * d.hartree)))
 
-    image = @lift($champ == "rho" ? d.frames[$idx] : d.frames[$idx] .- d.rho0)
-    limits = @lift($champ == "rho" ? (0.0f0, rlim) : (-lim, lim))
-    cmap = @lift($champ == "rho" ? :viridis : :balance)
-    hm = heatmap!(ax, d.gx, d.gy, image; colorrange = limits, colormap = cmap)
+    field = @lift($champ == "rho" ?
+                  [a < void ? NaN32 : a for a in d.frames[$idx]] :
+                  d.frames[$idx] .- d.rho0)
+    limits = @lift($champ == "rho" ? (0.0f0, rhi) : (-lim, lim))
+    cmap = @lift($champ == "rho" ? :jet : :balance)
+    # `image!` and not `heatmap!`, for `interpolate`: the density is a C¹ spline
+    # and the collocation values are point samples of it, so bilinear display is
+    # closer to the field than hard cells. ⚠️ It does not reduce the noise — it
+    # only stops the grid from showing through.
+    hm = image!(ax, extrema(d.gx), extrema(d.gy), field;
+                colorrange = limits, colormap = cmap,
+                nan_color = GREY, interpolate = true)
     Colorbar(fig[1, 2], hm,
              label = @lift($champ == "rho" ? "ρ (a.u.)" : "ρ − ρ₀ (a.u.)"))
 
     # The jellium circle: R = r_s·N^⅓, to locate the cluster.
     R = WIGNER_SEITZ_NA * cbrt(1000.0)
     θ = range(0, 2π; length = 200)
-    lines!(ax, R .* cos.(θ), R .* sin.(θ); color = (:white, 0.35), linewidth = 1)
+    lines!(ax, R .* cos.(θ), R .* sin.(θ); color = (:black, 0.18), linewidth = 1)
 
     # The projectile. ⚠️ Qualified: `scatter!` is exported by BOTH Vlasov (the
     # deposit engine) and Makie, so the bare name resolves to neither.
-    GLMakie.scatter!(ax, @lift([Point2f(d.xs[$idx], 0)]); color = :red,
-                     markersize = 13, strokecolor = :white, strokewidth = 1.5)
+    GLMakie.scatter!(ax, @lift([Point2f(d.xs[$idx], 0)]); color = :white,
+                     markersize = 7, strokecolor = :black, strokewidth = 1)
 
     # --- projectile energy ---------------------------------------------------
     ax2 = Axis(fig[2, 1]; xlabel = "projectile x (a₀)", ylabel = "loss (eV)",
