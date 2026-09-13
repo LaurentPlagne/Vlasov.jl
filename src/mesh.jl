@@ -38,6 +38,11 @@ struct SplineMesh{N,T,M}
     partageable** entre fils."""
     scratch::NTuple{3,Array{T,N}}
     scratch_inner::Array{T,N}
+    """Tables de repérage, une par direction — voir [`LocateTable`](@ref).
+
+    Le dépôt sur la grille **grossière** cherchait la cellule par dichotomie, ce
+    qui en faisait la moitié du coût. La table est construite une fois ici."""
+    locators::NTuple{N,LocateTable{T}}
 end
 
 function SplineMesh(axes::SplineAxis{T}...) where {T}
@@ -53,7 +58,8 @@ function SplineMesh(axes::SplineAxis{T}...) where {T}
     full_dims = map(nbasis, axes)
     SplineMesh(axes, cms, full, duals, solver,
                ntuple(_ -> Array{T,length(axes)}(undef, full_dims), 3),
-               Array{T,length(axes)}(undef, size(solver)))
+               Array{T,length(axes)}(undef, size(solver)),
+               map(LocateTable, axes))
 end
 
 """

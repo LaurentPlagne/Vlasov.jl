@@ -587,6 +587,29 @@ end
         @test cloud.forces[3][2] == 0
     end
 
+    @testset "Table de repérage" begin
+        # Une grille étirée, celle qui coûtait cher : la dichotomie y faisait
+        # la moitié du dépôt grossier.
+        for ax in (uniform_axis(-10.0, 10.0, 8), stretched_axis(50.0, 150.0, 7, 8),
+                   testaxis(9; L = 3.0))
+            tbl = LocateTable(ax)
+            gt = ax.colloc
+            # La table doit rendre **exactement** le même résultat, pas
+            # approximativement : c'est une optimisation, pas une approximation.
+            for u in range(gt[1], gt[end]; length = 997)
+                @test locate(tbl, ax, u) == locate(ax, u)
+            end
+            # Les bornes et le dehors.
+            @test locate(tbl, ax, gt[1]) == locate(ax, gt[1])
+            @test locate(tbl, ax, gt[end]) == locate(ax, gt[end])
+            @test locate(tbl, ax, gt[1] - 1e-9) === nothing
+            @test locate(tbl, ax, gt[end] + 1e-9) === nothing
+            # Assez fine pour qu'une correction d'un cran suffise : chaque
+            # intervalle de collocation couvre au moins une case.
+            @test length(tbl.cell) >= length(gt)
+        end
+    end
+
     @testset "Tri par maille" begin
         ax = uniform_axis(-10.0, 10.0, 8)          # h = 2,5 ; 9 nœuds
         n = 500

@@ -468,6 +468,50 @@ mieux que de les supposer :
 
 `poisson!` passe de 21,4 à **12,1 ms**.
 
+## Deux postes CPU, sans une ligne de GPU
+
+### Le champ moyen : une décision de performance devenue fausse
+
+`effective_potential!` portait ce commentaire : « délibérément séquentielle,
+mesuré, la version parallèle est 0,93 fois plus rapide, c'est-à-dire plus
+lente ». C'était **vrai au moment de la mesure**, et ça ne l'est plus : le
+ralentissement venait du pool de fils d'OpenBLAS, qui disputait le processeur
+aux boucles `Threads.@threads`. Sous Accelerate ce pool n'existe pas, et la
+même boucle gagne **×5**, à résultat identique au bit près.
+
+`effective_potential!` passe de 6,52 à **2,73 ms** par grille.
+
+⚠️ **Une décision de performance n'est valable que dans l'environnement où elle
+a été mesurée.** Celle-ci était consignée, argumentée, chiffrée — et périmée.
+
+### Le dépôt grossier : une table au lieu d'une dichotomie
+
+`locate` cherchait la cellule par dichotomie sur les points de collocation.
+Mesuré seul, sur 800 000 particules et trois directions : **54,5 ms**, soit la
+moitié du dépôt grossier une fois réparti sur huit fils.
+
+[`LocateTable`](../src/splines.jl) le remplace par une lecture de table : un
+découpage uniforme assez fin pour qu'aucun intervalle de collocation n'en
+contienne moins d'un, puis au plus un cran de correction. C'est rentable parce
+que la grille grossière, bien qu'**étirée**, ne l'est pas beaucoup — un facteur
+trois entre son plus petit et son plus grand pas, d'où 288 entrées.
+
+**×14,6** sur `locate`, et le dépôt grossier passe de 13,9 à **6,74 ms**. Le
+résultat est **exactement** le même — c'est un test, sur mille points de trois
+grilles différentes.
+
+## Où on en est
+
+| configuration | ms/pas |
+|---|---|
+| CPU, bilan à chaque pas | 218,4 |
+| GPU, bilan à chaque pas | 147,0 |
+| CPU, bilan 1 pas sur 10 | 160,3 |
+| **GPU, bilan 1 pas sur 10** | **81,7** |
+
+Depuis le point de départ — OpenBLAS, tout CPU, bilan à chaque pas, 307,9 ms —
+**×3,77**.
+
 ## Ce qu'il reste, par ordre de rendement
 
 1. ~~Apple Accelerate~~ — **fait**, ×1,31 pour une ligne.

@@ -121,13 +121,19 @@ function effective_potential!(csol::Array{T,3}, ρ::Array{T,3},
                               mesh::SplineMesh{3,T}, jel::Jellium{T}) where {T}
     gx, gy, gz = map(ax -> ax.colloc, mesh.axes)
     extra = mesh.scratch[1]
-    # ⚠️ Délibérément séquentielle. Mesuré sur machine au repos : la version
-    # parallèle est 0,93 fois plus rapide, c'est-à-dire plus lente. Le corps
-    # est trop court — un `cbrt`, un `log`, une racine — pour amortir le
-    # découpage, et l'écriture dans `extra` sature déjà la bande passante.
-    @inbounds for k in eachindex(gz), j in eachindex(gy), i in eachindex(gx)
-        r = sqrt(gx[i]^2 + gy[j]^2 + gz[k]^2)
-        extra[i, j, k] = xc_potential(ρ[i, j, k]) + potential(jel, r)
+    # ⚠️ Cette boucle a longtemps porté un commentaire disant qu'il ne fallait
+    # **pas** la paralléliser : mesuré, la version parallèle était alors 0,93
+    # fois plus rapide, c'est-à-dire plus lente. C'était vrai, et ça ne l'est
+    # plus : le ralentissement venait du pool de fils d'OpenBLAS, qui disputait
+    # le processeur aux boucles `Threads.@threads`. Sous Accelerate le pool
+    # n'existe pas, et la même boucle gagne **×5** — à résultat identique au bit
+    # près. Une décision de performance n'est valable que dans l'environnement
+    # où elle a été mesurée.
+    Threads.@threads for k in eachindex(gz)
+        @inbounds for j in eachindex(gy), i in eachindex(gx)
+            r = sqrt(gx[i]^2 + gy[j]^2 + gz[k]^2)
+            extra[i, j, k] = xc_potential(ρ[i, j, k]) + potential(jel, r)
+        end
     end
     csol .+= spline_coefficients!(mesh.scratch[2], extra, mesh)
 end

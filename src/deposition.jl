@@ -142,10 +142,11 @@ function deposit!(ρ::Array{T,3}, mesh::SplineMesh{3,T},
     mx, my, mz = mesh.axes
     size(ρ) == (nbasis(mx), nbasis(my), nbasis(mz)) ||
         throw(DimensionMismatch("ρ doit couvrir toute la grille de collocation"))
+    tx, ty, tz = mesh.locators
     nout = scatter!(ρ, mesh, positions, buffers) do dest, mx, my, mz, p
-        lx = locate(mx, p[1])
-        ly = locate(my, p[2])
-        lz = locate(mz, p[3])
+        lx = locate(tx, mx, p[1])
+        ly = locate(ty, my, p[2])
+        lz = locate(tz, mz, p[3])
         (lx === nothing || ly === nothing || lz === nothing) && return false
         (i, ax), (j, ay), (k, az) = lx, ly, lz
         bx, by, bz = 1 - ax, 1 - ay, 1 - az
