@@ -74,6 +74,14 @@ toléraient (un `integer` relisant un réel, un appel avec un argument de trop e
 Fortran sur 600 pas, `dE/dx` à 0,5 %. Les comparaisons ponctuelles à `1e-13` ne disaient
 rien de l'accord après des centaines de pas enchaînés ; celle-ci le dit.
 
+📋 **La chronologie des ~43 versions Fortran est dans
+[`docs/chronologie-versions-fortran.md`](docs/chronologie-versions-fortran.md)**. Le
+portage part de la version du **1997-06-06** ; la dernière séquentielle est du
+**1998-01-07** (16 routines de plus : énergie propre, potentiel radial, `pspech3`), et la
+parallélisation vit dans une branche jamais fusionnée, `arkonnen/mystuffgz/vlas.hpf`
+(HPF + MPI + tri à deux niveaux). Une seule sous-arborescence a gardé ses dates d'origine :
+`temp/home/sauron2/plagne/` — partout ailleurs les `mtime` valent janvier 2025.
+
 📋 **Les coquilles constatées sont relevées dans
 [`docs/coquilles-fortran.md`](docs/coquilles-fortran.md)** — à consulter avant de
 s'étonner d'un résultat, et à compléter dès qu'une nouvelle apparaît. Aucune n'est

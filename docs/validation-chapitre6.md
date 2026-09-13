@@ -58,14 +58,24 @@ garantit qu'il ait produit une figure publiée.
 pseudo-particules, `dE/dx` reste entre 0,985 et 1,006 — convergé à ±1 %, sans
 la moindre dérive vers 0,72.
 
+> 🗣️ **L'auteur, de mémoire : « le cutoff du projectile était le paramètre
+> clé pour le pouvoir d'arrêt ».** Cela oriente fortement la recherche : le
+> `cutoff` **est** bien le paramètre pertinent, et `σ_ion = 1,0 a₀` de la
+> figure désigne vraisemblablement `cutoff = 1,0`. La piste d'un σ_ion
+> « conséquence du maillage » perd donc son crédit, et l'écart 0,72 → 1,00
+> doit s'expliquer à `cutoff` identique.
+
 Restent à élucider, par ordre de vraisemblance :
 
-1. **`σ_ion` n'est peut-être pas `cutoff`.** La figure porte `σ_ion = 1,0 a₀`
-   et `vlas.inp` donne `cutoff = 1,0`, mais le code contient un second
-   lissage — `sigr = h/3 ≈ 1,19` dans `maketable` — qui dépend de la grille.
-   Si c'est lui, σ_ion n'est pas un paramètre d'entrée mais une conséquence
-   du maillage.
-2. **La résolution de grille.** `n1xyz = 28` fixe `h = 3,57`, donc `sigr`.
-3. **La définition de `dE/dx` dans la figure** — pente ajustée sur la partie
+1. **La résolution de grille.** `n1xyz = 28` fixe `h = 3,57`, donc le second
+   lissage `sigr = h/3 ≈ 1,19` de `maketable`. Avec `cutoff = 1,0` par
+   ailleurs correct, c'est `sigr` — non paramétrable, subi — qui devient le
+   suspect : il dépasse le cutoff et dominerait alors l'interaction.
+2. **La définition de `dE/dx` dans la figure** — pente ajustée sur la partie
    linéaire, ou rapportée à la densité du cœur, plutôt que perte totale
    divisée par le diamètre.
+3. **La version du code.** Les figures de la thèse ont été produites près de
+   la soutenance (déc. 1998), alors que le portage part de la version du
+   1997-06-06. La dernière séquentielle (1998-01-07) ajoute `pspech3` et
+   `multrcmax`, qui touchent précisément au rayon de coupure du projectile.
+   Voir [`chronologie-versions-fortran.md`](chronologie-versions-fortran.md).
