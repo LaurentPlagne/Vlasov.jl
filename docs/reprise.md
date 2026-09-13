@@ -68,6 +68,23 @@ Tous consignés dans les documents ci-dessus, mais voici ceux qui reviendraient 
 * **Le GPU Apple n'a pas de `Float64`.** Le chemin CPU reste la référence, seule
   à pouvoir se comparer à l'oracle à `1e-13`.
 
+## En cours : traduction des commentaires en anglais
+
+Demandé par l'auteur. ~6760 lignes sur 29 fichiers, et **rien n'est mécanique** :
+presque chaque commentaire porte un fait mesuré ou un piège, à rendre avec sa
+nuance. Procéder fichier par fichier, en committant chacun.
+
+**Fait** : `gpu.jl`, `threading.jl`, `random.jl`, `collocation.jl`.
+
+**Reste**, par taille croissante (`src/` puis `ext/`) : `energy.jl` 120,
+`sorting.jl` 135, `meanfield.jl` 139, `particles.jl` 142, `mesh.jl` 149,
+`tensorsolver.jl` 190, `deposition.jl` 216, `initial.jl` 250, `projectile.jl` 292,
+`simulation.jl` 292, `poisson.jl` 348, `splines.jl` 385, `VlasovMetalExt.jl` 523.
+Puis `scripts/` et `test/`.
+
+Vérifier après chaque fichier dans la session kaimon (Revise recharge, pas de
+démarrage Julia) ; lancer la suite complète tous les quelques fichiers.
+
 ## Ce qui reste, par ordre
 
 ### Performance (rendement décroissant)

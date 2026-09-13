@@ -1,33 +1,32 @@
 """
-Le générateur pseudo-aléatoire du code d'origine, reproduit à l'identique.
+The original code's pseudo-random generator, reproduced exactly.
 
-Le portage ne peut pas se contenter d'un générateur « équivalent » : le tirage
-initial des pseudo-particules est la seule entrée non déterministe de la
-simulation. Reproduire la suite exacte permet de comparer l'initialisation
-**particule par particule** à l'oracle, au lieu de constater des statistiques
-compatibles — ce qui ne distingue pas un bug d'un bruit d'échantillonnage.
+The port cannot settle for an "equivalent" generator: the initial sampling of
+the pseudo-particles is the simulation's only non-deterministic input.
+Reproducing the exact sequence makes it possible to compare the initialisation
+**particle by particle** against the oracle, instead of merely observing
+compatible statistics — which cannot tell a bug from sampling noise.
 """
 
 """
     Ran2(seed)
 
-Générateur `ran2` de *Numerical Recipes* (L'Ecuyer combiné, brassage de
-Bays-Durham), **tel qu'il figure dans le code de la thèse**.
+The `ran2` generator from *Numerical Recipes* (combined L'Ecuyer, Bays-Durham
+shuffle), **as it appears in the thesis code**.
 
-⚠️ **Il s'écarte de la version publiée, et ce n'est pas anodin.** La constante
-`IQ1` y vaut `3668` au lieu de `53668` — un chiffre perdu. La méthode de
-Schrage, qui évite le débordement, exige `IR1 < IQ1` ; avec `12211 > 3668`
-elle ne tient plus, et `k*IR1` déborde l'entier 32 bits (jusqu'à `7.1e9` pour
-une limite à `2.1e9`).
+⚠️ **It departs from the published version, and not harmlessly.** The constant
+`IQ1` reads `3668` instead of `53668` — one digit lost. Schrage's method, which
+avoids overflow, requires `IR1 < IQ1`; with `12211 > 3668` it no longer holds,
+and `k*IR1` overflows the 32-bit integer (up to `7.1e9` against a limit of
+`2.1e9`).
 
-Le générateur produit donc bien une suite, mais ce n'est **pas** celle de
-L'Ecuyer : c'est une variante dont la période et les corrélations n'ont
-jamais été vérifiées. La coquille est présente à l'identique dans les cinq
-versions du code de la thèse.
+The generator therefore does produce a sequence, but **not** L'Ecuyer's: it is a
+variant whose period and correlations were never checked. The typo is present
+identically in all five versions of the thesis code.
 
-On la reproduit — c'est la seule façon de retrouver le tirage de l'oracle —
-en laissant l'arithmétique déborder comme en Fortran. `consistent = true`
-rétablit `IQ1 = 53668`, pour comparer.
+We reproduce it — the only way to recover the oracle's sampling — by letting the
+arithmetic overflow as it does in Fortran. `consistent = true` restores
+`IQ1 = 53668`, for comparison.
 """
 mutable struct Ran2
     idum::Int32
@@ -48,7 +47,7 @@ const RAN2_IR2 = Int32(3791)
 const RAN2_NTAB = 32
 const RAN2_NDIV = Int32(1 + (RAN2_IMM1 - Int32(1)) ÷ Int32(RAN2_NTAB))
 
-"`AM` et `RNMX` sont calculés en simple précision, comme le `REAL` du Fortran."
+"`AM` and `RNMX` are computed in single precision, like the Fortran `REAL`."
 const RAN2_AM = Float32(1) / Float32(RAN2_IM1)
 const RAN2_RNMX = Float32(1) - Float32(1.2e-7)
 
@@ -57,7 +56,7 @@ function Ran2(seed::Integer = -1; consistent::Bool = false)
     idum = Int32(max(-seed, 1))
     idum2 = idum
     iv = zeros(Int32, RAN2_NTAB)
-    # Rodage : on jette les 8 premières valeurs, puis on remplit la table.
+    # Warm-up: discard the first 8 values, then fill the table.
     for j in (RAN2_NTAB+8):-1:1
         idum = _ran2_step(idum, iq1, RAN2_IR1, RAN2_IA1, RAN2_IM1)
         j <= RAN2_NTAB && (iv[j] = idum)
@@ -65,7 +64,7 @@ function Ran2(seed::Integer = -1; consistent::Bool = false)
     Ran2(idum, idum2, iv[1], iv, iq1)
 end
 
-"""Un pas de Schrage. ⚠️ Déborde volontairement : voir [`Ran2`](@ref)."""
+"""One Schrage step. ⚠️ Overflows on purpose: see [`Ran2`](@ref)."""
 @inline function _ran2_step(x::Int32, q::Int32, r::Int32, a::Int32, m::Int32)
     k = x ÷ q
     x = a * (x - k * q) - k * r
@@ -75,8 +74,8 @@ end
 """
     next!(rng) -> Float32
 
-Valeur suivante dans `[0, 1)`. Le résultat est en **simple précision** : le
-Fortran déclarait `REAL ran2`, et arrondir autrement changerait la suite.
+Next value in `[0, 1)`. The result is in **single precision**: the Fortran
+declared `REAL ran2`, and rounding otherwise would change the sequence.
 """
 function next!(rng::Ran2)
     rng.idum = _ran2_step(rng.idum, rng.iq1, RAN2_IR1, RAN2_IA1, RAN2_IM1)
