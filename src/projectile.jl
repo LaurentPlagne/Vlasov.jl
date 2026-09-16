@@ -86,21 +86,29 @@ therefore has the dimension of an inverse volume, and `m → 1/r³` far away.
 const _GAUSS_SERIES = (1/3, -1/10, 1/56, -1/432, 1/4224, -1/49920, 1/685440)
 const _SQRT_2_OVER_PI = sqrt(2 / π)
 
-@inline function force_kernel(s::GaussianSoftening{T}, r2::T) where {T}
-    σ = s.σ
-    u2 = r2 / σ^2
+"""
+    gaussian_force_kernel(r2, σ) -> T
+
+Scalar regularised Coulomb force kernel for Gaussian softening.
+Shared identically between CPU (`Float64`) and Metal GPU (`Float32`).
+"""
+@inline function gaussian_force_kernel(r2::T, σ::T) where {T}
+    u2 = r2 / (σ * σ)
     if u2 <= T(0.25)                      # u ≤ 0.5: series, no subtraction
         p = zero(T)
         @inbounds for k in length(_GAUSS_SERIES):-1:1
             p = T(_GAUSS_SERIES[k]) + u2 * p
         end
-        T(_SQRT_2_OVER_PI) * p / σ^3
+        T(_SQRT_2_OVER_PI) * p / (σ * σ * σ)
     else
         r = sqrt(r2)
         x = r / (sqrt(T(2)) * σ)
         (erf(x) - T(_SQRT_2_OVER_PI) * (r / σ) * exp(-u2 / 2)) / (r2 * r)
     end
 end
+
+@inline force_kernel(s::GaussianSoftening{T}, r2::T) where {T} =
+    gaussian_force_kernel(r2, s.σ)
 
 """
     pair_potential(s, q, r) -> T

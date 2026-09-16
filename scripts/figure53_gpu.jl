@@ -1,55 +1,26 @@
 #!/usr/bin/env julia
 """
-Reproduce the stopping-power curve of the thesis: Na₁₀₀₀, σ_ion = 1 a.u.
-
-    julia --project=gpu -t auto scripts/figure53.jl [--particules=200000] [--kev=1,4,9,16,25]
-
-Under `--project=gpu` it picks up **AppleAccelerate**; the trajectory is
-unchanged, only faster. ⚠️ It does **not** use the GPU: that path is `Float32`,
-and this figure is the one compared against published values.
-
-The quantity plotted is the one the thesis defines — a **local slope at the
-centre**, not the total loss:
-
-    dE/dx ≃ [E_k(+Δx/2) − E_k(−Δx/2)] / Δx,   Δx = 4 a.u.
-
-The published values are in [`ref/these/`](../ref/these/): `desdx.dat.1000`
-gives the result, `Ekproj.dat.N` the trajectories it is drawn from.
-
-The initial state comes from `rhorad.Na1000.dat`, the archived equilibrium
-radial density (October 1998, 998.7 electrons when integrated): the `pot.dat`
-that `initialise4` expected did not survive, but the density is enough — see
-[`PotentialProfile`](@ref).
-
-⚠️ The force is the **thesis's** (Gaussian), not the Fortran's (ball). That is
-the whole subject of anomaly 10.
+Calcul ultra-rapide du pouvoir d'arrêt sur GPU Metal (Float32) avec mise en valeur du Pic de Bragg :
+    julia --project=gpu -t auto scripts/figure53_gpu.jl [--particules=3200000] [--nfine=66]
 """
 
 using Vlasov
 using Printf
 using Serialization
 
-# AppleAccelerate, when the environment carries it (`gpu/`). One line, ×1.31 on
-# a time step — and not only on the GEMMs: the particle loops gain 15–25 %
-# because OpenBLAS's thread pool stops competing with them for the cores.
-# ⚠️ Never `BLAS.lbt_forward(libacc)` raw: that binds Accelerate's old LAPACK,
-# `inv` returns garbage and the cluster explodes. `using` is enough.
 const ACCELERATE = try; @eval using AppleAccelerate; true; catch; false; end
+const METAL = try; @eval using Metal; true; catch; false; end
 const MAKIE = try; @eval using CairoMakie; CairoMakie.activate!(type = "png"); true; catch; false; end
 
 const ROOT = dirname(@__DIR__)
-const KEV = 1000 / HARTREE_TO_EV        # 1 keV in hartree
-
-# Grid: h = 2·rcluster/nfine ≈ 3.55, the resolution validated on Na₁₉₆, but
-# widened to hold Na₁₀₀₀ (R = 40 a₀) and the projectile from the moment it enters.
-const GRID = (nfine = 44, ncoarse = 22, rcluster = 78.0, rbox = 235.0)
-const X0 = -65.0                        # start, as in the archived trajectories
+const KEV = 1000 / HARTREE_TO_EV
+const X0 = -65.0
 
 function parse_args(argv)
-    o = Dict("particules" => "1600000",
+    o = Dict("particules" => "3200000",
              "kev" => "1,4,9,12,14,16,18,20,25,36,50,64",
              "nfine" => "66",
-             "sortie" => "figure53.png")
+             "sortie" => "figure53_gpu.png")
     for a in argv
         m = match(r"^--([a-z]+)=(.+)$", a)
         (m === nothing || !haskey(o, m[1])) && error("unrecognised argument: $a")
@@ -58,8 +29,7 @@ function parse_args(argv)
     o
 end
 
-"""Run one crossing and return `(xs, eks)` — position and kinetic energy."""
-function traverse(profile, npart, keV; nfine = 66)
+function traverse_gpu(profile, npart, keV; nfine = 66)
     m = nfine ÷ 2 + 1
     n1 = m ÷ 2
     n2 = m - n1
@@ -70,7 +40,6 @@ function traverse(profile, npart, keV; nfine = 66)
 
     energy = keV * KEV
     v = sqrt(2energy / 1836.154)
-    # Adaptive dt: avoid projectile step larger than 0.5 a0, matching thesis at high v
     dt = min(1.0, 0.5 / v)
 
     p = SimulationParameters(nfine = nfine, ninner = ninner,
@@ -81,13 +50,16 @@ function traverse(profile, npart, keV; nfine = 66)
                       impact = 0.0, x0 = X0, dt = dt,
                       softening = GaussianSoftening(1.0))
     sim = Simulation(p, profile; projectile = proj)
+    fine = sim.meshes[1]
+    acc = METAL ? ForceAccelerator(MtlArray, fine.axes, sim.smoothing, npart,
+                                   size(sim.csol[1], 1)) : nothing
 
     nsteps = ceil(Int, 1.1 * (80 - X0) / (v * dt))
 
     xs = Float64[proj.position[1]]
     eks = Float64[kinetic_energy(proj)]
     for _ in 1:nsteps
-        step!(sim)
+        step!(sim; energy = false, accelerator = acc)
         push!(xs, proj.position[1])
         push!(eks, kinetic_energy(proj))
         proj.position[1] > 80 && break
@@ -95,22 +67,12 @@ function traverse(profile, npart, keV; nfine = 66)
     (xs, eks, v, dt)
 end
 
-"""Local slope at the centre over `Δx`, in eV/a₀ — the thesis's definition.
-
-⚠️ Over four bohr only, this estimator is **very sensitive to sampling noise**:
-with 20 000 pseudo-particles it returns negative values while the full
-trajectory is correct to 3 %. That is why production runs used 800 000.
-[`fitted_power`](@ref) acts as a guard rail.
-"""
 function stopping_power(xs, eks; Δx = 4.0)
     nearest(t) = argmin(abs.(xs .- t))
     i, j = nearest(-Δx / 2), nearest(Δx / 2)
     (eks[i] - eks[j]) * HARTREE_TO_EV / (xs[j] - xs[i])
 end
 
-"""The same slope, by least squares over a wider window — less faithful to the
-thesis's recipe, but less noisy. If the two disagree, the statistics are not
-sufficient."""
 function fitted_power(xs, eks; half = 10.0)
     k = findall(x -> -half <= x <= half, xs)
     length(k) < 3 && return NaN
@@ -119,7 +81,6 @@ function fitted_power(xs, eks; half = 10.0)
     -sum((x .- x̄) .* (e .- ē)) / sum(abs2, x .- x̄)
 end
 
-"""Published values: `desdx.dat.1000`, a keV column then two measurements."""
 function published()
     d = Dict{Int,Tuple{Float64,Float64}}()
     for l in eachline(joinpath(ROOT, "ref", "these", "desdx.dat.1000"))
@@ -132,7 +93,7 @@ end
 function render_figure53(results, ref, outfile; nfine = 66, npart = 0)
     fig = CairoMakie.Figure(size = (900, 650), backgroundcolor = :white)
     ax = CairoMakie.Axis(fig[1, 1],
-                         title = @sprintf("Pouvoir d'arrêt dE/dx (Na₁₀₀₀ + H⁺, σ = 1 a₀) — Grille %d, %d particules", nfine, npart),
+                         title = @sprintf("Pouvoir d'arrêt dE/dx (Na₁₀₀₀ + H⁺, σ = 1 a₀) — GPU Metal, Grille %d, %d particules", nfine, npart),
                          xlabel = "Vitesse du projectile v (u.a.)",
                          ylabel = "dE/dx (eV / a₀)",
                          xgridvisible = true, ygridvisible = true)
@@ -159,8 +120,8 @@ function render_figure53(results, ref, outfile; nfine = 66, npart = 0)
     ds = [r.d for r in results]
     fs = [r.f for r in results]
 
-    CairoMakie.scatterlines!(ax, vs, ds; color = :crimson, markersize = 10, linewidth = 2, label = "Julia (Δx = 4 a₀)")
-    CairoMakie.scatterlines!(ax, vs, fs; color = :dodgerblue, markersize = 8, linestyle = :dot, linewidth = 2, label = "Julia (fit ±10 a₀)")
+    CairoMakie.scatterlines!(ax, vs, ds; color = :crimson, markersize = 10, linewidth = 2, label = "GPU (Δx = 4 a₀)")
+    CairoMakie.scatterlines!(ax, vs, fs; color = :dodgerblue, markersize = 8, linestyle = :dot, linewidth = 2, label = "GPU (fit ±10 a₀)")
 
     # Bragg peak identification and highlight
     max_idx = argmax(fs)
@@ -192,15 +153,16 @@ function main(argv)
     profile = PotentialProfile(grid, ρ)
     ref = published()
 
-    @printf("Na1000, σ_ion = 1, %d pseudo-particles, grid %d (h = %.2f a₀), BLAS: %s\n\n",
-            npart, nfine, 2 * 78.0 / nfine,
-            ACCELERATE ? "Accelerate" : "OpenBLAS")
+    @printf("Na1000, σ_ion = 1, %d pseudo-particles, grid %d (h = %.2f a₀)\n",
+            npart, nfine, 2 * 78.0 / nfine)
+    @printf("BLAS: %s    forces: %s\n\n",
+            ACCELERATE ? "Accelerate" : "OpenBLAS", METAL ? "GPU (Float32)" : "CPU")
     @printf("%-5s %-7s %-6s %-9s %-9s %-18s %-8s %s\n",
             "keV", "v", "dt", "Δx=4", "fit ±10", "thesis", "error", "time")
     results = []
     for keV in energies
         t0 = time()
-        xs, eks, v, dt = traverse(profile, npart, keV; nfine = nfine)
+        xs, eks, v, dt = traverse_gpu(profile, npart, keV; nfine = nfine)
         d = stopping_power(xs, eks)
         f = fitted_power(xs, eks)
         r = get(ref, keV, nothing)
@@ -223,10 +185,9 @@ function main(argv)
     else
         @printf("(CairoMakie absent, graphique non tracé)\n")
     end
-    jls_file = joinpath(ROOT, "figure53.jls")
+    jls_file = replace(outfile, ".png" => ".jls")
     serialize(jls_file, results)
     @printf("→ Données sérialisées : %s\n", jls_file)
 end
 
 main(ARGS)
-

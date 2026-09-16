@@ -198,6 +198,35 @@ function deposit_smoothed!(ρ::Array{T,3}, mesh::SplineMesh{3,T},
 end
 
 """
+    contract_spline_10(csol, ovl, grad, bx, by, bz, cx, cy, cz)
+
+Evaluates the 10x10x10 cubic Hermite spline contraction with Gaussian smoothing tables.
+Pure scalar kernel: shared identically between CPU (`Float64`) and Metal GPU (`Float32`).
+"""
+@inline function contract_spline_10(csol, ovl, grad, bx, by, bz, cx, cy, cz)
+    T = eltype(csol)
+    fx = zero(T); fy = zero(T); fz = zero(T)
+    @inbounds for kk in 1:10
+        k = bz + kk - 1
+        oz = ovl[kk, cz]; gz = grad[kk, cz]
+        for jj in 1:10
+            j = by + jj - 1
+            oy = ovl[jj, cy]; gy = grad[jj, cy]
+            dxp = zero(T); val = zero(T)
+            for ii in 1:10
+                c = csol[bx + ii - 1, j, k]
+                dxp = fma(c, grad[ii, cx], dxp)
+                val = fma(c, ovl[ii, cx], val)
+            end
+            fx = fma(oy * oz, dxp, fx)
+            fy = fma(gy * oz, val, fy)
+            fz = fma(oy * gz, val, fz)
+        end
+    end
+    (fx, fy, fz)
+end
+
+"""
     smoothed_field(axes, csol, sm, p) -> NTuple{3,T}
 
 Smoothed electric field at the point `p` (the Fortran's `champsg`), from the
@@ -212,34 +241,9 @@ function smoothed_field(axes::NTuple{3,SplineAxis{T}}, csol::Array{T,3},
         2 * nearest_knot(axes[d].knots, p[d]) - 5
     end
     col = ntuple(d -> table_column(sm, p[d], axes[d].knots[nearest_knot(axes[d].knots, p[d])]), 3)
-
-    ox = @view sm.overlap[:, col[1]]
-    gx = @view sm.gradient[:, col[1]]
-    oy = @view sm.overlap[:, col[2]]
-    gy = @view sm.gradient[:, col[2]]
-    oz = @view sm.overlap[:, col[3]]
-    gz = @view sm.gradient[:, col[3]]
-
-    fx = fy = fz = zero(T)
-    @inbounds for kk in 1:10
-        k = base[3] + kk - 1
-        for jj in 1:10
-            j = base[2] + jj - 1
-            cxx = oy[jj] * oz[kk]
-            cyy = gy[jj] * oz[kk]
-            czz = oy[jj] * gz[kk]
-            dxp = zero(T)   # with the x derivative
-            val = zero(T)   # without
-            for ii in 1:10
-                c = csol[base[1]+ii-1, j, k]
-                dxp += c * gx[ii]
-                val += c * ox[ii]
-            end
-            fx += cxx * dxp
-            fy += cyy * val
-            fz += czz * val
-        end
-    end
+    fx, fy, fz = contract_spline_10(csol, sm.overlap, sm.gradient,
+                                    base[1], base[2], base[3],
+                                    col[1], col[2], col[3])
     (-fx, -fy, -fz)
 end
 

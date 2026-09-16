@@ -21,6 +21,7 @@ include("initial.jl")
 include("energy.jl")
 include("projectile.jl")
 include("simulation.jl")
+include("entropy.jl")
 
 export Ran2, next!
 export configure_blas!
@@ -38,6 +39,7 @@ export poisson, poisson!, solve_interior!, boundary_from_coarse!
 export ParticleCloud, ELECTRON_MASS, ELECTRON_CHARGE, mass, charge
 export step!, half_step_back, full_step_back
 export GaussianSmoothing, smoothed_field, smoothed_potential, spline_field, spline_potential, forces!, nearest_knot, cell_index
+export contract_spline_10
 export deposit_smoothed!
 export Jellium, WIGNER_SEITZ_NA, xc_potential, xc_energy_density
 export effective_potential!, uniform_sphere_potential
@@ -47,9 +49,10 @@ export initial_cloud, FERMI_COEFFICIENT
 export EnergyBudget, energy_budget, interaction_energy, hartree_energy, ion_self_energy
 export SimulationParameters, read_parameters, Simulation, run!
 export Projectile, projectile_forces!, energy_loss, kinetic_energy, HARTREE_TO_EV
-export Softening, BallSoftening, GaussianSoftening, force_kernel, pair_potential
+export Softening, BallSoftening, GaussianSoftening, force_kernel, pair_potential, gaussian_force_kernel
 export ForceAccelerator
 export CellSort, cellsort!, noccupied
 export enclosed_charge, capture!, advance_projectile!
+export density_of_states, occupation_number, entropy_from_occupation, boltzmann_entropy, phase_space_entropy
 
 end # module

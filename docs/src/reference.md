@@ -26,6 +26,13 @@ Modules = [Vlasov]
 Pages   = ["projectile.jl"]
 ```
 
+## Entropy and Thermodynamics
+
+```@autodocs
+Modules = [Vlasov]
+Pages   = ["entropy.jl"]
+```
+
 ## Energy
 
 ```@autodocs

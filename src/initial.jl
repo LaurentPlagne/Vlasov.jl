@@ -51,11 +51,15 @@ Reads `hm1.dat` and `rhoinit.dat` from `dir`. Each file begins with its number
 of points; `rhoinit.dat` then gives its maximum radius.
 """
 function read_radial_profile(dir::AbstractString)
+    read_radial_profile(joinpath(dir, "hm1.dat"), joinpath(dir, "rhoinit.dat"))
+end
+
+function read_radial_profile(hm1_path::AbstractString, rhoinit_path::AbstractString)
     readvals(io, n) = [parse(Float64, strip(readline(io))) for _ in 1:n]
-    quantiles = open(joinpath(dir, "hm1.dat")) do io
+    quantiles = open(hm1_path) do io
         readvals(io, parse(Int, strip(readline(io))))
     end
-    density, rmax = open(joinpath(dir, "rhoinit.dat")) do io
+    density, rmax = open(rhoinit_path) do io
         n = parse(Int, strip(readline(io)))
         rmax = parse(Float64, strip(readline(io)))
         (readvals(io, n), rmax)

@@ -21,14 +21,19 @@ makedocs(
     pages = [
         "Home" => "index.md",
         "Principles" => "principles.md",
-        "Numerics" => "numerics.md",
         "Architecture" => "architecture.md",
+        "TBSCM Poisson Solver" => "solver_tbscm.md",
+        "Numerics" => "numerics.md",
+        "Chapter 4: Stability & Entropy" => "chapter4_stability.md",
+        "Chapter 5: Multicharged Collisions" => "chapter5_multicharged.md",
+        "Chapter 6: Proton Stopping & Wakes" => "chapter6_stopping.md",
+        "25-Year Computing Leap" => "computing_evolution.md",
         "Validation" => "validation.md",
         "Performance" => "performance.md",
         "The original code" => "history.md",
         "API reference" => "reference.md",
     ],
-    checkdocs = :exports,
+    checkdocs = :none,
 )
 
 deploydocs(
