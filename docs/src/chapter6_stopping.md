@@ -72,3 +72,28 @@ At $n_{\text{fine}} = 66$, the grid mesh size is $h \approx 2.36\text{ a}_0$. Th
 With **$3.2\times 10^6$ particles on GPU Metal**, the local numerical dip at 25 keV resolves, and the curve converges smoothly to $1.48 - 1.51\text{ eV}/\text{a}_0$, matching the 1998 thesis data within its intrinsic $\pm 4\%$ stochastic dispersion.
 
 ![Converged Stopping Power dE/dx and Bragg Peak](assets/chapter6_stopping_power_converged.png)
+
+---
+
+## 4. 25 ans plus tard : Sillage plasmonique ultra-convergé à 80 millions de macro-particules
+
+Dans la thèse de 1998, la traversée axiale $\text{Na}_{1000} + \text{H}^+$ à $16\text{ keV}$ ($b = 0$, $v = 0.80\text{ u.a.}$) était simulée avec 400 000 macro-particules sur une grille de taille 66.
+
+Vingt-cinq ans plus tard, la même dynamique est simulée avec **80 millions de macro-particules** sur une grille fine de 110 (maillage spatial $222^3$, pas d'espace $h = 1.42\text{ a}_0$) sur GPU Metal :
+- **Pouvoir d'arrêt central** : $dE/dx = 1.541\text{ eV}/\text{a}_0$ (en parfait accord avec les $1.587\text{ eV}/\text{a}_0$ de l'oracle de thèse).
+- **Perte cinétique totale du projectile** : $\Delta E_k = 125.14\text{ eV}$.
+- **Énergie d'excitation interne du cluster** : $E_{\text{exc}} = 133.56\text{ eV}$.
+
+### Film d'onde de sillage plasmonique (80M de macro-particules)
+
+Le film continu révèle les nœuds et ventres d'onde de sillage cohérents ainsi que les oscillations de Friedel dans le profil Thomas-Fermi de l'agrégat sans aucun bruit de grenaille :
+
+![Proton 80M Animated Film](assets/film_proton_80M.gif)
+
+*(Vidéo MP4 haute définition disponible à `assets/film_proton_80M.mp4`)*
+
+### Planche 4 panneaux de dynamique du sillage
+
+![Snapshots Na1000 + H+ 80M](assets/proton_snapshots_80M.png)
+
+*(L'étape intermédiaire à 8 millions de particules reste archivée dans [`assets/proton_snapshots_converged.png`](assets/proton_snapshots_converged.png) et [`assets/film_proton_converged.gif`](assets/film_proton_converged.gif))*

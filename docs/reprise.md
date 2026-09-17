@@ -28,6 +28,7 @@ substance sans les remplacer.
 | [`coquilles-fortran.md`](coquilles-fortran.md) | 10 anomalies du code d'origine, dont la n°10 qui change une conclusion physique |
 | [`validation-chapitre6.md`](validation-chapitre6.md) | la figure reproduite, et comment |
 | [`gpu.md`](gpu.md) | tout le travail de performance, mesures à l'appui |
+| [`campagne-80M.md`](campagne-80M.md) | simulations ultra-convergées à 80M de particules, mesures et films |
 
 ## Le résultat physique
 

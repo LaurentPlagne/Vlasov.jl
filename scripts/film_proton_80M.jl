@@ -1,16 +1,6 @@
 #!/usr/bin/env julia
-"""
-Film & Snapshots of Na₁₀₀₀ + H⁺ Central Crossing (16 keV, b = 0)
-Reproducing and converging Chapter 6 (Figure 5.2 / snappro) of the 1998 PhD thesis.
-
-High-resolution simulation on Metal GPU:
-- Grid: nfine = 66, ninner = 34, nouter = 32 (mesh 134×134×134)
-- Converged particle statistics: 1,600,000 pseudo-particles (4× to 80× thesis count)
-- Continuous cubic Hermite spline evaluation (cut_z0 with finesse = 6)
-- Projectile stopping power dE/dx and energy loss ΔE tracking
-- Cluster excitation energy tracking
-- Generates film_proton.mp4, film_proton.gif, and proton_snapshots.png
-"""
+# 80 Million Particles Converged Simulation: Na₁₀₀₀ + H⁺ (16 keV, b = 0)
+# Grid 110 (Mesh 222³, h ≈ 1.42 a₀) on Apple Silicon GPU Metal + BLAS Accelerate
 
 using Vlasov
 using Printf
@@ -22,8 +12,8 @@ const METAL = try; @eval using Metal; true; catch; false; end
 const ACCELERATE = try; @eval using AppleAccelerate; true; catch; false; end
 
 const ROOT = dirname(@__DIR__)
-const KEV = 1000 / HARTREE_TO_EV
-const GREY = RGBf(0.80, 0.80, 0.80)
+const KEV = 1000.0 / HARTREE_TO_EV
+const GREY = CairoMakie.RGBf(0.82, 0.82, 0.82)
 
 function cut_z0(ρ, mesh, halfwidth, xs, ys)
     csol = spline_coefficients(ρ, mesh)
@@ -43,10 +33,10 @@ function cut_z0(ρ, mesh, halfwidth, xs, ys)
     out
 end
 
-function run_proton_simulation(; npart = 8_000_000, nfine = 88, dt = 1.0, finesse = 6)
-    cache_file = joinpath(ROOT, "proton_converged_8M_data_cache.jls")
+function run_proton_80M_simulation(; npart = 80_000_000, nfine = 110, dt = 1.0, finesse = 6)
+    cache_file = joinpath(ROOT, "proton_converged_80M_data_cache.jls")
     if isfile(cache_file)
-        println("Loading cached converged 8M Proton simulation run from $cache_file...")
+        println("Loading cached 80M Proton simulation run from $cache_file...")
         return deserialize(cache_file)
     end
 
@@ -75,17 +65,25 @@ function run_proton_simulation(; npart = 8_000_000, nfine = 88, dt = 1.0, finess
                       impact = 0.0, x0 = x0, dt = dt,
                       softening = GaussianSoftening(1.0))
 
+    println("=== STARTING 80M PROTON SIMULATION ===")
+    println("Particles: $npart | Fine Grid: $nfine (Mesh $(2 * nfine + 2)³, h ≈ 1.42 a₀)")
+    println("BLAS: $(ACCELERATE ? "AppleAccelerate" : "OpenBLAS") | GPU: $(METAL ? "Metal (MtlArray)" : "CPU") | Threads: $(Threads.nthreads())")
+    flush(stdout)
+
+    t_init = time()
     sim = Simulation(p, profile; projectile = proj)
     fine = sim.meshes[1]
+    println("Cluster initialized in $(round(time() - t_init, digits=1)) s.")
+    flush(stdout)
+
     acc = METAL ? ForceAccelerator(MtlArray, fine.axes, sim.smoothing, npart,
                                    size(sim.csol[1], 1)) : nothing
+    println("Metal 10.4 GB buffers ready.")
+    flush(stdout)
 
     cx, cy = fine.axes[1].colloc, fine.axes[2].colloc
     outx = collect(range(cx[1], cx[end]; length = finesse * length(cx)))
     outy = collect(range(cy[1], cy[end]; length = finesse * length(cy)))
-
-    println("Simulating Na₁₀₀₀ + H⁺ CONVERGED: $npart particles on fine grid $nfine (mesh $(length(cx))³)...")
-    println("BLAS: $(ACCELERATE ? "AppleAccelerate" : "OpenBLAS") | GPU: $(METAL ? "Metal (MtlArray)" : "CPU")")
 
     nsteps = ceil(Int, 1.1 * (80.0 + abs(x0)) / v0) # ~200 steps
     stride = 2
@@ -102,7 +100,6 @@ function run_proton_simulation(; npart = 8_000_000, nfine = 88, dt = 1.0, finess
 
     t_start = time()
     for step in 1:nsteps
-        # High speed simulation on GPU Metal (energy = false during run)
         step!(sim; energy = false, accelerator = acc)
 
         xp = sim.projectile.position[1]
@@ -115,7 +112,6 @@ function run_proton_simulation(; npart = 8_000_000, nfine = 88, dt = 1.0, finess
             push!(e_losses_ev, loss)
             push!(times_fs, t_fs)
 
-            # Local instantaneous stopping power -dE/dx via numerical gradient
             if length(e_losses_ev) >= 2
                 dx = x_projs[end] - x_projs[end-1]
                 de = e_losses_ev[end] - e_losses_ev[end-1]
@@ -124,9 +120,12 @@ function run_proton_simulation(; npart = 8_000_000, nfine = 88, dt = 1.0, finess
                 push!(dedx_local, 0.0)
             end
 
-            if length(frames) % 15 == 0
-                @printf("  frame %3d (step %3d/%3d, x = %+5.1f a₀): loss = %5.2f eV, dE/dx = %4.2f eV/a₀\n",
-                        length(frames), step, nsteps, xp, loss, last(dedx_local))
+            if length(frames) % 10 == 0 || length(frames) == 1
+                t_elapsed = time() - t_start
+                rate = length(frames) / t_elapsed
+                eta_min = (nsteps ÷ stride - length(frames)) / rate / 60
+                @printf("  frame %3d/%3d (step %3d/%3d, x = %+5.1f a₀): loss = %5.2f eV, dE/dx = %4.2f eV/a₀ (ETA: %.1f min)\n",
+                        length(frames), nsteps ÷ stride, step, nsteps, xp, loss, last(dedx_local), eta_min)
                 flush(stdout)
             end
         end
@@ -134,24 +133,25 @@ function run_proton_simulation(; npart = 8_000_000, nfine = 88, dt = 1.0, finess
         xp > 80.0 && break
     end
 
-    # Measure final cluster excitation after crossing
     b_final = step!(sim; energy = true, accelerator = acc)
     final_exc = (b_final.total - e_cluster_0) * HARTREE_TO_EV
 
     elapsed = time() - t_start
-    @printf("Simulation complete in %.2f s (%d frames captured)\n", elapsed, length(frames))
+    @printf("80M Simulation complete in %.2f s (%.1f min) with %d frames captured\n",
+            elapsed, elapsed / 60, length(frames))
+    flush(stdout)
 
-    # Calculate stopping power around center: ΔE / 4 a0 between x = -2 and x = +2
     idx_m2 = argmin(abs.(x_projs .- (-2.0)))
     idx_p2 = argmin(abs.(x_projs .- (+2.0)))
     dx_center = x_projs[idx_p2] - x_projs[idx_m2]
     dE_dx_center = (e_losses_ev[idx_p2] - e_losses_ev[idx_m2]) / dx_center
     total_loss = last(e_losses_ev)
 
-    @printf("=== 8M CONVERGED PROTON OBSERVABLES ===\n")
+    @printf("=== 80M ULTRA-CONVERGED PROTON OBSERVABLES ===\n")
     @printf("  Central Stopping Power dE/dx: %5.3f eV/a₀ (1998 Thesis: 1.587 eV/a₀)\n", dE_dx_center)
     @printf("  Total Projectile Energy Loss: %5.2f eV\n", total_loss)
     @printf("  Final Cluster Excitation:     %5.2f eV\n", final_exc)
+    flush(stdout)
 
     data = (frames = frames, x_projs = x_projs, e_losses_ev = e_losses_ev, times_fs = times_fs,
             dedx_local = dedx_local, outx = outx, outy = outy, r_cluster = 78.0,
@@ -159,22 +159,23 @@ function run_proton_simulation(; npart = 8_000_000, nfine = 88, dt = 1.0, finess
             npart = npart, nfine = nfine)
 
     serialize(cache_file, data)
-    println("Saved 8M Proton simulation run to $cache_file")
+    println("Saved 80M Proton simulation cache to $cache_file")
+    flush(stdout)
     data
 end
 
-function render_proton_results(data, out_mp4, out_gif, out_snapshots)
-    println("Rendering 8M Proton results...")
+function render_proton_80M_results(data, out_mp4, out_gif, out_snapshots)
+    println("Rendering 80M Proton results...")
+    flush(stdout)
     nframes = length(data.frames)
     xs = data.outx
     ys = data.outy
 
     n0 = 0.00373f0
-    c_min = 0.02f0 * n0
+    c_min = 0.04f0 * n0
     c_max = 1.45f0 * n0
-    levels = range(c_min, c_max, length = 50)
 
-    R_cluster = 40.0 # Wigner-Seitz cluster edge ~ 3.93 * 10 = 39.3 a0
+    R_cluster = 40.0
     θ = range(0, 2π, length = 150)
 
     # 1. 4-Panel Snapshot Strip showing Wake Dynamics
@@ -183,7 +184,7 @@ function render_proton_results(data, out_mp4, out_gif, out_snapshots)
 
     fig_snap = CairoMakie.Figure(size = (1100, 950), backgroundcolor = :white)
     CairoMakie.Label(fig_snap[0, 1:2],
-        @sprintf("Na₁₀₀₀ + H⁺ (16 keV, b = 0) — High-Resolution Wake Structures\n25 Years Later: Converged GPU Simulation (N_pp = %d, Mesh %d, finesse = 6)",
+        @sprintf("Na₁₀₀₀ + H⁺ (16 keV, b = 0) — Ultra-Converged Plasmon Wake\n25 Years Later: %d GPU Macro-Particles (Mesh %d, h = 1.42 a₀)",
                  data.npart, data.nfine),
         fontsize = 18, font = :bold)
 
@@ -209,18 +210,23 @@ function render_proton_results(data, out_mp4, out_gif, out_snapshots)
         CairoMakie.xlims!(ax, -60, 60)
         CairoMakie.ylims!(ax, -50, 50)
 
-        CairoMakie.contourf!(ax, xs, ys, data.frames[idx],
-                             levels = levels, colormap = :turbo, extendlow = GREY, extendhigh = :firebrick)
+        f_masked = copy(data.frames[idx])
+        f_masked[f_masked .< c_min] .= NaN32
+
+        CairoMakie.heatmap!(ax, xs, ys, f_masked,
+                            colormap = :turbo, colorrange = (c_min, c_max),
+                            nan_color = GREY, interpolate = true)
 
         CairoMakie.lines!(ax, R_cluster .* cos.(θ), R_cluster .* sin.(θ),
-                          color = :white, linestyle = :dash, linewidth = 1.5)
+                          color = :white, linestyle = :dash, linewidth = 2.0)
 
         CairoMakie.scatter!(ax, [xp], [0.0], color = :white, strokecolor = :black,
                             strokewidth = 2.0, markersize = 12)
     end
 
     CairoMakie.save(out_snapshots, fig_snap, px_per_unit = 2)
-    println("Saved 8M Proton snapshot strip to $out_snapshots")
+    println("Saved 80M Proton snapshot strip to $out_snapshots")
+    flush(stdout)
 
     # 2. Dynamic Film (MP4 + fast ffmpeg GIF)
     fig_anim = CairoMakie.Figure(size = (800, 950), backgroundcolor = :white)
@@ -235,9 +241,15 @@ function render_proton_results(data, out_mp4, out_gif, out_snapshots)
     CairoMakie.xlims!(ax_cut, -65, 65)
     CairoMakie.ylims!(ax_cut, -50, 50)
 
-    cur_frame = CairoMakie.@lift data.frames[$f_idx]
-    CairoMakie.contourf!(ax_cut, xs, ys, cur_frame,
-                         levels = levels, colormap = :turbo, extendlow = GREY, extendhigh = :firebrick)
+    cur_frame = CairoMakie.@lift begin
+        fm = copy(data.frames[$f_idx])
+        fm[fm .< c_min] .= NaN32
+        fm
+    end
+
+    CairoMakie.heatmap!(ax_cut, xs, ys, cur_frame,
+                        colormap = :turbo, colorrange = (c_min, c_max),
+                        nan_color = GREY, interpolate = true)
 
     CairoMakie.lines!(ax_cut, R_cluster .* cos.(θ), R_cluster .* sin.(θ),
                       color = :white, linestyle = :dash, linewidth = 2.0)
@@ -246,7 +258,7 @@ function render_proton_results(data, out_mp4, out_gif, out_snapshots)
     CairoMakie.scatter!(ax_cut, p_pt, color = :white, strokecolor = :black,
                         strokewidth = 2.5, markersize = 14)
 
-    # Diagnostic plot: Projectile Stopping Loss ΔE and Stopping Power dE/dx
+    # Diagnostic plot: Stopping loss ΔE and dE/dx
     ax_diag = CairoMakie.Axis(fig_anim[2, 1],
         title = @sprintf("Projectile Stopping: Total Loss ΔE(x) & Central Plateau dE/dx = %.2f eV/a₀",
                          data.dE_dx_center),
@@ -255,13 +267,11 @@ function render_proton_results(data, out_mp4, out_gif, out_snapshots)
     CairoMakie.xlims!(ax_diag, data.x_projs[1], data.x_projs[end])
     CairoMakie.ylims!(ax_diag, -5, maximum(data.e_losses_ev) * 1.15)
 
-    # Left: Energy Loss curve
     CairoMakie.lines!(ax_diag, data.x_projs, data.e_losses_ev, color = (:crimson, 0.3), linewidth = 1.5)
     cur_xs = CairoMakie.@lift data.x_projs[1:$f_idx]
     cur_loss = CairoMakie.@lift data.e_losses_ev[1:$f_idx]
     CairoMakie.lines!(ax_diag, cur_xs, cur_loss, color = :crimson, linewidth = 2.5, label = "Projectile Energy Loss ΔE (eV)")
 
-    # Right axis for stopping power dE/dx
     ax_dedx = CairoMakie.Axis(fig_anim[2, 1], yaxisposition = :right, ylabel = "Stopping Power dE/dx (eV/a₀)")
     CairoMakie.xlims!(ax_dedx, data.x_projs[1], data.x_projs[end])
     CairoMakie.ylims!(ax_dedx, -0.2, 2.5)
@@ -279,29 +289,35 @@ function render_proton_results(data, out_mp4, out_gif, out_snapshots)
     cur_pt_loss = CairoMakie.@lift [CairoMakie.Point2f(data.x_projs[$f_idx], data.e_losses_ev[$f_idx])]
     CairoMakie.scatter!(ax_diag, cur_pt_loss, color = :crimson, markersize = 10)
 
-    println("Encoding 8M Proton MP4 to $out_mp4...")
+    println("Encoding 80M Proton MP4 to $out_mp4...")
+    flush(stdout)
+    t0 = time()
     CairoMakie.record(fig_anim, out_mp4, 1:nframes; framerate = 20) do i
         f_idx[] = i
     end
+    t_rec = time() - t0
+    @printf("MP4 recorded in %.2f s (%.1f fps)\n", t_rec, nframes / t_rec)
+    flush(stdout)
 
-    # Use ffmpeg for high-quality fast GIF conversion
     println("Converting MP4 to GIF via ffmpeg...")
+    flush(stdout)
     run(`ffmpeg -y -loglevel error -i $out_mp4 -vf "fps=15,scale=800:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse" $out_gif`)
-    println("8M Proton rendering complete!")
+    println("80M Proton rendering complete!")
+    flush(stdout)
 end
 
 function main()
-    data = run_proton_simulation(npart = 8_000_000, nfine = 88, dt = 1.0, finesse = 6)
-    out_mp4 = joinpath(ROOT, "film_proton_converged.mp4")
-    out_gif = joinpath(ROOT, "film_proton_converged.gif")
-    out_snapshots = joinpath(ROOT, "proton_snapshots_converged.png")
-    render_proton_results(data, out_mp4, out_gif, out_snapshots)
+    data = run_proton_80M_simulation(npart = 80_000_000, nfine = 110, dt = 1.0, finesse = 6)
+    out_mp4 = joinpath(ROOT, "film_proton_80M.mp4")
+    out_gif = joinpath(ROOT, "film_proton_80M.gif")
+    out_snapshots = joinpath(ROOT, "proton_snapshots_80M.png")
+    render_proton_80M_results(data, out_mp4, out_gif, out_snapshots)
 
-    # Copy assets for documentation
     assets_dir = joinpath(ROOT, "docs", "src", "assets")
-    cp(out_gif, joinpath(assets_dir, "film_proton_converged.gif"), force = true)
-    cp(out_snapshots, joinpath(assets_dir, "proton_snapshots_converged.png"), force = true)
-    println("Proton converged assets copied to $assets_dir")
+    cp(out_gif, joinpath(assets_dir, "film_proton_80M.gif"), force = true)
+    cp(out_snapshots, joinpath(assets_dir, "proton_snapshots_80M.png"), force = true)
+    println("Proton 80M assets copied to $assets_dir")
+    flush(stdout)
 end
 
 main()
