@@ -1409,4 +1409,54 @@ end
         @test maximum(abs, ρ .- ρref) / maximum(abs, ρref) < 1e-14
         @test total_charge(ρ, mesh) ≈ npart - nout rtol = 1e-12
     end
+
+    @testset "Generic accelerator on CPU()" begin
+        npart = 4_000
+        ax = uniform_axis(-78.0, 78.0, 44)
+        cax = uniform_axis(-235.0, 235.0, 20)
+        sm = GaussianSmoothing(ax)
+        mesh = SplineMesh(ax, ax, ax)
+        n, ncb = nbasis(ax), nbasis(cax)
+        w = 196 / npart
+        # A tenth deliberately outside the fine grid, to exercise the fallback.
+        pos = map(1:npart) do i
+            r = i % 10 == 0 ? 95.0 : 50.0
+            (r * cospi(0.021i), r * sinpi(0.013i), 0.8r * sinpi(0.031i))
+        end
+        csolf = [1e-3 * sinpi(0.01i + 0.02j + 0.03k) for i in 1:n, j in 1:n, k in 1:n]
+        csolc = [1e-4 * cospi(0.02i + 0.01j + 0.03k)
+                 for i in 1:ncb, j in 1:ncb, k in 1:ncb]
+
+        acc = DeviceAccelerator(CPU(), Float64, (ax, ax, ax), sm, npart, n)
+
+        ρref = zeros(n, n, n)
+        nref = deposit_smoothed!(ρref, mesh, sm, pos; charge = w)
+        ρacc = zeros(n, n, n)
+        nacc = deposit_smoothed!(ρacc, acc, mesh, sm, pos; charge = w)
+        @test nacc == nref
+        @test maximum(abs, ρacc .- ρref) / maximum(abs, ρref) < 1e-14
+        @test total_charge(ρacc, mesh) ≈ total_charge(ρref, mesh) rtol = 1e-12
+
+        c1 = ParticleCloud(pos, w)
+        c2 = ParticleCloud(pos, w)
+        forces!(c1, (ax, ax, ax), csolf, (cax, cax, cax), csolc, sm)
+        forces!(c2, acc, (ax, ax, ax), csolf, (cax, cax, cax), csolc, sm)
+
+        # ⚠️ The two paths do not classify boundary particles alike, and never
+        # have: `forces!` on the CPU asks whether the **position** clears a
+        # two-knot margin, the kernel whether the 10³ **stencil** fits. So they
+        # are compared where both chose the smoothed fine-grid field — and
+        # there they must agree exactly, `Float64` on both sides.
+        h = (ax.knots[end] - ax.knots[1]) / (length(ax.knots) - 1)
+        lo, hi = ax.knots[3], ax.knots[end-2]
+        both = map(1:npart) do i
+            p = pos[i]
+            cpu = all(d -> lo < p[d] < hi, 1:3)
+            k = ntuple(d -> clamp(round(Int, (p[d] - ax.knots[1]) / h) + 1,
+                                  1, length(ax.knots)), 3)
+            cpu && all(d -> 2k[d] - 5 >= 1 && 2k[d] + 4 <= n, 1:3)
+        end
+        @test count(both) > 0.8npart
+        @test all(c1.forces[i] === c2.forces[i] for i in 1:npart if both[i])
+    end
 end
