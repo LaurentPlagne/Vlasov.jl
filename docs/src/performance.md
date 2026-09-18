@@ -37,6 +37,35 @@ BLAS switch is reversible, so the whole comparison table below was taken by
 interleaving configurations inside one process rather than comparing the moods
 of two.
 
+**A profile made of stages you cut yourself only shows what you thought to
+measure.** The ten stages below close at 100 % of the step and look complete.
+The driver's own per-kernel enumeration — `Metal.@profile` — found, in the same
+step, that the **GPU was idle 61 % of the time**, and that 49.6 ms went to eight
+broadcast kernels no stage of mine accounted for separately. Neither is visible
+to a sum of stage durations, because such a sum never asks what the GPU was
+doing while the host worked. See [Profiling a kernel](@ref) below.
+
+### Roofs of the machine, measured
+
+Percentages of "peak" mean nothing against a datasheet. These are what the
+hardware actually delivered on an M1 Max, and the denominators every ratio in
+this page uses:
+
+| | measured | datasheet |
+|---|---:|---:|
+| device stream (`c = a + b`, 256 MB arrays) | **336 GB/s** | 400 |
+| host stream (threaded copy, 10 cores) | **171 GB/s** | — |
+| scattered `Float32` atomics | **4.0 G/s** | — |
+| square GEMM, 4096³ | **8849 GFLOP/s** | 10 400 |
+| GEMM in the tensor solver's shape, 65536×256×256 | **2833 GFLOP/s** | — |
+
+Two of these are results in themselves. The solver's rectangular shape costs
+**×3.1** against a square GEMM on the same machine — and only 12 % of that is
+the transposition, the rest is the shape. And the stream roof must be measured
+on a **large** array: taken on a 258³ cube (68 MB) it reads 127 GB/s, low enough
+that a kernel of this code appeared to exceed it by 17 %. A roof you go through
+is not a roof.
+
 ## Where the time goes
 
 Na₁₀₀₀, 800 000 particles, one step. The last column says how each stage
@@ -245,6 +274,56 @@ brings them to 28.4 and puts deposition in front.
 Not on the list: **GEMMs on the GPU**. Accelerate already runs them in `Float64`
 at 400–470 GFLOPS, which the GPU cannot do at all, and they are 1.7 ms per
 solve.
+
+## Profiling a kernel
+
+Stage timing says *how long*; it never says *why*. Two levels go further, and
+both work from the command line.
+
+**Per-kernel, no Xcode.** The driver enumerates its own dispatches:
+
+```julia
+show(stdout, MIME("text/plain"), Metal.@profile onestep!())
+```
+
+The `show` is not optional outside a REPL — a bare expression prints nothing and
+yields an empty table without saying so. And **MPS does not appear**: the GEMMs
+submit their own command buffers, so Poisson and the spline coefficients are
+missing from the table by construction, not by accident.
+
+**Hardware counters.** `xctrace` records Apple's *Performance Limiters* set —
+`Compute Occupancy`, `ALU Limiter`, `Buffer Read/Write Limiter`,
+`Threadgroup/Imageblock Load/Store Limiter`, `GPU Last Level Cache Limiter`,
+`MMU TLB Miss Rate`, and the read/write bandwidths:
+
+```
+xcrun xctrace list templates                          # "Metal System Trace"
+xcrun xctrace record --template "Metal System Trace" \
+     --instrument "Metal GPU Counters" --no-prompt \
+     --output t.trace --attach <pid> --time-limit 45s
+xcrun xctrace export --input t.trace --toc
+xcrun xctrace export --input t.trace \
+     --xpath '/trace-toc/run[@number="1"]/data/table[@schema="gpu-counter-value"]'
+```
+
+Three things cost an hour each, so they are written down:
+
+  * **`--attach`, never `--launch`.** Recording from launch captures the 50 s of
+    construction as well; at 8×10⁷ particles that is 50 million counter samples
+    and a **7.6 GB** XML export, none of it about the kernels.
+  * **The export compresses by reference.** A value is written once as
+    `id="N"`, and every repetition is `<process ref="5"/>`. So
+    `grep 'fmt="9239"'` matches only the *first* row — the pid, the counter id
+    and the timestamp all have to be resolved through their references.
+  * **Do not attribute samples to kernels after the fact.** Run **one kernel per
+    phase**, seconds long, separated by GPU silence; then every sample in a
+    phase belongs to that kernel, and the idle troughs mark the boundaries.
+
+Ablation — remove a piece, measure again — gives the *gain* but never the
+*cause*. It is what found that the projectile's tree reduction was worth 227 ms
+of [`_smoothed_field_kernel!`](@ref); the conclusion that occupancy was
+responsible was an inference from the fact that a smaller group won, not a
+measurement. Counters name the limiter instead of guessing it.
 
 ## Reproducing the measurements
 
