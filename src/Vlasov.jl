@@ -6,6 +6,7 @@ using SpecialFunctions: erf
 using KernelAbstractions
 using KernelAbstractions: get_backend, synchronize
 using Adapt: Adapt, adapt
+using Atomix: Atomix
 
 include("threading.jl")
 include("random.jl")
@@ -19,6 +20,7 @@ include("particles.jl")
 include("fields.jl")
 include("sorting.jl")
 include("gpu.jl")
+include("kernels.jl")
 include("meanfield.jl")
 include("initial.jl")
 include("energy.jl")

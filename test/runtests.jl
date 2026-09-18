@@ -2,6 +2,7 @@ using Vlasov
 using LinearAlgebra
 using Test
 import SpecialFunctions
+using KernelAbstractions: CPU, synchronize
 
 """Non-uniform test grid, in the spirit of the original code's."""
 function testaxis(n = 8; L = 1.0)
@@ -1313,5 +1314,99 @@ end
         # A non-real spectrum must be refused rather than silently truncated.
         rot = [0.0 -1.0; 1.0 0.0]
         @test_throws ArgumentError DiagonalizedOperator(rot)
+    end
+
+    # The kernels that carry the particle loops are written once, for every
+    # backend. Run here on `CPU()` and in `Float64`, they can be held against
+    # the scalar reference — which is the comparison no GPU can make, Metal
+    # having no double precision.
+    @testset "Portable particle kernels" begin
+        npart = 5_000
+        ax = uniform_axis(-78.0, 78.0, 44)
+        sm = GaussianSmoothing(ax)
+        mesh = SplineMesh(ax, ax, ax)
+        n = nbasis(ax)
+        knots = ax.knots
+        nk = length(knots)
+        h = (knots[end] - knots[1]) / (nk - 1)
+        x0 = knots[1]
+        backend = CPU()
+
+        # Deterministic, and well inside: the stencils all fit, so what is
+        # under test is the arithmetic and not the boundary fallback.
+        pos = [(50cospi(0.021i), 50sinpi(0.013i), 45sinpi(0.031i)) for i in 1:npart]
+        csol = [1e-3 * sinpi(0.01i + 0.02j + 0.03k) for i in 1:n, j in 1:n, k in 1:n]
+
+        # --- packing --------------------------------------------------------
+        knode = Matrix{Int32}(undef, 3, npart)
+        delta = Matrix{Float64}(undef, 3, npart)
+        Vlasov._pack_kd_kernel!(backend)(knode, delta, pos, x0, h, Int32(nk);
+                                         ndrange = npart)
+        synchronize(backend)
+        @test all(knode[d, i] == Vlasov.nearest_knot(knots, pos[i][d])
+                  for i in 1:npart, d in 1:3)
+        # ⚠️ The offset is taken from the knot **recomputed** as `x0 + (k−1)h`,
+        # not from `knots[k]`. On a uniform axis the two agree mathematically,
+        # and differ in the last bits because `knots` came out of a `range`.
+        # The Fortran port did the same, and `δ` feeds a table column whose
+        # width is thirty thousand times that difference.
+        @test all(delta[d, i] == pos[i][d] - (x0 + (knode[d, i] - 1) * h)
+                  for i in 1:npart, d in 1:3)
+        @test maximum(abs(delta[d, i] - (pos[i][d] - knots[knode[d, i]]))
+                      for i in 1:npart, d in 1:3) < 1e-12
+
+        # --- smoothed field: must reproduce `smoothed_field` exactly ---------
+        force = zeros(Float64, 3, npart)
+        red = zeros(Float64, 4)
+        w = 0.245
+        GS = Vlasov.FIELD_GROUPSIZE
+        Vlasov._smoothed_field_kernel!(backend, GS)(
+            force, csol, sm.overlap, sm.gradient, knode, delta, x0, h,
+            sm.spacing, Int32(sm.nbdt), w, Int32(size(sm.overlap, 2)),
+            Int32(npart), 0.0, 0.0, 0.0, 0.0, 1.0, red;
+            ndrange = cld(npart, GS) * GS)
+        synchronize(backend)
+        @test !any(isnan, force)
+        @test all(Tuple(force[:, i]) === w .* smoothed_field((ax, ax, ax), csol, sm, pos[i])
+                  for i in 1:npart)
+
+        # --- deposition: sorted, one group per occupied cell -----------------
+        sorter = CellSort(ax, npart)
+        cellsort!(sorter, pos)
+        ncell = length(sorter.occupied)
+        half = sm.spacing / 2
+        lo, hi = knots[2] + half, knots[end-1] - half
+        ncol = size(sm.nodes, 2)
+        cols = Matrix{Int32}(undef, 3, npart)
+        nout = 0
+        for s in 1:npart
+            i = sorter.perm[s]
+            p = pos[i]
+            if all(d -> lo <= p[d] <= hi, 1:3)
+                for d in 1:3
+                    cols[d, s] = clamp(floor(Int32, (delta[d, i] + half) / sm.spacing *
+                                             sm.nbdt + 0.5) + Int32(1),
+                                       Int32(1), Int32(ncol))
+                end
+            else
+                cols[1, s] = cols[2, s] = cols[3, s] = Int32(1)
+                nout += 1
+            end
+        end
+
+        ρ = zeros(Float64, n, n, n)
+        DGS = Vlasov.DEPOSIT_GROUPSIZE
+        Vlasov._deposit_sorted_kernel!(backend, DGS)(
+            ρ, sm.nodes, cols, sorter.occupied, sorter.bounds, Int32(nk);
+            ndrange = ncell * DGS)
+        synchronize(backend)
+        ρ .*= (npart - nout) / total_charge(ρ, mesh)
+
+        ρref = zeros(Float64, n, n, n)
+        noutref = deposit_smoothed!(ρref, mesh, sm, pos; charge = 1.0)
+        @test nout == noutref
+        # Only the order of summation differs from the reference.
+        @test maximum(abs, ρ .- ρref) / maximum(abs, ρref) < 1e-14
+        @test total_charge(ρ, mesh) ≈ npart - nout rtol = 1e-12
     end
 end
