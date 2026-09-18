@@ -29,8 +29,39 @@ GPUs have no double precision — and may be `Float64` on CUDA or ROCm. Only the
 packing below is exempt, and deliberately so.
 """
 
-"""Work-items per group for [`_smoothed_field_kernel!`](@ref)."""
-const FIELD_GROUPSIZE = 256
+"""
+Work-items per group for [`_smoothed_field_kernel!`](@ref).
+
+⚠️ **64, and the value matters far more than one would expect** — it is worth a
+quarter of the kernel.
+
+The group size is not a tuning knob here: it sets the *depth of the tree
+reduction* that commits the projectile's reaction, and the size of the
+threadgroup buffer that reduction needs. At 256 the reduction costs eight rounds
+of barrier over 4 KB of `@localmem`; at 64 it costs six over 1 KB, and the
+occupancy that buys pays for the rest.
+
+Measured on the real cloud, 8×10⁷ particles on a 258³ grid:
+
+| group | projectile | reduction | ms |
+|---|---|---|---|
+| 256 | yes | yes | 860.5 |
+| 256 | yes | no | 633.1 |
+| 256 | no | no | 607.5 |
+| **64** | **yes** | **yes** | **632.9** |
+| 128 | yes | yes | 742.6 |
+| 32 | yes | yes | 756.7 |
+
+So at 64 the whole projectile — its `exp`, its `sqrt`, its `erf` **and** its
+reduction — costs 25 ms over a kernel that does none of it, where at 256 it cost
+253. Below 64 it turns again: four times as many groups means four times as many
+atomics onto `red`, and too few work-items to hide the contraction's latency.
+
+⚠️ The contraction is register-hungry enough that Metal refuses 512 work-items
+outright ("should not exceed 448"), which is the same story seen from the other
+side.
+"""
+const FIELD_GROUPSIZE = 64
 
 """Work-items per group for [`_deposit_sorted_kernel!`](@ref): the 8³ stencil."""
 const DEPOSIT_GROUPSIZE = 512
