@@ -368,20 +368,25 @@ Fortran's `makerhsf`).
 This is the whole inter-level junction: of the outside world, the fine grid sees
 only what the coarse one tells it at its boundary.
 """
-function boundary_from_coarse!(φ::Array{T,3}, mesh::SplineMesh{3,T},
-                               coarse::SplineMesh{3,T}, csol_coarse::Array{T,3}) where {T}
-    gx, gy, gz = map(ax -> ax.colloc, mesh.axes)
+function _boundary_from_coarse!(φ::AbstractArray{T,3}, csol_coarse, coarse_knots,
+                                colloc) where {T}
+    gx, gy, gz = colloc
+    kx, ky, kz = coarse_knots
     nx, ny, nz = length(gx), length(gy), length(gz)
     fill!(φ, zero(T))
-    foreach_face(nx, ny, nz) do i, j, k
-        p = spline_potential(coarse.axes, csol_coarse, (gx[i], gy[j], gz[k]))
-        p === nothing && throw(ArgumentError(
-            "the boundary point ($(gx[i]), $(gy[j]), $(gz[k])) lies outside the " *
-            "coarse grid: the levels are not nested"))
-        @inbounds φ[i, j, k] = p
-    end
+    backend = get_backend(φ)
+    _boundary_from_coarse_kernel!(backend)(φ, csol_coarse, kx, ky, kz, gx, gy, gz,
+                                           Int32(nx), Int32(ny), Int32(nz);
+                                           ndrange = nface(nx, ny, nz))
+    synchronize(backend)
     φ
 end
+
+boundary_from_coarse!(φ::AbstractArray{T,3}, mesh::SplineMesh{3,T},
+                      coarse::SplineMesh{3,T},
+                      csol_coarse::AbstractArray{T,3}) where {T} =
+    _boundary_from_coarse!(φ, csol_coarse, map(a -> a.knots, coarse.axes),
+                           map(ax -> ax.colloc, mesh.axes))
 
 """Allocating version of [`poisson!`](@ref)."""
 poisson(ρ::Array{T,3}, mesh::SplineMesh{3,T}) where {T} = poisson!(similar(ρ), ρ, mesh)

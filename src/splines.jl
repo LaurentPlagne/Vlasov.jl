@@ -83,25 +83,32 @@ end
     kind === Value ? 6 * (1 - 2a) / h^2 : (2 - 6a) * σ / h
 end
 
+#
+# These four take the **knots**, not the axis. They read nothing else, and
+# saying so is what lets them run inside a kernel over a device vector — without
+# `SplineAxis`, and everything that holds one, having to gain a type parameter
+# for the sake of it. The methods on `SplineAxis` below are one-line forwards.
+#
+
 """
-    support(ax, b) -> (xmin, xmax)
+    support(knots, b) -> (xmin, xmax)
 
 Bounds of the support of the basis function `b`.
 """
-function support(ax::SplineAxis, b::BasisIndex)
-    g, n = ax.knots, nknots(ax)
+function support(g::AbstractVector, b::BasisIndex)
+    n = length(g)
     lo = b.knot > 1 ? g[b.knot-1] : g[1]
     hi = b.knot < n ? g[b.knot+1] : g[n]
     (lo, hi)
 end
 
 """
-    localcoords(ax, b, x) -> (a, h, σ) or `nothing`
+    localcoords(knots, b, x) -> (a, h, σ) or `nothing`
 
 Reduced coordinate of `x` within the support of `b`, or `nothing` outside it.
 """
-@inline function localcoords(ax::SplineAxis{T}, b::BasisIndex, x) where {T}
-    g, n, k = ax.knots, nknots(ax), b.knot
+@inline function localcoords(g::AbstractVector{T}, b::BasisIndex, x) where {T}
+    n, k = length(g), b.knot
     if k > 1 && x <= g[k]          # left half-support, oriented σ = -1
         x < g[k-1] && return nothing
         h = g[k] - g[k-1]
@@ -115,13 +122,13 @@ Reduced coordinate of `x` within the support of `b`, or `nothing` outside it.
 end
 
 """
-    evaluate(ax, b, x, Val(D)) -> NTuple{D+1}
+    evaluate(knots, b, x, Val(D)) -> NTuple{D+1}
 
 Value of the basis function `b` at `x` and its first `D` derivatives. Returns
 zeros outside the support.
 """
-@inline function evaluate(ax::SplineAxis{T}, b::BasisIndex, x, ::Val{D}) where {T,D}
-    loc = localcoords(ax, b, x)
+@inline function evaluate(g::AbstractVector{T}, b::BasisIndex, x, ::Val{D}) where {T,D}
+    loc = localcoords(g, b, x)
     loc === nothing && return ntuple(_ -> zero(T), Val(D + 1))
     a, h, σ = loc
     ntuple(Val(D + 1)) do d
@@ -132,7 +139,12 @@ zeros outside the support.
 end
 
 """Value of the basis function `b` at `x`."""
-@inline value(ax::SplineAxis, b::BasisIndex, x) = evaluate(ax, b, x, Val(0))[1]
+@inline value(g::AbstractVector, b::BasisIndex, x) = evaluate(g, b, x, Val(0))[1]
+
+support(ax::SplineAxis, b::BasisIndex) = support(ax.knots, b)
+@inline localcoords(ax::SplineAxis, b::BasisIndex, x) = localcoords(ax.knots, b, x)
+@inline evaluate(ax::SplineAxis, b::BasisIndex, x, v::Val) = evaluate(ax.knots, b, x, v)
+@inline value(ax::SplineAxis, b::BasisIndex, x) = value(ax.knots, b, x)
 
 # ---------------------------------------------------------------------------
 # Building an axis

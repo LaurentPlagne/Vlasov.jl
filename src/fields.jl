@@ -338,20 +338,21 @@ Returns `nothing` outside the domain.
 Used at the inter-grid junction: the fine grid's boundary values are read from
 the coarse grid's solution.
 """
-function spline_potential(axes::NTuple{3,SplineAxis{T}}, csol::Array{T,3}, p) where {T}
+function spline_potential(knots::NTuple{3,<:AbstractVector}, csol, p)
+    T = eltype(csol)
     # ⚠️ The three out-of-domain tests come BEFORE any construction:
     # `cell_index` returns `Union{Nothing,Int}`, and letting that union into an
     # `ntuple` propagates it to everything downstream. Inference fails, the
     # tuples are boxed, and evaluating one point goes from 20 ns to 20 µs.
-    cx = cell_index(axes[1].knots, p[1])
-    cy = cell_index(axes[2].knots, p[2])
-    cz = cell_index(axes[3].knots, p[3])
+    cx = cell_index(knots[1], p[1])
+    cy = cell_index(knots[2], p[2])
+    cz = cell_index(knots[3], p[3])
     (cx === nothing || cy === nothing || cz === nothing) && return nothing
     cells = (cx, cy, cz)
 
     vals = ntuple(3) do d
         c = cells[d]
-        ntuple(a -> value(axes[d], BasisIndex(2 * (c - 1) + a), p[d]), 4)
+        ntuple(a -> value(knots[d], BasisIndex(2 * (c - 1) + a), p[d]), 4)
     end
 
     φ = zero(T)
@@ -367,6 +368,9 @@ function spline_potential(axes::NTuple{3,SplineAxis{T}}, csol::Array{T,3}, p) wh
     end
     φ
 end
+
+spline_potential(axes::NTuple{3,SplineAxis{T}}, csol::AbstractArray{T,3}, p) where {T} =
+    spline_potential(map(a -> a.knots, axes), csol, p)
 
 """
     forces!(cloud, fine, csol_fine, coarse, csol_coarse, sm; escaped) -> Int

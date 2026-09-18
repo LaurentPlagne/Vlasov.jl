@@ -1410,6 +1410,24 @@ end
         @test total_charge(ρ, mesh) ≈ npart - nout rtol = 1e-12
     end
 
+    # `_face_point` inverts the enumeration `foreach_face` performs: rather than
+    # sweeping the volume and rejecting the interior, it sends a work-item index
+    # straight to a surface point. The two must agree exactly — which is what
+    # keeps `foreach_face` in the file: it is the oracle for that arithmetic.
+    @testset "Surface enumeration" begin
+        for (nx, ny, nz) in ((3, 4, 5), (5, 6, 7), (8, 8, 8), (134, 134, 134))
+            ref = Set{NTuple{3,Int}}()
+            Vlasov.foreach_face(nx, ny, nz) do i, j, k
+                push!(ref, (i, j, k))
+            end
+            n = Vlasov.nface(nx, ny, nz)
+            got = Set(Int.(Vlasov._face_point(Int32(t), Int32(nx), Int32(ny),
+                                              Int32(nz))) for t in 1:n)
+            @test length(ref) == n      # no point visited twice
+            @test got == ref
+        end
+    end
+
     @testset "Generic accelerator on CPU()" begin
         npart = 4_000
         ax = uniform_axis(-78.0, 78.0, 44)

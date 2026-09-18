@@ -419,3 +419,28 @@ it is `isbits` and needs no buffer of its own.
     i, j, k = _face_point(Int32(t), nx, ny, nz)
     @inbounds φ[i, j, k] = potential(mp, gx[i], gy[j], gz[k])
 end
+
+"""
+Dirichlet values read from a coarser grid's solution, onto the faces of a finer
+one — the inter-grid junction.
+
+Same inverted enumeration as [`_boundary_potential_kernel!`](@ref), and the same
+reason for it.
+
+⚠️ A point outside the coarse grid writes `NaN` rather than raising. That case
+is impossible by construction — `NestedMeshes` refuses at build time a level
+that sticks out of the one above it — and a per-point check inside a kernel, for
+a condition the type system already guarantees, is exactly what one does not put
+there. The `NaN` is the visible trace should that guarantee ever be broken.
+"""
+@kernel function _boundary_from_coarse_kernel!(φ, @Const(csol),
+                                               @Const(kx), @Const(ky), @Const(kz),
+                                               @Const(gx), @Const(gy), @Const(gz),
+                                               nx, ny, nz)
+    t = @index(Global, Linear)
+    i, j, k = _face_point(Int32(t), nx, ny, nz)
+    @inbounds begin
+        v = spline_potential((kx, ky, kz), csol, (gx[i], gy[j], gz[k]))
+        φ[i, j, k] = v === nothing ? eltype(φ)(NaN) : v
+    end
+end
