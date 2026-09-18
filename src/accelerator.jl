@@ -44,13 +44,75 @@ function dual_buffer(backend, ::Type{T}, dims::Integer...) where {T}
     d isa Array ? DualBuffer(d, d, true) : DualBuffer(d, zeros(T, dims...), false)
 end
 
-"""Host → device. A no-op when the two are the same memory."""
+"""Host → device. The copy is a no-op when the two are the same memory."""
 upload!(b::DualBuffer) = (b.shared || copyto!(b.device, b.host); b)
 
-"""Device → host. A no-op when the two are the same memory."""
-download!(b::DualBuffer) = (b.shared || copyto!(b.host, b.device); b)
+"""
+    download!(b, backend)
+
+Device → host, and **a synchronisation point in every case**.
+
+⚠️ The backend argument is not decoration. On unified memory the copy is a
+no-op, so a `download!` that only copied would order nothing — and the host
+would read buffers the device had not finished writing. That bug is silent and
+looks like a wrong physical result: caught here as a density that integrated to
+the raw particle count, the scaling kernel not having run yet.
+
+So the synchronisation comes first and unconditionally, and the copy happens
+only where the memories are distinct.
+"""
+function download!(b::DualBuffer, backend)
+    synchronize(backend)
+    b.shared || copyto!(b.host, b.device)
+    b
+end
 
 Base.length(b::DualBuffer) = length(b.device)
+
+"""
+    DeviceGrid
+
+Device-side companion to a [`SplineMesh`](@ref): the tables the kernels read,
+copied once, in the kernels' own precision.
+
+A mesh **describes a discretisation**; it is not itself computational data. It
+holds banded factorisations, locator tables and an eigenbasis — none of which
+belong on a GPU, and each of which would need a ruling of its own were the mesh
+made adaptable wholesale. So the few tables the kernels actually touch are
+copied here instead, and the mesh stays what it is.
+
+It grows as functions move across: for now, what the charge reduction needs.
+"""
+struct DeviceGrid{E,V,M}
+    "`∫φ` per direction, already carrying `S⁻ᵀ` — see `SplineMesh.dual_moments`."
+    moments0::NTuple{3,V}
+    "Scratch for the reduction: ten rows, one column per `(j,k)` pair."
+    partials::M
+end
+
+"""
+    DeviceGrid(backend, E, fine_axes, n)
+
+Built from the axes, not from a mesh: the accelerator is handed axes, and the
+two moment vectors it needs follow from [`dual_moments`](@ref). The collocation
+matrices are rebuilt here to get them — a factorisation of a few hundred rows,
+paid once at setup.
+"""
+function DeviceGrid(backend, ::Type{E}, fine::NTuple{3,SplineAxis{T}},
+                    n::Integer) where {E,T}
+    function dev(x)
+        a = KernelAbstractions.zeros(backend, E, size(x)...)
+        copyto!(a, E.(x))
+        a
+    end
+    m0 = map(ax -> dev(dual_moments(CollocationMatrices(ax))[1]), fine)
+    partials = dev(zeros(T, 10, n * n))
+    DeviceGrid{E,eltype(m0),typeof(partials)}(m0, partials)
+end
+
+"""Charge of a density already on the device, read through its companion."""
+total_charge(ρ::AbstractArray, g::DeviceGrid) =
+    _total_charge(ρ, g.moments0, g.partials)
 
 """
 Tables and buffers held for the whole run.
@@ -61,8 +123,10 @@ cost their price, they trigger a collection that stops every thread.
 `E` is the element type the kernels work in — `Float32` on Metal, which has no
 double precision, and `Float64` wherever the hardware offers it.
 """
-struct DeviceAccelerator{E,T,B,BC,BF,BR,BI,BU,BX,C} <: ForceAccelerator
+struct DeviceAccelerator{E,T,B,G,BC,BF,BR,BI,BU,BX,C} <: ForceAccelerator
     backend::B
+    "Tables of the fine mesh, device-side — see [`DeviceGrid`](@ref)."
+    grid::G
     csol::BC
     rho::BC
     force::BF
@@ -124,6 +188,7 @@ function DeviceAccelerator(backend, ::Type{E}, fine::NTuple{3,SplineAxis{T}},
     end
     DeviceAccelerator(
         backend,
+        DeviceGrid(backend, E, fine, n),
         dual_buffer(backend, E, n, n, n),      # csol
         dual_buffer(backend, E, n, n, n),      # rho
         dual_buffer(backend, E, 3, npart),     # force
@@ -181,7 +246,7 @@ function _fill_columns!(acc::DeviceAccelerator{E,T}, mesh, sm, positions) where 
         acc.spacing, acc.nbdt, acc.ncol, acc.nout.device; ndrange = acc.npart)
     synchronize(acc.backend)
 
-    download!(acc.nout)
+    download!(acc.nout, acc.backend)
     Int(acc.nout.host[1])
 end
 
@@ -203,9 +268,13 @@ function deposit_smoothed!(ρ::AbstractArray{T,3}, acc::DeviceAccelerator{E,T},
         acc.bounds.device, Int32(acc.sorter.nknots); ndrange = ncell * DEPOSIT_GROUPSIZE)
     synchronize(acc.backend)
 
-    download!(acc.rho)
+    # Reduction and scaling stay on the device. What came back to the host
+    # before was the reduction plus two full passes over the n³ grid — 4.0 ms
+    # of the 33 the deposition takes, at 2×10⁶ particles on Metal.
+    q = total_charge(acc.rho.device, acc.grid)
+    acc.rho.device .*= E((length(positions) - nout) * charge / q)
+    download!(acc.rho, acc.backend)
     ρ .= acc.rho.host
-    ρ .*= (length(positions) - nout) * charge / total_charge(ρ, mesh)
     nout
 end
 
@@ -235,7 +304,7 @@ function forces!(cloud::ParticleCloud{T}, acc::DeviceAccelerator{E,T},
         pp[1], pp[2], pp[3], coef, σ, acc.reduction.device;
         ndrange = cld(npart, FIELD_GROUPSIZE) * FIELD_GROUPSIZE)
     synchronize(acc.backend)
-    download!(acc.force); download!(acc.reduction)
+    download!(acc.force, acc.backend); download!(acc.reduction, acc.backend)
 
     # The particles whose stencil overflowed the grid come back on the host:
     # they are rare, and branching on them in the kernel is exactly what one

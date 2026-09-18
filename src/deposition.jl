@@ -220,6 +220,25 @@ return `N`, up to the accuracy of the interpolation.
     end
 end
 
+"""
+    _total_charge(ρ, (px, py, pz), partials) -> T
+
+The charge itself, given the tables rather than the mesh that holds them.
+
+Split out so that the same kernel serves a host mesh and a device companion:
+`ρ`, the moment vectors and the scratch must simply live on the same backend,
+and where that is is no business of this function's.
+"""
+function _total_charge(ρ::AbstractArray, moments, partials)
+    px, py, pz = moments
+    nx, ny, nz = size(ρ)
+    njk = ny * nz
+    backend = get_backend(ρ)
+    _total_charge_kernel!(backend)(partials, ρ, px, py, pz, nx, ny; ndrange = njk)
+    synchronize(backend)
+    sum(@view partials[1, 1:njk])
+end
+
 function total_charge(ρ::AbstractArray{T,3}, mesh::SplineMesh{3,T}) where {T}
     # As for `multipole`: the dual moments carry `S⁻ᵀ`, so the density
     # contracts as it stands and its coefficients need never be formed.
@@ -229,12 +248,5 @@ function total_charge(ρ::AbstractArray{T,3}, mesh::SplineMesh{3,T}) where {T}
     # **gain** here, not a concession. It does shift the last bits — the factor
     # `py·pz` now leaves the loop over `i` — by 1.6e-12 relative, an order of
     # magnitude under what the deposition asks of it.
-    px, py, pz = map(m -> m[1], mesh.dual_moments)
-    nx, ny, nz = size(ρ)
-    njk = ny * nz
-    partials = mesh.moment_partials
-    backend = get_backend(ρ)
-    _total_charge_kernel!(backend)(partials, ρ, px, py, pz, nx, ny; ndrange = njk)
-    synchronize(backend)
-    sum(@view partials[1, 1:njk])
+    _total_charge(ρ, map(m -> m[1], mesh.dual_moments), mesh.moment_partials)
 end

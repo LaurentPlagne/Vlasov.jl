@@ -49,15 +49,23 @@ struct SplineMesh{N,T,M}
     moment_partials::Matrix{T}
 end
 
+"""
+    dual_moments(cm) -> NTuple{3,Vector}
+
+`S⁻ᵀ·m` for the orders 0, 1 and 2, once and for all: this is what spares us
+applying `S⁻¹` to the 3D array at every integration.
+
+Named here rather than inlined in the constructor because the device companion
+needs the same vectors, and two spellings of this formula would be one too many.
+"""
+dual_moments(cm::CollocationMatrices) =
+    ntuple(k -> transpose(cm.Sinv) * moments(cm.axis, Val(k - 1)), 3)
+
 function SplineMesh(axes::SplineAxis{T}...) where {T}
     cms = map(CollocationMatrices, axes)
     full = map(laplacian1d_full, cms)
     ops = map(D -> DiagonalizedOperator(D[2:end-1, 2:end-1]), full)
-    # `S⁻ᵀ·m` once and for all: this is what spares us applying `S⁻¹` to the 3D
-    # array at every integration.
-    duals = map(cms) do cm
-        ntuple(k -> transpose(cm.Sinv) * moments(cm.axis, Val(k - 1)), 3)
-    end
+    duals = map(dual_moments, cms)
     solver = TensorSolver(ops...)
     full_dims = map(nbasis, axes)
     SplineMesh(axes, cms, full, duals, solver,
