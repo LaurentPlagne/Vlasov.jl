@@ -73,18 +73,18 @@ Present only when a backend was asked for. `Simulation` carries it as a type
 parameter, so the branch in [`update_forces!`](@ref) is resolved at compile time
 and the host path keeps exactly the code it had.
 
-`ρc_host` and `csolc_host` are the two readbacks that remain, and both are
-deliberate:
+`csolc_host` is the **one** readback that remains, and it is deliberate: the
+coarse coefficients are read by the handful of particles that fall outside the
+fine grid, on the host, through `spline_field`.
 
-  * the **coarse deposition** is still a host scatter — the coarse axis is
-    *stretched*, and `CellSort`, which the accelerated deposition rests on,
-    assumes a uniform grid;
-  * the **coarse coefficients** are read by the handful of particles that fall
-    outside the fine grid, on the host, through `spline_field`.
+On unified memory it costs nothing: `copyto!` between two views of the same RAM.
+On a discrete GPU it is one transfer of `n³·sizeof(E)` per step — 4.8 MB at 134³
+in `Float32`, about 0.2 ms over PCIe.
 
-On unified memory both cost nothing: `copyto!` between two views of the same
-RAM. On a discrete GPU they are two transfers of `n³·sizeof(E)` per step —
-9.6 MB at 134³ in `Float32`, about 0.4 ms over PCIe.
+⚠️ There used to be a second one, `ρc_host`: the coarse deposition was a host
+scatter, `CellSort` assuming a uniform grid where the coarse axis is *stretched*.
+It no longer is — [`_deposit_cic_kernel!`](@ref) deposits on the device without
+any sort at all — and the buffer went with it.
 """
 struct DeviceState{E,B,DM,G,AC}
     backend::B
@@ -92,7 +92,6 @@ struct DeviceState{E,B,DM,G,AC}
     ρ::NTuple{2,G}
     φ::NTuple{2,G}
     csol::NTuple{2,G}
-    ρc_host::Array{E,3}
     csolc_host::Array{E,3}
     """⚠️ A resident simulation **owns** its accelerator rather than being handed
        one. Priming calls `update_forces!` from inside the constructor, before
@@ -110,7 +109,7 @@ function DeviceState(backend, ::Type{E}, meshes::NestedMeshes{2,3,T},
     DeviceState{E,typeof(backend),eltype(dms),typeof(grid(1)),typeof(acc)}(
         backend, dms,
         (grid(1), grid(2)), (grid(1), grid(2)), (grid(1), grid(2)),
-        zeros(E, dims[2]...), zeros(E, dims[2]...), acc)
+        zeros(E, dims[2]...), acc)
 end
 
 """
@@ -384,31 +383,20 @@ function _update_forces_resident!(sim::Simulation{T}, dev::DeviceState{E},
     deposit_smoothed!(dev.ρ[1], accelerator, fine, sim.smoothing,
                       sim.cloud.positions; charge = w)
 
-    # ⚠️ The coarse deposition stays on the host, and it was **measured twice**
-    # before being left there. At 8×10⁷ particles on a 258³ grid it costs
-    # 400 ms; the two ways of moving it across cost more.
+    # The coarse deposition, on the device — cloud-in-cell, eight atomics per
+    # particle. 203 ms against 396 for the threaded host scatter it replaces,
+    # at 8×10⁷ particles on a 258³ coarse grid.
     #
-    #  1. One work-item per particle, eight atomics each — the naive scatter:
-    #     **1450 ms**, against 190 for the host at 2×10⁷. Eight atomics times
-    #     8×10⁷ particles onto the few cells the cluster occupies is exactly the
-    #     contention the fine deposition avoids by sorting first.
-    #
-    #  2. Sorted, as the fine deposition is: one group per occupied coarse cell,
-    #     eight work-items owning its eight corners, one atomic each at the end.
-    #     That fixes the kernel — **27 ms** at 2×10⁷, ×53 faster than (1) — but
-    #     the sort it needs then dominates. At 8×10⁷: sort 356 ms + kernel
-    #     274 ms = **630 ms** against 400. The coarse axis being *stretched*, its
-    #     cell index comes from a `LocateTable` **search** where the fine grid's
-    #     is arithmetic, and that is what costs.
-    #
-    # So the wall is the sort, not the atomics. Moving this across needs a way
-    # to group the particles by coarse cell without paying for a second sort —
-    # reusing the fine ordering, most likely, since a fine cell falls inside one
-    # or two coarse ones.
-    deposit!(sim.ρ[2], coarse, sim.cloud.positions; charge = w,
-             buffers = sim.scatter[2])
-    dev.ρc_host .= sim.ρ[2]
-    copyto!(dev.ρ[2], dev.ρc_host)
+    # ⚠️ A *sorted* version was written too, on the model of the fine
+    # deposition: one group per occupied coarse cell, eight work-items for its
+    # corners, one atomic each. It is not needed. The coarse grid is coarse
+    # enough that eight atomics per particle do not contend the way an 8³
+    # stencil does, and the coarse sort such a version requires costs 356 ms on
+    # its own — more than the whole deposition.
+    fine_ax = fine.axes[1]
+    hf = (fine_ax.knots[end] - fine_ax.knots[1]) / (length(fine_ax.knots) - 1)
+    deposit_cic!(dev.ρ[2], dmc, accelerator, length(sim.cloud.positions), w,
+                 fine_ax.knots[1], hf)
 
     poisson!(dev.φ, dev.ρ, dev.meshes)
     csolf = spline_coefficients!(dev.csol[1], dev.φ[1], dmf)

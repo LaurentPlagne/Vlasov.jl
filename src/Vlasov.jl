@@ -59,7 +59,7 @@ export SimulationParameters, read_parameters, Simulation, run!
 export DeviceState, sync_host!
 export Projectile, projectile_forces!, energy_loss, kinetic_energy, HARTREE_TO_EV
 export Softening, BallSoftening, GaussianSoftening, force_kernel, pair_potential, gaussian_force_kernel
-export ForceAccelerator, DeviceAccelerator, DeviceMesh
+export ForceAccelerator, DeviceAccelerator, DeviceMesh, deposit_cic!
 export DualBuffer, dual_buffer, upload!, download!
 export CellSort, cellsort!, noccupied
 export enclosed_charge, capture!, advance_projectile!
