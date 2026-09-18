@@ -27,21 +27,34 @@ represents.
 The Fortran stored all of this in `(3, npartmax)` arrays in column order, which
 is exactly the memory layout of a `Vector{NTuple{3,T}}`: the port is a
 reinterpretation, not a conversion.
+
+That coincidence is what spares us a rewrite for the accelerators. The **element
+type stays** `NTuple{3,T}` — it is already the `(3, N)` layout a device wants —
+and only the **container** is a parameter, so that `A` may be a `Vector` or any
+device vector. `ParticleCloud{T}` remains valid in a signature: the container is
+left free there.
 """
-struct ParticleCloud{T<:AbstractFloat}
-    positions::Vector{NTuple{3,T}}
-    previous::Vector{NTuple{3,T}}
-    forces::Vector{NTuple{3,T}}
+struct ParticleCloud{T<:AbstractFloat,A<:AbstractVector{NTuple{3,T}}}
+    positions::A
+    previous::A
+    forces::A
     weight::T
 end
 
-function ParticleCloud(positions::Vector{NTuple{3,T}}, weight::T) where {T}
-    n = length(positions)
+function ParticleCloud(positions::AbstractVector{NTuple{3,T}}, weight::T) where {T}
+    # `similar` and not `fill`: a device cloud must yield device buffers.
+    p = copy(positions)
     zero3 = ntuple(_ -> zero(T), 3)
-    ParticleCloud{T}(copy(positions), fill(zero3, n), fill(zero3, n), weight)
+    ParticleCloud(p, fill!(similar(p), zero3), fill!(similar(p), zero3), weight)
 end
 
 Base.length(c::ParticleCloud) = length(c.positions)
+
+"""Moves the three buffers to another backend — `adapt(MtlArray, cloud)` and the
+like. `weight` is a scalar and travels as it is."""
+Adapt.adapt_structure(to, c::ParticleCloud) =
+    ParticleCloud(adapt(to, c.positions), adapt(to, c.previous),
+                  adapt(to, c.forces), c.weight)
 
 """Mass of a pseudo-particle: that of the `weight` electrons it carries."""
 mass(c::ParticleCloud) = ELECTRON_MASS * c.weight

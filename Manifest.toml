@@ -2,7 +2,7 @@
 
 julia_version = "1.13.0"
 manifest_format = "2.1"
-project_hash = "91d33e2008465215b79de0733b57b465d373b922"
+project_hash = "572129bfceadbbe7e523e4b593e45b84b84f52b6"
 
 [[deps.Adapt]]
 deps = ["LinearAlgebra"]
@@ -303,7 +303,7 @@ version = "0.3.2"
     LLVM = "929cbde3-209d-540e-8aea-75f648917ca0"
 
 [[deps.Vlasov]]
-deps = ["BandedMatrices", "KernelAbstractions", "LinearAlgebra", "SpecialFunctions"]
+deps = ["Adapt", "BandedMatrices", "KernelAbstractions", "LinearAlgebra", "SpecialFunctions"]
 path = "."
 uuid = "2b4e4dc6-bb65-44a8-9970-a8d90b7ff1a4"
 version = "0.1.0"

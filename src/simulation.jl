@@ -76,12 +76,15 @@ Building a `Simulation` does the heavy work once: matrix assembly,
 diagonalisations, convolution tables. The steps that follow only ever reuse
 multiplications.
 """
-struct Simulation{T<:AbstractFloat,P}
+struct Simulation{T<:AbstractFloat,P,A}
     params::SimulationParameters{T}
     meshes::NestedMeshes{2,3,T,BandedMatrix{T,Matrix{T},Base.OneTo{Int}}}
     smoothing::GaussianSmoothing{T}
     jellium::Jellium{T}
-    cloud::ParticleCloud{T}
+    """⚠️ The container is a parameter, not `ParticleCloud{T}`: that spelling is
+       a `UnionAll` since the cloud gained its array type, and an abstract field
+       here would box the hottest object of the whole loop."""
+    cloud::ParticleCloud{T,A}
     """Projectile, or `nothing` for an isolated cluster. The type carries it
        rather than a `Union` field: the loop stays specialised in both cases."""
     projectile::P

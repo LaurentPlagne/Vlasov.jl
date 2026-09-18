@@ -5,6 +5,7 @@ using BandedMatrices
 using SpecialFunctions: erf
 using KernelAbstractions
 using KernelAbstractions: get_backend, synchronize
+using Adapt: Adapt, adapt
 
 include("threading.jl")
 include("random.jl")
