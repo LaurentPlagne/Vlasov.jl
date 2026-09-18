@@ -139,36 +139,39 @@ The arithmetic is the same, in the same order — the two agree bit for bit. Onl
 the indexing differs: the stencil has been copied into a dense `10×10×10` block,
 so the strides are 1, 10 and 100 rather than those of the grid.
 
-⚠️ **The offsets into `tile` are computed in `Int`, not in `Int32`** — and this
-is worth a factor of four. Everything else in this file narrows its indices to
-`Int32` deliberately, to save registers, so writing `Int32(100) * (Int32(kk) −
-Int32(1))` here is what the surrounding style asks for. Measured, 8×10⁷
+⚠️ **The index width must be the same throughout.** An `Int32` offset added to
+an `Int` loop variable costs a factor of four here, silently. Measured, 8×10⁷
 particles:
 
-| offsets | ms |
-|---|---:|
-| `Int` | **520.3** |
-| `Int32` | 1969.2 |
+| offset | loop variable | ms |
+|---|---|---:|
+| `Int` | `Int` | 521.0 |
+| **`Int32`** | **`Int`** | **1969.1** |
+| `Int32` | `Int32` | 522.8 |
+| `Int` | `Int32` | 519.4 |
 
-×3.8, with the arithmetic otherwise identical and no error, no warning, nothing
-to read in the source that would suggest it. The accumulator's type is *not* the
-cause: `eltype(ovl)` and a hard-wired `Float32` measure the same to within a
-percent, in both index regimes.
+Only the mixture is slow, and only in that direction. `for ii in 1:10` yields an
+`Int`, so narrowing *the offsets alone* to match the file's `Int32` style — which
+is the natural way to write this — is exactly the way to fall in. The
+accumulator's type has nothing to do with it: `eltype(ovl)` and a hard-wired
+`Float32` measure the same in every index regime.
 
-So: `Int32` for indices into device arrays, plain `Int` for indices into
-threadgroup memory, until someone establishes why.
+The same narrowing is *right* in [`_deposit_sorted_kernel!`](@ref), whose stencil
+offsets already come out of `_stencil_offset` as `Int32`: there everything is
+`Int32` and widening the offsets to `Int` costs 17 % (242.2 → 282.9 ms). So the
+rule is not "prefer one width" but "do not mix them".
 """
 @inline function contract_tile(tile, ovl, grad, cx, cy, cz)
     T = eltype(ovl)
     fx = zero(T); fy = zero(T); fz = zero(T)
-    @inbounds for kk in 1:10
+    @inbounds for kk in Int32(1):Int32(10)
         oz = ovl[kk, cz]; gz = grad[kk, cz]
-        bk = 100 * (kk - 1)
-        for jj in 1:10
+        bk = Int32(100) * (kk - Int32(1))
+        for jj in Int32(1):Int32(10)
             oy = ovl[jj, cy]; gy = grad[jj, cy]
-            b = bk + 10 * (jj - 1)
+            b = bk + Int32(10) * (jj - Int32(1))
             dxp = zero(T); val = zero(T)
-            for ii in 1:10
+            for ii in Int32(1):Int32(10)
                 c = tile[b+ii]
                 dxp = fma(c, grad[ii, cx], dxp)
                 val = fma(c, ovl[ii, cx], val)
@@ -507,6 +510,10 @@ integer divisions, cheaper than the machinery needed to carry them across.
             _, _, _, inside = _cell_base(cellids[g], nk, Int32(size(ρ, 1)))
             if inside
                 s = zero(E)
+                # ⚠️ The offsets into `vals` are computed in `Int`, not `Int32`
+                # — see [`contract_tile`](@ref), where the same narrowing on the
+                # same kind of access cost a factor of 3.8. `ii`, `jj` and `kk`
+                # stay `Int32`: they index nothing here, they are added.
                 for q in Int32(1):chunk
                     b = Int32(24) * (q - Int32(1))
                     s += vals[b+ii] * vals[b+Int32(8)+jj] * vals[b+Int32(16)+kk]
