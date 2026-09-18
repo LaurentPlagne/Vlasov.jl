@@ -17,9 +17,9 @@ Metal = "dde4c033-4e86-420c-a63e-0dd931031962"
 VlasovMetalExt = "Metal"
 
 [compat]
-Adapt = "4.7.1"
+Adapt = "4"
 BandedMatrices = "1.12.0"
-KernelAbstractions = "0.9.42"
+KernelAbstractions = "0.9"
 LinearAlgebra = "1.12.0"
 Metal = "1.11.0"
 SpecialFunctions = "2.9.0"
