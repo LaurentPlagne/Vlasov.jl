@@ -3,6 +3,8 @@ module Vlasov
 using LinearAlgebra
 using BandedMatrices
 using SpecialFunctions: erf
+using KernelAbstractions
+using KernelAbstractions: get_backend, synchronize
 
 include("threading.jl")
 include("random.jl")
