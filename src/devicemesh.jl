@@ -128,7 +128,13 @@ boundary_from_coarse!(φ::AbstractArray, dm::DeviceMesh, coarse::DeviceMesh,
 function solve_interior!(φ::AbstractArray, ρ::AbstractArray, dm::DeviceMesh)
     rhs = poisson_rhs!(dm.scratch_inner, ρ, dm, φ)
     _solve!(rhs, rhs, dm.Minvs, dm.Ms, dm.invλsum, dm.work1, dm.work2)
-    @views φ[2:end-1, 2:end-1, 2:end-1] .= rhs
+    # ⚠️ A kernel, not `@views φ[2:end-1, …] .= rhs` — see
+    # [`_fill_interior_kernel!`](@ref). The broadcast into a non-contiguous view
+    # cost 25 ms per call against this kernel's 0.5, and the two of them were
+    # 30 % of the whole nested solve.
+    backend = get_backend(φ)
+    _fill_interior_kernel!(backend)(φ, rhs; ndrange = size(rhs))
+    synchronize(backend)
     φ
 end
 

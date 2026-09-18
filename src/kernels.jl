@@ -591,6 +591,28 @@ skips them — and counted into `nout`, one atomic each. They are rare.
 end
 
 """
+Copies the interior solution into the full grid — `φ[2:end-1, …] = rhs`.
+
+⚠️ **Written as a kernel because the broadcast is not.**
+`@views φ[2:end-1, 2:end-1, 2:end-1] .= rhs` is the obvious spelling and reads
+better, but on Metal a broadcast into a **non-contiguous view** falls back to an
+element-at-a-time path. Measured on a 258³ grid, 134 MB of traffic:
+
+| | ms | GB/s |
+|---|---:|---:|
+| `@views … .= rhs` | 24.8 | 5.4 |
+| this kernel | 0.5 | 268 |
+
+×50, and it was 30 % of the whole nested Poisson chain — more than any of its
+fifteen GEMMs. The host path keeps the broadcast: there it is a strided copy
+like any other, and `Array` handles it.
+"""
+@kernel function _fill_interior_kernel!(φ, @Const(rhs))
+    i, j, k = @index(Global, NTuple)
+    @inbounds φ[i+1, j+1, k+1] = rhs[i, j, k]
+end
+
+"""
     nface(nx, ny, nz) -> Int
 
 How many points lie on the surface of an `nx × ny × nz` grid.
