@@ -133,7 +133,9 @@ function solve_interior!(φ::AbstractArray, ρ::AbstractArray, dm::DeviceMesh)
     # cost 25 ms per call against this kernel's 0.5, and the two of them were
     # 30 % of the whole nested solve.
     backend = get_backend(φ)
-    _fill_interior_kernel!(backend)(φ, rhs; ndrange = size(rhs))
+    nx, ny, _ = size(rhs)
+    _fill_interior_kernel!(backend)(φ, rhs, nx, ny, length(rhs);
+                                    ndrange = length(rhs))
     synchronize(backend)
     φ
 end
@@ -170,5 +172,7 @@ function effective_potential!(csol::AbstractArray{E,3}, ρ::AbstractArray{E,3},
                                           Jellium(E(jel.nions), E(jel.radius));
                                           ndrange = size(extra))
     synchronize(backend)
-    csol .+= spline_coefficients!(dm.scratch[2], extra, dm)
+    # `vec` for the reason set out in `_solve!`: a 3-D broadcast is 1.4 to 2.5
+    # times slower than the same one flattened, on the same buffer.
+    vec(csol) .+= vec(spline_coefficients!(dm.scratch[2], extra, dm))
 end

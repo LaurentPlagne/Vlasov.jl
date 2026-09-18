@@ -309,7 +309,9 @@ function deposit_smoothed!(ρ::AbstractArray, acc::DeviceAccelerator{E,T},
     # before was the reduction plus two full passes over the n³ grid — 4.0 ms
     # of the 33 the deposition takes, at 2×10⁶ particles on Metal.
     q = total_charge(target, acc.grid)
-    target .*= E((length(positions) - nout) * charge / q)
+    # `vec`: see `_solve!` — a 3-D broadcast is slower than the flat one on the
+    # same buffer, at every grid size tried.
+    vec(target) .*= E((length(positions) - nout) * charge / q)
     if resident
         synchronize(acc.backend)
     else

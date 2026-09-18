@@ -428,8 +428,10 @@ function _update_forces_resident!(sim::Simulation{T}, dev::DeviceState{E},
             packed = true)
     advance && advance_projectile!(sim, accelerator)
 
-    dev.φ[1] .= csolf
-    dev.φ[2] .= csolc
+    # `copyto!` and not `.=` : this is a copy, and the blit path does it without
+    # going through a broadcast at all — see `_solve!` for the measurements.
+    copyto!(dev.φ[1], csolf)
+    copyto!(dev.φ[2], csolc)
     hartree
 end
 

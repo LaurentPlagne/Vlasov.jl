@@ -175,7 +175,26 @@ function _solve!(X, B, Minvs, Ms, invλsum, work1, work2)
     apply_all_rotating!(work1, Minvs, B, work2)
 
     # The heart of the method: inversion becomes an element-wise division.
-    work1 .*= invλsum
+    # ⚠️ `vec`, and it is not cosmetic: a Metal broadcast over a **3-D** array
+    # is slower than the same one flattened, for the same bytes and the same
+    # buffer underneath. Measured on `a .+= b`, freshly allocated each time:
+    #
+    #   n     3-D      vec     ratio
+    #   256   131.0    258.8   1.98
+    #   257   164.0    262.6   1.60
+    #   258   106.9    267.5   2.50      <- our grid
+    #   260   166.3    266.0   1.60
+    #   512   261.1    358.5   1.37
+    #
+    # The cause is **not** established. What can be said is that the cartesian
+    # path turns a linear work-item index into `(i,j,k)` with two integer
+    # divisions per element and the flat path does not, and that the penalty is
+    # there at every size tried — 1.4× to 2.5×. It is *not* a matter of the
+    # leading dimension being a power of two or a multiple of four: 256 is both
+    # and is among the slowest, 257 is neither and does better.
+    #
+    # Both operands are dense and the same shape, so the flattening is exact.
+    vec(work1) .*= vec(invλsum)
 
     # Inverse transform. `X` may be `B`: the right-hand side has already been
     # fully consumed by the forward transform.

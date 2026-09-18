@@ -601,15 +601,27 @@ element-at-a-time path. Measured on a 258³ grid, 134 MB of traffic:
 | | ms | GB/s |
 |---|---:|---:|
 | `@views … .= rhs` | 24.8 | 5.4 |
-| this kernel | 0.5 | 268 |
+| this kernel | 3.1 | 43 |
 
-×50, and it was 30 % of the whole nested Poisson chain — more than any of its
-fifteen GEMMs. The host path keeps the broadcast: there it is a strided copy
-like any other, and `Array` handles it.
+×8, and the two calls were 30 % of the whole nested Poisson chain — more than
+any of its fifteen GEMMs. The host path keeps the broadcast: there it is a
+strided copy like any other, and `Array` handles it.
+
+⚠️ **The work-item index is linear, and the `(i,j,k)` computed from it**, rather
+than the obvious `@index(Global, NTuple)` over a 3-D `ndrange` — on the same
+reasoning as the `vec` in `_solve!`, where a flat traversal beats a cartesian
+one on the same buffer. 43 GB/s is still a fifth of what a flat copy reaches, so
+there is more here for whoever wants it.
 """
-@kernel function _fill_interior_kernel!(φ, @Const(rhs))
-    i, j, k = @index(Global, NTuple)
-    @inbounds φ[i+1, j+1, k+1] = rhs[i, j, k]
+@kernel function _fill_interior_kernel!(φ, @Const(rhs), nx, ny, n)
+    t = @index(Global, Linear)
+    @inbounds if t <= n
+        t0 = t - 1
+        i = t0 % nx
+        j = (t0 ÷ nx) % ny
+        k = t0 ÷ (nx * ny)
+        φ[i+2, j+2, k+2] = rhs[i+1, j+1, k+1]
+    end
 end
 
 """
