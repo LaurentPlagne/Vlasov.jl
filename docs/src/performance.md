@@ -259,21 +259,60 @@ brings them to 28.4 and puts deposition in front.
 
 ## What remains
 
-1. **The force kernel (≈13 ms)** — a 10³ contraction bound by memory. The
-   particles are **already sorted** for the deposit; having them read `csol` in
-   that order would give the same locality that is worth ×1.34 on the CPU. The
-   sort is there; it only needs using. This is the most promising avenue.
-2. Writing straight into the shared buffers (`unsafe_wrap`) — a thin gain, but
-   it removes the host buffers and half the transfer code.
-3. The coarse deposit and the mean field, still on the CPU.
-4. A **component-wise particle layout**. `ParticleCloud` stores positions as
-   `Vector{NTuple{3,T}}`, which must be repacked into a `3×N` matrix for every
-   GPU call. Storing by component would remove the repacking *and* help
-   vectorise the CPU path.
+1. **Overlapping the two depositions (≈180 ms).** The fine deposit and the
+   coarse cloud-in-cell read the same `(knode, δ)` and write into two different
+   grids: nothing connects them. They run one after the other only because they
+   are submitted to the same queue.
+2. A **component-wise particle layout**. `ParticleCloud` stores positions as
+   `Vector{NTuple{3,T}}`; storing by component would help vectorise the host
+   packing, which runs at 19 % of the machine's memory bandwidth.
+3. The **energy budget**, still particle-by-particle on the host. It is a
+   diagnostic taken one step in ten, and has never been profiled at 8×10⁷.
 
 Not on the list: **GEMMs on the GPU**. Accelerate already runs them in `Float64`
 at 400–470 GFLOPS, which the GPU cannot do at all, and they are 1.7 ms per
 solve.
+
+### Dead ends, measured
+
+Each of these looks obviously worth doing, and each was tried and abandoned on
+numbers. They are written down so that the two hours go unpaid a second time.
+
+**Moving the sort to the device: ×1.17, not worth it.** The cell key is exactly
+`knode`, which is already there, so the `Float64` that keeps the packing on the
+host does not apply. A counting sort in three parts measures, at 8×10⁷:
+
+| | ms |
+|---|---:|
+| histogram (80 M atomics into 2.1 M bins) | 14.7 |
+| scan and compaction (host, 2.1 M cells) | 1.2 |
+| **placement** | **115.3** |
+| total | 131.2 |
+| *host `cellsort!`* | *153.4* |
+
+The placement is the whole of it, and it is **not** the atomics: those alone
+cost 15.1 ms. It is the 80 million scattered 4-byte writes into a 320 MB array —
+the same volume written sequentially costs **1.4 ms**, a factor of 84.
+
+**Keeping the cloud physically sorted: net −234 ms.** If the particle arrays
+were held in cell order, the placement's writes would be local. They are: the
+scatter drops to 29.9 ms, and one step of drift leaves a median displacement of
+2230 positions out of 8×10⁷. But permuting `positions`, `previous` and `forces`
+costs **328 ms** even preallocated and threaded, against 85 ms saved on the
+scatter and **9 ms** on the two big kernels — forces 480.0 → 471.5, deposit
+203.7 → 203.3.
+
+That 9 ms is the interesting part: **the sorted traversal had already bought the
+locality.** Neighbouring work-items read neighbouring `perm` entries, so their
+`delta` reads land in the same cache lines whether or not the array is
+physically ordered.
+
+**Tracking only the particles that changed cell: 38.3 % change every step.**
+Measured over four consecutive steps (38.26 – 38.29 %), and it follows from the
+physics rather than from the code: the mean displacement is 0.356 a₀ against a
+cell of 1.219, so 0.29 of a cell per step, which over three dimensions gives a
+crossing probability near 40 %. There is no temporal coherence to exploit at
+this `dt`.
 
 ## Profiling a kernel
 
