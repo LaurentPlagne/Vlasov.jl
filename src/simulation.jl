@@ -384,8 +384,27 @@ function _update_forces_resident!(sim::Simulation{T}, dev::DeviceState{E},
     deposit_smoothed!(dev.ρ[1], accelerator, fine, sim.smoothing,
                       sim.cloud.positions; charge = w)
 
-    # ⚠️ The coarse deposition stays on the host: its axis is **stretched**, and
-    # the sorted deposition rests on `CellSort`, which assumes a uniform grid.
+    # ⚠️ The coarse deposition stays on the host, and it was **measured twice**
+    # before being left there. At 8×10⁷ particles on a 258³ grid it costs
+    # 400 ms; the two ways of moving it across cost more.
+    #
+    #  1. One work-item per particle, eight atomics each — the naive scatter:
+    #     **1450 ms**, against 190 for the host at 2×10⁷. Eight atomics times
+    #     8×10⁷ particles onto the few cells the cluster occupies is exactly the
+    #     contention the fine deposition avoids by sorting first.
+    #
+    #  2. Sorted, as the fine deposition is: one group per occupied coarse cell,
+    #     eight work-items owning its eight corners, one atomic each at the end.
+    #     That fixes the kernel — **27 ms** at 2×10⁷, ×53 faster than (1) — but
+    #     the sort it needs then dominates. At 8×10⁷: sort 356 ms + kernel
+    #     274 ms = **630 ms** against 400. The coarse axis being *stretched*, its
+    #     cell index comes from a `LocateTable` **search** where the fine grid's
+    #     is arithmetic, and that is what costs.
+    #
+    # So the wall is the sort, not the atomics. Moving this across needs a way
+    # to group the particles by coarse cell without paying for a second sort —
+    # reusing the fine ordering, most likely, since a fine cell falls inside one
+    # or two coarse ones.
     deposit!(sim.ρ[2], coarse, sim.cloud.positions; charge = w,
              buffers = sim.scatter[2])
     dev.ρc_host .= sim.ρ[2]
