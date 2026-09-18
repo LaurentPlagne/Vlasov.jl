@@ -35,8 +35,13 @@ const FIELD_GROUPSIZE = 256
 """Work-items per group for [`_deposit_sorted_kernel!`](@ref): the 8³ stencil."""
 const DEPOSIT_GROUPSIZE = 512
 
-"""Particles staged through threadgroup memory at a time, in the deposition."""
-const DEPOSIT_STAGE = 64
+"""Particles staged through threadgroup memory at a time, in the deposition.
+
+128 and not 256, which measures 2 % faster here: the staging buffer holds 24
+values per particle, so 256 would ask 24 KB of threadgroup memory in `Float32`
+and **49 KB in `Float64`** — past what a CUDA block gets by default. 128 costs
+30 KB in `Float64` and keeps the kernel portable."""
+const DEPOSIT_STAGE = 128
 
 """Group index of a work-item, from its global index — `@index(Group, Linear)`
 is unavailable in the scope where the deposition needs it."""
@@ -221,20 +226,45 @@ fewer.
 
 The particles of a cell are staged through threadgroup memory
 [`DEPOSIT_STAGE`](@ref) at a time, so that the 512 work-items read each one once
-from global memory rather than 512 times. That staging **earns its keep** —
-unlike the field kernel's, which could be dropped for nothing. Measured on
-Metal, 4×10⁶ particles on a 134³ grid:
+from global memory rather than 512 times.
 
-| | ms |
-|---|---|
-| hand-written Metal, staged | 42.7 |
-| this kernel, staged | 44.4 |
-| this kernel, no staging | 53.6 |
+⚠️ **What is staged is the 24 tabulated values, not the 3 column indices.**
 
-So portability costs 4 % here, and dropping the staging would cost 21 % more.
-The residual 4 % buys CUDA, ROCm and oneAPI, and a version that also runs on
-`CPU()` — where it agrees with `deposit_smoothed!` to 9.3e-16 in `Float64`,
-which is the check Metal can never perform.
+The obvious staging — and the one this kernel had — put the three columns of
+each particle in threadgroup memory, and the inner loop used them as *addresses*
+into `nodes`:
+
+    s += nodes[ii, shared[…]] * nodes[jj, shared[…]] * nodes[kk, shared[…]]
+
+That is a chain of two dependent loads — threadgroup, then global — and nothing
+can hide it: the column changes with every particle, so no compiler may hoist
+the second load, and the loop cannot be software-pipelined. It ran at **108
+cycles per iteration** for a body worth three.
+
+Staging the values instead — `nodes[1:8, c]` for each of the three axes, 24
+floats per particle — leaves the inner loop three *independent* threadgroup
+reads. Measured on the real Thomas-Fermi cloud, 8×10⁷ particles on a 258³ grid,
+428 particles per occupied cell:
+
+| | ms | cycles/iter |
+|---|---|---|
+| columns staged (stage 64) | 834.1 | 108.1 |
+| values staged (stage 64) | 274.1 | 35.5 |
+| **values staged (stage 128)** | **241.6** | **31.3** |
+| values staged (stage 256) | 236.7 | 30.7 |
+
+⚠️ On a **synthetic** cloud the same A/B reads ×2.81 rather than ×3.45, because
+it spreads the particles over 28 per cell instead of 428 — and the staging cost
+is amortised over exactly that number. The coarse deposition was rejected twice
+on that mistake; see [`_deposit_cic_kernel!`](@ref).
+
+The density agrees with the previous version to 4.2e-07 and the charge to the
+last printed digit — the residue is atomic ordering, not the change.
+
+Against the hand-written Metal kernel this one replaces, and which staged
+columns too, portability now costs nothing at all: it is the faster of the two.
+It also runs on `CPU()`, where it agrees with `deposit_smoothed!` to 9.3e-16 in
+`Float64` — the check Metal can never perform.
 
 ⚠️ **What crosses a barrier must live in threadgroup memory or be `@uniform`.**
 The CPU backend cuts a kernel into one work-item loop per `@synchronize`, and a
@@ -250,6 +280,8 @@ integer divisions, cheaper than the machinery needed to carry them across.
     t = @index(Local, Linear)
 
     shared = @localmem Int32 (3 * DEPOSIT_STAGE,)
+    "The 8 tabulated values of each axis, for each staged particle."
+    vals = @localmem eltype(ρ) (24 * DEPOSIT_STAGE,)
     accum = @localmem eltype(ρ) (DEPOSIT_GROUPSIZE,)
     # ⚠️ The cursor lives in threadgroup memory, not in a `@uniform`. The loop
     # below straddles barriers, so KernelAbstractions emits it in the group's
@@ -290,6 +322,26 @@ integer divisions, cheaper than the machinery needed to carry them across.
         end
         @synchronize
 
+        # The gather into `nodes` happens **here**, once per value, instead of
+        # inside the inner loop where it happened once per value per work-item.
+        # The 24·chunk values are spread over the whole group, each work-item
+        # taking every `DEPOSIT_GROUPSIZE`-th of them.
+        @inbounds begin
+            chunk = min(Int32(DEPOSIT_STAGE), state[2] - state[1])
+            nval = Int32(24) * chunk
+            e = t
+            while e <= nval
+                e0 = e - Int32(1)
+                q = e0 ÷ Int32(24)          # particle within the stage
+                r = e0 % Int32(24)
+                d = r ÷ Int32(8)            # axis, 0-based
+                a = r % Int32(8) + Int32(1) # which of the 8 stencil nodes
+                vals[e] = nodes[a, shared[Int32(3)*q+d+Int32(1)]]
+                e += Int32(DEPOSIT_GROUPSIZE)
+            end
+        end
+        @synchronize
+
         # Recomputed on this side of the barrier rather than carried across it:
         # three integer divisions are cheaper than the machinery that would be
         # needed to make them survive.
@@ -302,10 +354,8 @@ integer divisions, cheaper than the machinery needed to carry them across.
             if inside
                 s = zero(E)
                 for q in Int32(1):chunk
-                    b = Int32(3) * (q - Int32(1))
-                    s += nodes[ii, shared[b+Int32(1)]] *
-                         nodes[jj, shared[b+Int32(2)]] *
-                         nodes[kk, shared[b+Int32(3)]]
+                    b = Int32(24) * (q - Int32(1))
+                    s += vals[b+ii] * vals[b+Int32(8)+jj] * vals[b+Int32(16)+kk]
                 end
                 accum[t] += s
             end
