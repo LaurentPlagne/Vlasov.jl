@@ -267,7 +267,7 @@ function _fill_columns!(acc::DeviceAccelerator{E,T}, mesh, sm, positions) where 
     Int(acc.nout.host[1])
 end
 
-function deposit_smoothed!(ρ::AbstractArray{T,3}, acc::DeviceAccelerator{E,T},
+function deposit_smoothed!(ρ::AbstractArray, acc::DeviceAccelerator{E,T},
                            mesh::SplineMesh{3,T}, sm::GaussianSmoothing{T},
                            positions; charge::T) where {E,T}
     _pack!(acc, positions)
@@ -278,33 +278,52 @@ function deposit_smoothed!(ρ::AbstractArray{T,3}, acc::DeviceAccelerator{E,T},
     copyto!(acc.cells.host, 1, acc.sorter.occupied, 1, ncell)
     copyto!(acc.bounds.host, 1, acc.sorter.bounds, 1, ncell + 1)
     upload!(acc.cells); upload!(acc.bounds)
-    fill!(acc.rho.device, zero(E))
+
+    # A `ρ` that already lives on this backend is deposited into **directly**:
+    # on the resident path the density never leaves the device, and the staging
+    # buffer is not touched at all.
+    resident = get_backend(ρ) === acc.backend && eltype(ρ) === E
+    target = resident ? ρ : acc.rho.device
+    fill!(target, zero(E))
 
     _deposit_sorted_kernel!(acc.backend, DEPOSIT_GROUPSIZE)(
-        acc.rho.device, acc.nodes, acc.cols.device, acc.cells.device,
+        target, acc.nodes, acc.cols.device, acc.cells.device,
         acc.bounds.device, Int32(acc.sorter.nknots); ndrange = ncell * DEPOSIT_GROUPSIZE)
     synchronize(acc.backend)
 
     # Reduction and scaling stay on the device. What came back to the host
     # before was the reduction plus two full passes over the n³ grid — 4.0 ms
     # of the 33 the deposition takes, at 2×10⁶ particles on Metal.
-    q = total_charge(acc.rho.device, acc.grid)
-    acc.rho.device .*= E((length(positions) - nout) * charge / q)
-    download!(acc.rho, acc.backend)
-    ρ .= acc.rho.host
+    q = total_charge(target, acc.grid)
+    target .*= E((length(positions) - nout) * charge / q)
+    if resident
+        synchronize(acc.backend)
+    else
+        download!(acc.rho, acc.backend)
+        ρ .= acc.rho.host
+    end
     nout
 end
 
 function forces!(cloud::ParticleCloud{T}, acc::DeviceAccelerator{E,T},
-                 fine::NTuple{3,SplineAxis{T}}, csol_fine::AbstractArray{T,3},
-                 coarse::NTuple{3,SplineAxis{T}}, csol_coarse::AbstractArray{T,3},
+                 fine::NTuple{3,SplineAxis{T}}, csol_fine::AbstractArray,
+                 coarse::NTuple{3,SplineAxis{T}}, csol_coarse::AbstractArray,
                  sm::GaussianSmoothing{T}; escaped::Integer = 0,
                  projectile = nothing, packed::Bool = false) where {E,T}
     npart = length(cloud.positions)
     npart == acc.npart || throw(DimensionMismatch("accelerator sized for $(acc.npart)"))
 
-    acc.csol.host .= csol_fine
-    upload!(acc.csol)
+    # A `csol` already sitting on this backend, in this precision, is used where
+    # it is. Staging it through the host would be a copy of `n³` for nothing —
+    # and on the resident path it is exactly what `spline_coefficients!` just
+    # produced there.
+    csol = if get_backend(csol_fine) === acc.backend && eltype(csol_fine) === E
+        csol_fine
+    else
+        acc.csol.host .= csol_fine
+        upload!(acc.csol)
+        acc.csol.device
+    end
     packed || _pack!(acc, cloud.positions)
 
     pp = projectile === nothing ? (zero(E), zero(E), zero(E)) :
@@ -315,7 +334,7 @@ function forces!(cloud::ParticleCloud{T}, acc::DeviceAccelerator{E,T},
     fill!(acc.reduction.device, zero(E))
 
     _smoothed_field_kernel!(acc.backend, FIELD_GROUPSIZE)(
-        acc.force.device, acc.csol.device, acc.overlap, acc.gradient,
+        acc.force.device, csol, acc.overlap, acc.gradient,
         acc.knode.device, acc.delta.device, E(acc.x0), E(acc.h), acc.spacing,
         acc.nbdt, E(cloud.weight), acc.ncol, Int32(npart),
         pp[1], pp[2], pp[3], coef, σ, acc.reduction.device;

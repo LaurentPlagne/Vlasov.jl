@@ -66,7 +66,55 @@ function read_parameters(path::AbstractString)
 end
 
 """
-    Simulation(params, profile)
+Grid state living on the device, and the mirrors of the two meshes that operate
+on it.
+
+Present only when a backend was asked for. `Simulation` carries it as a type
+parameter, so the branch in [`update_forces!`](@ref) is resolved at compile time
+and the host path keeps exactly the code it had.
+
+`ρc_host` and `csolc_host` are the two readbacks that remain, and both are
+deliberate:
+
+  * the **coarse deposition** is still a host scatter — the coarse axis is
+    *stretched*, and `CellSort`, which the accelerated deposition rests on,
+    assumes a uniform grid;
+  * the **coarse coefficients** are read by the handful of particles that fall
+    outside the fine grid, on the host, through `spline_field`.
+
+On unified memory both cost nothing: `copyto!` between two views of the same
+RAM. On a discrete GPU they are two transfers of `n³·sizeof(E)` per step —
+9.6 MB at 134³ in `Float32`, about 0.4 ms over PCIe.
+"""
+struct DeviceState{E,B,DM,G,AC}
+    backend::B
+    meshes::NTuple{2,DM}
+    ρ::NTuple{2,G}
+    φ::NTuple{2,G}
+    csol::NTuple{2,G}
+    ρc_host::Array{E,3}
+    csolc_host::Array{E,3}
+    """⚠️ A resident simulation **owns** its accelerator rather than being handed
+       one. Priming calls `update_forces!` from inside the constructor, before
+       any caller could have built one — and on this path there is no host
+       version of the deposition or the forces to fall back on."""
+    accelerator::AC
+end
+
+function DeviceState(backend, ::Type{E}, meshes::NestedMeshes{2,3,T},
+                     sm::GaussianSmoothing{T}, npart::Integer) where {E,T}
+    dms = (DeviceMesh(backend, E, meshes[1]), DeviceMesh(backend, E, meshes[2]))
+    dims = map(m -> size(m.scratch[1]), (meshes[1], meshes[2]))
+    grid(l) = KernelAbstractions.zeros(backend, E, dims[l]...)
+    acc = DeviceAccelerator(backend, E, meshes[1].axes, sm, npart, dims[1][1])
+    DeviceState{E,typeof(backend),eltype(dms),typeof(grid(1)),typeof(acc)}(
+        backend, dms,
+        (grid(1), grid(2)), (grid(1), grid(2)), (grid(1), grid(2)),
+        zeros(E, dims[2]...), zeros(E, dims[2]...), acc)
+end
+
+"""
+    Simulation(params, profile; backend = nothing, precision = T)
 
 Everything that stays constant over a simulation — nested meshes, smoothing
 tables, jellium background — plus the state that evolves: the cloud of
@@ -76,7 +124,7 @@ Building a `Simulation` does the heavy work once: matrix assembly,
 diagonalisations, convolution tables. The steps that follow only ever reuse
 multiplications.
 """
-struct Simulation{T<:AbstractFloat,P,A}
+struct Simulation{T<:AbstractFloat,P,A,D}
     params::SimulationParameters{T}
     meshes::NestedMeshes{2,3,T,BandedMatrix{T,Matrix{T},Base.OneTo{Int}}}
     smoothing::GaussianSmoothing{T}
@@ -99,11 +147,25 @@ struct Simulation{T<:AbstractFloat,P,A}
        the grid, hence their explicit presence here rather than a quiet creation
        at every deposition."""
     scatter::NTuple{2,ScatterBuffers{T,3}}
+    """Device grid state, or `nothing` — see [`DeviceState`](@ref). Being a type
+       parameter, which of the two paths `update_forces!` takes is settled at
+       compile time."""
+    device::D
 end
 
+"""
+`backend` opts the **grids** into device residency: `ρ`, `φ` and `csol` then
+live there, and the whole Poisson chain with them. `precision` is the type they
+carry — `Float32` on Metal, which has no other choice; `Float64` wherever the
+hardware offers it.
+
+The cloud stays on the host either way. Its positions are `T`, and the packing
+that reads them needs `T`; see `_pack_kd_kernel!`.
+"""
 function Simulation(p::SimulationParameters{T}, profile::PhaseSpaceProfile{T};
                     rng::Ran2 = Ran2(-1), consistent_startup::Bool = false,
-                    projectile = nothing) where {T}
+                    projectile = nothing, backend = nothing,
+                    precision::Type = T) where {T}
     fine = uniform_axis(-p.rcluster, p.rcluster, p.nfine)
     coarse = stretched_axis(p.rcluster, p.rbox, p.ninner ÷ 2, (p.nouter + 2) ÷ 2)
     meshes = NestedMeshes(SplineMesh(fine, fine, fine),
@@ -112,12 +174,16 @@ function Simulation(p::SimulationParameters{T}, profile::PhaseSpaceProfile{T};
     weight = p.nelectrons / p.nparticles
     positions, momenta = sample_thomas_fermi(profile, p.nparticles, weight; rng)
     n = nbasis(fine)
-    sim = Simulation(p, meshes, GaussianSmoothing(fine), Jellium(p.nions),
+    smoothing = GaussianSmoothing(fine)
+    device = backend === nothing ? nothing :
+             DeviceState(backend, precision, meshes, smoothing, p.nparticles)
+    sim = Simulation(p, meshes, smoothing, Jellium(p.nions),
                      ParticleCloud(positions, weight), projectile,
                      (zeros(T, n, n, n), zeros(T, n, n, n)),
                      (zeros(T, n, n, n), zeros(T, n, n, n)),
                      (zeros(T, n, n, n), zeros(T, n, n, n)),
-                     (ScatterBuffers(meshes[1]), ScatterBuffers(meshes[2])))
+                     (ScatterBuffers(meshes[1]), ScatterBuffers(meshes[2])),
+                     device)
     prime_leapfrog!(sim, positions, momenta; consistent = consistent_startup)
 end
 
@@ -173,6 +239,9 @@ them, and they exist only between two lines.
 """
 function update_forces!(sim::Simulation{T}; advance::Bool = true,
                         energy::Bool = true, accelerator = nothing) where {T}
+    sim.device === nothing ||
+        return _update_forces_resident!(sim, sim.device, accelerator, advance, energy)
+
     fine, coarse = sim.meshes[1], sim.meshes[2]
     ρf, ρc = sim.ρ
     w = sim.cloud.weight
@@ -293,4 +362,87 @@ function advance_projectile!(sim::Simulation{T,<:Projectile{T}},
         projectile_forces!(sim.cloud, accelerator, sim.projectile, sim.jellium)
     step!(sim.projectile, force, sim.params.dt)
     nothing
+end
+
+"""
+    _update_forces_resident!(sim, dev, accelerator, advance, energy) -> T or nothing
+
+The same step as [`update_forces!`](@ref), with the grids on the device.
+
+Line for line it is the host version; only the arrays differ, which is the whole
+point of having split every function of the chain in two. The two readbacks it
+performs are named in [`DeviceState`](@ref) and are there for stated reasons,
+not for want of porting something.
+"""
+function _update_forces_resident!(sim::Simulation{T}, dev::DeviceState{E},
+                                  _ignored, advance, energy) where {T,E}
+    accelerator = dev.accelerator
+    fine, coarse = sim.meshes[1], sim.meshes[2]
+    dmf, dmc = dev.meshes
+    w = sim.cloud.weight
+
+    deposit_smoothed!(dev.ρ[1], accelerator, fine, sim.smoothing,
+                      sim.cloud.positions; charge = w)
+
+    # ⚠️ The coarse deposition stays on the host: its axis is **stretched**, and
+    # the sorted deposition rests on `CellSort`, which assumes a uniform grid.
+    deposit!(sim.ρ[2], coarse, sim.cloud.positions; charge = w,
+             buffers = sim.scatter[2])
+    dev.ρc_host .= sim.ρ[2]
+    copyto!(dev.ρ[2], dev.ρc_host)
+
+    poisson!(dev.φ, dev.ρ, dev.meshes)
+    csolf = spline_coefficients!(dev.csol[1], dev.φ[1], dmf)
+    csolc = spline_coefficients!(dev.csol[2], dev.φ[2], dmc)
+
+    # The budget is a diagnostic, taken one step in ten or not at all, and it
+    # reads the potential particle by particle on the host. Bringing the two
+    # coefficient arrays back for it is cheaper than a kernel that would run
+    # that rarely — and on unified memory it is not a copy at all.
+    hartree = nothing
+    if energy
+        # ⚠️ `Array(...)` first: a broadcast straight from a device array into a
+        # host one of a different element type is dispatched to the *device*,
+        # which then refuses the host destination as a non-bitstype argument.
+        sim.csol[1] .= Array(csolf)
+        sim.csol[2] .= Array(csolc)
+        hartree = interaction_energy(sim.cloud, fine.axes, sim.csol[1],
+                                     coarse.axes, sim.csol[2], sim.smoothing) / 2
+    end
+
+    effective_potential!(csolf, dev.ρ[1], dmf, sim.jellium)
+    effective_potential!(csolc, dev.ρ[2], dmc, sim.jellium)
+
+    # The coarse coefficients come back for the particles that left the fine
+    # grid: `forces!` resolves those on the host, over the compacted list.
+    copyto!(dev.csolc_host, csolc)
+    forces!(sim.cloud, accelerator, fine.axes, csolf, coarse.axes,
+            dev.csolc_host, sim.smoothing; projectile = sim.projectile,
+            packed = true)
+    advance && advance_projectile!(sim, accelerator)
+
+    dev.φ[1] .= csolf
+    dev.φ[2] .= csolc
+    hartree
+end
+
+"""
+    sync_host!(sim) -> sim
+
+Copies the device grids back into `sim.ρ`, `sim.φ` and `sim.csol`.
+
+A resident simulation keeps its grids on the device, where a script reading
+`sim.φ[1]` would not find them. Call this before looking. A no-op when there is
+no device state.
+"""
+sync_host!(sim::Simulation{T,P,A,Nothing}) where {T,P,A} = sim
+
+function sync_host!(sim::Simulation)
+    dev = sim.device
+    for l in 1:2
+        sim.ρ[l] .= Array(dev.ρ[l])
+        sim.φ[l] .= Array(dev.φ[l])
+        sim.csol[l] .= Array(dev.csol[l])
+    end
+    sim
 end

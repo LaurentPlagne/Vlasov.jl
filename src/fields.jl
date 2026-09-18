@@ -256,7 +256,7 @@ end
 Used on the coarse grid, where the particles are far from the dense region and
 smoothing no longer serves any purpose.
 """
-function spline_field(axes::NTuple{3,SplineAxis{T}}, csol::Array{T,3}, p) where {T}
+function spline_field(axes::NTuple{3,SplineAxis}, csol::AbstractArray{T,3}, p) where {T}
     # Same precaution as in `spline_potential`: rule out the `nothing` before
     # building anything, on pain of type instability.
     cx = cell_index(axes[1].knots, p[1])

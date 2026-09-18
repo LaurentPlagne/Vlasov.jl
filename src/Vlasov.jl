@@ -56,6 +56,7 @@ export PotentialProfile, read_potential_profile, read_radial_density
 export initial_cloud, FERMI_COEFFICIENT
 export EnergyBudget, energy_budget, interaction_energy, hartree_energy, ion_self_energy
 export SimulationParameters, read_parameters, Simulation, run!
+export DeviceState, sync_host!
 export Projectile, projectile_forces!, energy_loss, kinetic_energy, HARTREE_TO_EV
 export Softening, BallSoftening, GaussianSoftening, force_kernel, pair_potential, gaussian_force_kernel
 export ForceAccelerator, DeviceAccelerator, DeviceMesh
