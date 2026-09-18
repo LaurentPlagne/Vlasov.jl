@@ -238,16 +238,21 @@ Fills `φ` (full grid size) with the multipole potential on the **faces** of the
 domain. The interior is left at zero: it is never read, only the faces serve the
 lifting.
 """
-function boundary_potential!(φ::Array{T,3}, mesh::SplineMesh{3,T},
-                             mp::Multipole{T}) where {T}
-    gx, gy, gz = map(ax -> ax.colloc, mesh.axes)
+function _boundary_potential!(φ::AbstractArray{T,3}, mp::Multipole, colloc) where {T}
+    gx, gy, gz = colloc
     nx, ny, nz = length(gx), length(gy), length(gz)
     fill!(φ, zero(T))
-    foreach_face(nx, ny, nz) do i, j, k
-        @inbounds φ[i, j, k] = potential(mp, gx[i], gy[j], gz[k])
-    end
+    backend = get_backend(φ)
+    _boundary_potential_kernel!(backend)(φ, mp, gx, gy, gz,
+                                         Int32(nx), Int32(ny), Int32(nz);
+                                         ndrange = nface(nx, ny, nz))
+    synchronize(backend)
     φ
 end
+
+boundary_potential!(φ::AbstractArray{T,3}, mesh::SplineMesh{3,T},
+                    mp::Multipole{T}) where {T} =
+    _boundary_potential!(φ, mp, map(ax -> ax.colloc, mesh.axes))
 
 """
     poisson_rhs!(rhs, ρ, mesh) -> rhs

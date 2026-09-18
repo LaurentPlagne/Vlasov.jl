@@ -359,3 +359,63 @@ skips them — and counted into `nout`, one atomic each. They are rare.
         end
     end
 end
+
+"""
+    nface(nx, ny, nz) -> Int
+
+How many points lie on the surface of an `nx × ny × nz` grid.
+
+Two full faces, plus a ring of `2nx + 2ny − 4` for each of the `nz − 2` layers
+between them — the `−4` because the corners would otherwise be counted twice.
+"""
+@inline nface(nx, ny, nz) = 2 * nx * ny + (nz - 2) * (2 * nx + 2 * ny - 4)
+
+"""
+    _face_point(t, nx, ny, nz) -> (i, j, k)
+
+The `t`-th surface point, `t` running over `1:nface(nx,ny,nz)`.
+
+This is the kernel's counterpart to `foreach_face`, and it exists for the same
+reason: sweeping the volume and rejecting the interior would visit 195 000
+points to write 19 500 — nine tenths of the work spent deciding to do nothing.
+Here the enumeration is inverted instead, so each work-item lands on a point it
+will actually write.
+"""
+@inline function _face_point(t, nx, ny, nz)
+    t0 = t - Int32(1)
+    cap = nx * ny
+    if t0 < cap                       # the k = 1 face
+        return (t0 % nx + Int32(1), t0 ÷ nx + Int32(1), Int32(1))
+    end
+    t0 -= cap
+    if t0 < cap                       # the k = nz face
+        return (t0 % nx + Int32(1), t0 ÷ nx + Int32(1), nz)
+    end
+    t0 -= cap
+    ring = Int32(2) * nx + Int32(2) * (ny - Int32(2))
+    k = t0 ÷ ring + Int32(2)          # the side walls, k = 2 … nz−1
+    r = t0 % ring
+    if r < nx
+        (r + Int32(1), Int32(1), k)
+    elseif r < Int32(2) * nx
+        (r - nx + Int32(1), ny, k)
+    elseif r < Int32(2) * nx + (ny - Int32(2))
+        (Int32(1), r - Int32(2) * nx + Int32(2), k)
+    else
+        (nx, r - Int32(2) * nx - (ny - Int32(2)) + Int32(2), k)
+    end
+end
+
+"""
+Multipole potential on the faces of the domain — the Dirichlet values the
+interior solve is lifted against.
+
+`mp` travels by value: a `Multipole` is three numbers and two small tuples, so
+it is `isbits` and needs no buffer of its own.
+"""
+@kernel function _boundary_potential_kernel!(φ, mp, @Const(gx), @Const(gy),
+                                             @Const(gz), nx, ny, nz)
+    t = @index(Global, Linear)
+    i, j, k = _face_point(Int32(t), nx, ny, nz)
+    @inbounds φ[i, j, k] = potential(mp, gx[i], gy[j], gz[k])
+end
