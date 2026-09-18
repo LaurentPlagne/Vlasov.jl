@@ -14,7 +14,25 @@ import Vlasov: ForceAccelerator, forces!, deposit_smoothed!, projectile_forces!,
                spline_field, nearest_knot, table_column, GaussianSmoothing,
                SplineAxis, SplineMesh, ParticleCloud, CellSort, cellsort!,
                total_charge, uniform_sphere_potential, contract_spline_10,
-               gaussian_force_kernel
+               gaussian_force_kernel, DualBuffer, dual_buffer
+
+"""
+Zero-copy buffers on Apple Silicon — the whole of what this backend has to say
+about the generic accelerator.
+
+`Metal.SharedStorage` places the array in memory that both the CPU and the GPU
+address, so `unsafe_wrap` hands back an `Array` over the very same bytes.
+[`Vlasov.upload!`](@ref) and [`Vlasov.download!`](@ref) then do nothing, which
+is the point: on unified memory the transfers the generic path would otherwise
+perform are pure waste.
+"""
+function Vlasov.dual_buffer(::Metal.MetalBackend, ::Type{T},
+                            dims::Integer...) where {T}
+    mtl = MtlArray{T,length(dims),Metal.SharedStorage}(undef, dims...)
+    host = unsafe_wrap(Array, mtl)
+    fill!(host, zero(T))
+    DualBuffer(mtl, host, true)
+end
 
 """
     SharedBuffer{T,N}
@@ -83,36 +101,18 @@ function _uniform_step(ax::SplineAxis)
     h
 end
 
-function Vlasov.ForceAccelerator(::Type{MtlArray}, fine::NTuple{3,SplineAxis{T}},
-                                 sm::GaussianSmoothing{T}, npart::Integer,
-                                 n::Integer) where {T}
-    h = _uniform_step(fine[1])
-    for d in 2:3
-        isapprox(_uniform_step(fine[d]), h; rtol = 1e-12) ||
-            throw(ArgumentError("the Metal backend assumes the three axes are identical"))
-    end
+"""
+    ForceAccelerator(MtlArray, fine, smoothing, npart, n)
 
-    MetalForceAccelerator(
-        SharedBuffer(Float32, n, n, n),
-        SharedBuffer(Float32, 3, npart),
-        SharedBuffer(Int32, 3, npart),
-        SharedBuffer(Float32, 3, npart),
-        SharedBuffer(Int32, 3, npart),
-        SharedBuffer(Float32, n, n, n),
-        SharedBuffer(Float32, 4),
-        Ref(fill!(MtlArray{Int32,1,Metal.SharedStorage}(undef, 1), Int32(0))),
-        Ref(fill!(MtlArray{Int32,1,Metal.SharedStorage}(undef, 1), Int32(0))),
-        MtlArray(Float32.(sm.overlap)),
-        MtlArray(Float32.(sm.gradient)),
-        MtlArray(Float32.(sm.nodes)),
-        CellSort(fine[1], npart),
-        Float32(fine[1].knots[1]),
-        Float32(h),
-        Float32(sm.spacing),
-        Int32(sm.nbdt),
-        Int32(size(sm.overlap, 2)),
-        npart)
-end
+The entry point the scripts already name. It now builds the backend-agnostic
+[`Vlasov.DeviceAccelerator`](@ref) on `MetalBackend()`, in `Float32` — Apple
+GPUs having no double precision — so the scripts change nothing and gain the
+portable kernels.
+"""
+Vlasov.ForceAccelerator(::Type{MtlArray}, fine::NTuple{3,SplineAxis{T}},
+                        sm::GaussianSmoothing{T}, npart::Integer,
+                        n::Integer) where {T} =
+    Vlasov.DeviceAccelerator(Metal.MetalBackend(), Float32, fine, sm, npart, n)
 
 """
 Packs the positions in `(k, δ)` form directly into shared memory:

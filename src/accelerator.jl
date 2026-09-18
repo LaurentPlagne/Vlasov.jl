@@ -72,6 +72,9 @@ struct DeviceAccelerator{E,T,B,BC,BF,BR,BI,BU,BX,C} <: ForceAccelerator
     reduction::BR
     cells::BU
     bounds::BU
+    "Sorted order, and the count of particles the deposition drops."
+    perm::BU
+    nout::BU
     "Constant tables, device-resident: they never change during a run."
     overlap::BX
     gradient::BX
@@ -134,6 +137,8 @@ function DeviceAccelerator(backend, ::Type{E}, fine::NTuple{3,SplineAxis{T}},
         # `Ref` in the hot path.
         dual_buffer(backend, Int32, length(fine[1].knots)^3),
         dual_buffer(backend, Int32, length(fine[1].knots)^3 + 1),
+        dual_buffer(backend, Int32, npart),    # perm
+        dual_buffer(backend, Int32, 1),        # nout
         dev(sm.overlap), dev(sm.gradient), dev(sm.nodes),
         CellSort(fine[1], npart),
         T(fine[1].knots[1]), T(h), E(sm.spacing), Int32(sm.nbdt),
@@ -152,43 +157,32 @@ function _pack!(acc::DeviceAccelerator{E,T}, positions) where {E,T}
 end
 
 """
-Table columns in sorted order, written into the host face of `cols`.
+Table columns in sorted order — on the device.
 
-Stays on the host for the same reason the packing does: the column is read from
-`δ` in full precision. Particles whose stencil would leave the grid are counted
-and parked on column 1 — they contribute nothing, the kernel drops them.
+This used to be a threaded host loop, and it was the **largest** host item of
+the deposition: 5.42 ms against 3.39 for the sort and 1.71 for the packing, at
+2×10⁶ particles on Metal. It is here now because it need not have been there:
+it read `δ` through a `Float64` conversion that recovered nothing, `δ` having
+already been narrowed to `E` by the packing.
+
+What it still needs from the host is `perm`, the sorted order — until the sort
+itself moves across.
 """
 function _fill_columns!(acc::DeviceAccelerator{E,T}, mesh, sm, positions) where {E,T}
     knots = mesh.axes[1].knots
     half = sm.spacing / 2
-    lo = knots[2] + half
-    hi = knots[end-1] - half
-    sp = sm.spacing
-    nbdt = sm.nbdt
-    ncol = size(sm.nodes, 2)
-    perm = acc.sorter.perm
-    cols = acc.cols.host
-    delta = acc.delta.host
-    nout = Threads.Atomic{Int}(0)
+    copyto!(acc.perm.host, 1, acc.sorter.perm, 1, acc.npart)
+    upload!(acc.perm)
+    fill!(acc.nout.device, Int32(0))
 
-    Threads.@threads for s in eachindex(perm)
-        @inbounds begin
-            i = perm[s]
-            p = positions[i]
-            if lo <= p[1] <= hi && lo <= p[2] <= hi && lo <= p[3] <= hi
-                for d in 1:3
-                    cols[d, s] = clamp(floor(Int32, (T(delta[d, i]) + half) / sp *
-                                             nbdt + 0.5) + Int32(1),
-                                       Int32(1), Int32(ncol))
-                end
-            else
-                cols[1, s] = cols[2, s] = cols[3, s] = Int32(1)
-                Threads.atomic_add!(nout, 1)
-            end
-        end
-    end
-    upload!(acc.cols)
-    nout[]
+    _columns_kernel!(acc.backend)(
+        acc.cols.device, acc.knode.device, acc.delta.device, acc.perm.device,
+        E(acc.x0), E(acc.h), E(knots[2] + half), E(knots[end-1] - half),
+        acc.spacing, acc.nbdt, acc.ncol, acc.nout.device; ndrange = acc.npart)
+    synchronize(acc.backend)
+
+    download!(acc.nout)
+    Int(acc.nout.host[1])
 end
 
 function deposit_smoothed!(ρ::AbstractArray{T,3}, acc::DeviceAccelerator{E,T},
