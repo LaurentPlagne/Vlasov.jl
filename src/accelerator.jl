@@ -217,7 +217,15 @@ function DeviceAccelerator(backend, ::Type{E}, fine::NTuple{3,SplineAxis{T}},
         Int32(size(sm.overlap, 2)), Int(npart))
 end
 
-"""Packs the positions into the host face of `knode`/`delta`, then uploads."""
+"""
+Packs the positions into `(k, δ)`, orders the particles by cell, and builds the
+out-of-stencil list — everything that depends on **where the particles are** and
+on nothing else.
+
+⚠️ The sort belongs here and not in the deposition, although the deposition is
+what first needed it: the force kernel now walks the particles in that order
+too, and a `forces!` called on its own would otherwise read a stale `perm`.
+"""
 function _pack!(acc::DeviceAccelerator{E,T}, positions) where {E,T}
     cpu = KernelAbstractions.CPU()
     _pack_kd_kernel!(cpu)(acc.knode.host, acc.delta.host, positions,
@@ -225,6 +233,10 @@ function _pack!(acc::DeviceAccelerator{E,T}, positions) where {E,T}
                           ndrange = length(positions))
     synchronize(cpu)
     upload!(acc.knode); upload!(acc.delta)
+
+    cellsort!(acc.sorter, positions)
+    copyto!(acc.perm.host, 1, acc.sorter.perm, 1, acc.npart)
+    upload!(acc.perm)
 
     # The out-of-stencil list, built here because it depends only on where the
     # particles are. Both the forces and the energy budget read it, and the
@@ -247,18 +259,15 @@ the deposition: 5.42 ms against 3.39 for the sort and 1.71 for the packing, at
 it read `δ` through a `Float64` conversion that recovered nothing, `δ` having
 already been narrowed to `E` by the packing.
 
-What it still needs from the host is `perm`, the sorted order — until the sort
-itself moves across.
+`perm` comes from [`_pack!`](@ref), which sorts.
 """
 function _fill_columns!(acc::DeviceAccelerator{E,T}, mesh, sm, positions) where {E,T}
     knots = mesh.axes[1].knots
     half = sm.spacing / 2
-    copyto!(acc.perm.host, 1, acc.sorter.perm, 1, acc.npart)
-    upload!(acc.perm)
     fill!(acc.nout.device, Int32(0))
 
     _columns_kernel!(acc.backend)(
-        acc.cols.device, acc.knode.device, acc.delta.device, acc.perm.device,
+        acc.cols.device, acc.knode.device, acc.delta.device,
         E(acc.x0), E(acc.h), E(knots[2] + half), E(knots[end-1] - half),
         acc.spacing, acc.nbdt, acc.ncol, acc.nout.device; ndrange = acc.npart)
     synchronize(acc.backend)
@@ -270,8 +279,7 @@ end
 function deposit_smoothed!(ρ::AbstractArray, acc::DeviceAccelerator{E,T},
                            mesh::SplineMesh{3,T}, sm::GaussianSmoothing{T},
                            positions; charge::T) where {E,T}
-    _pack!(acc, positions)
-    cellsort!(acc.sorter, positions)
+    _pack!(acc, positions)          # packs, sorts, and lists the boundary cases
     nout = _fill_columns!(acc, mesh, sm, positions)
 
     ncell = length(acc.sorter.occupied)
@@ -287,7 +295,7 @@ function deposit_smoothed!(ρ::AbstractArray, acc::DeviceAccelerator{E,T},
     fill!(target, zero(E))
 
     _deposit_sorted_kernel!(acc.backend, DEPOSIT_GROUPSIZE)(
-        target, acc.nodes, acc.cols.device, acc.cells.device,
+        target, acc.nodes, acc.cols.device, acc.perm.device, acc.cells.device,
         acc.bounds.device, Int32(acc.sorter.nknots); ndrange = ncell * DEPOSIT_GROUPSIZE)
     synchronize(acc.backend)
 
@@ -335,7 +343,8 @@ function forces!(cloud::ParticleCloud{T}, acc::DeviceAccelerator{E,T},
 
     _smoothed_field_kernel!(acc.backend, FIELD_GROUPSIZE)(
         acc.force.device, csol, acc.overlap, acc.gradient,
-        acc.knode.device, acc.delta.device, E(acc.x0), E(acc.h), acc.spacing,
+        acc.knode.device, acc.delta.device, acc.perm.device,
+        E(acc.x0), E(acc.h), acc.spacing,
         acc.nbdt, E(cloud.weight), acc.ncol, Int32(npart),
         pp[1], pp[2], pp[3], coef, σ, acc.reduction.device;
         ndrange = cld(npart, FIELD_GROUPSIZE) * FIELD_GROUPSIZE)

@@ -114,9 +114,9 @@ written by hand and `ndrange` is padded to a whole number of groups.
 """
 @kernel unsafe_indices = true function _smoothed_field_kernel!(
         force, @Const(csol), @Const(ovl), @Const(grad), @Const(knode),
-        @Const(delta), x0, h, spacing, nbdt, w, nc, npart,
+        @Const(delta), @Const(perm), x0, h, spacing, nbdt, w, nc, npart,
         px0, py0, pz0, coef, σ, red)
-    i = @index(Global, Linear)
+    t = @index(Global, Linear)
     tid = @index(Local, Linear)
     @uniform GS = Int32(FIELD_GROUPSIZE)
     @uniform E = eltype(force)
@@ -131,7 +131,13 @@ written by hand and `ndrange` is padded to a whole number of groups.
         @inbounds sh[c*GS+tid] = zero(E)
     end
 
-    @inbounds if i <= npart
+    @inbounds if t <= npart
+        # ⚠️ Work-items walk the particles in **sorted** order. Each reads a 10³
+        # stencil of `csol` — 4 KB — and in cell order the neighbours of a
+        # work-item read very nearly the same 4 KB, which the cache then serves
+        # once instead of once per particle. The price is that `knode` and
+        # `delta` become a gather: 24 bytes against the 4 KB it protects.
+        i = perm[t]
         kx = knode[1, i]; ky = knode[2, i]; kz = knode[3, i]
         dx0 = delta[1, i]; dy0 = delta[2, i]; dz0 = delta[3, i]
         bx = Int32(2) * kx - Int32(5)
@@ -238,7 +244,8 @@ stencil offsets are **recomputed** on each side of a barrier — they are three
 integer divisions, cheaper than the machinery needed to carry them across.
 """
 @kernel unsafe_indices = true function _deposit_sorted_kernel!(
-        ρ, @Const(nodes), @Const(cols), @Const(cellids), @Const(bounds), nk)
+        ρ, @Const(nodes), @Const(cols), @Const(perm), @Const(cellids),
+        @Const(bounds), nk)
     @uniform E = eltype(ρ)
     t = @index(Local, Linear)
 
@@ -271,10 +278,14 @@ integer divisions, cheaper than the machinery needed to carry them across.
             cursor = state[1]
             chunk = min(Int32(DEPOSIT_STAGE), state[2] - cursor)
             if t <= chunk
+                # The sort lives here, in the staging: one gather of 12 bytes
+                # per particle per cell, overlapped with the inner loop below —
+                # rather than a pass of its own over every particle.
+                q = perm[cursor+t]
                 b = Int32(3) * (t - Int32(1))
-                shared[b+Int32(1)] = cols[1, cursor+t]
-                shared[b+Int32(2)] = cols[2, cursor+t]
-                shared[b+Int32(3)] = cols[3, cursor+t]
+                shared[b+Int32(1)] = cols[1, q]
+                shared[b+Int32(2)] = cols[2, q]
+                shared[b+Int32(3)] = cols[3, q]
             end
         end
         @synchronize
@@ -321,9 +332,18 @@ end
 """
 Table columns, in sorted order, for the deposition.
 
-One work-item per particle of the sorted order. The position is **rebuilt** from
-its packed form, `p = x₀ + (k−1)h + δ`, rather than read from the cloud: that is
-what lets this run on the device without the positions having to live there too.
+One work-item per particle, in the cloud's **own** order — not the sorted one.
+Everything it reads and everything it writes is then sequential.
+
+⚠️ It used to walk the sorted order, which cost a gather of `knode` and `delta`
+— 24 bytes scattered over `npart` — and that gather was the whole expense:
+392 ms of the step at 8×10⁷ particles, for arithmetic worth nothing. Sorting is
+still needed, but by the **deposition**, which gathers 12 bytes instead of 24
+and hides the latency behind its inner loop.
+
+The position is **rebuilt** from its packed form, `p = x₀ + (k−1)h + δ`, rather
+than read from the cloud: that is what lets this run on the device without the
+positions having to live there too.
 
 The rebuild happens in `E`, so where `E` is `Float32` the boundary test and the
 column rounding shift by a few ulp, and particles on the very edge could in
@@ -335,11 +355,10 @@ The density then agrees to 4.3e-05, which is the atomic ordering and not this.
 Particles outside are parked on column 1 — they deposit nothing, the kernel
 skips them — and counted into `nout`, one atomic each. They are rare.
 """
-@kernel function _columns_kernel!(cols, @Const(knode), @Const(delta), @Const(perm),
+@kernel function _columns_kernel!(cols, @Const(knode), @Const(delta),
                                   x0, h, lo, hi, spacing, nbdt, ncol, nout)
-    s = @index(Global, Linear)
+    i = @index(Global, Linear)
     @inbounds begin
-        i = perm[s]
         E = eltype(delta)
         half = spacing * E(0.5)
         inside = true
@@ -349,12 +368,12 @@ skips them — and counted into `nout`, one atomic each. They are rare.
         end
         if inside
             for d in Int32(1):Int32(3)
-                cols[d, s] = min(max(floor(Int32, (delta[d, i] + half) / spacing *
+                cols[d, i] = min(max(floor(Int32, (delta[d, i] + half) / spacing *
                                            nbdt + E(0.5)) + Int32(1),
                                      Int32(1)), ncol)
             end
         else
-            cols[1, s] = Int32(1); cols[2, s] = Int32(1); cols[3, s] = Int32(1)
+            cols[1, i] = Int32(1); cols[2, i] = Int32(1); cols[3, i] = Int32(1)
             Atomix.@atomic nout[1] += Int32(1)
         end
     end
@@ -476,3 +495,4 @@ wants it to be.
         end
     end
 end
+

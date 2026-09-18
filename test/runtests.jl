@@ -1356,12 +1356,17 @@ end
                       for i in 1:npart, d in 1:3) < 1e-12
 
         # --- smoothed field: must reproduce `smoothed_field` exactly ---------
+        # The kernel walks the particles through a permutation — in production
+        # the cell order, which is what gives it its stencil reuse. Here the
+        # identity: what is under test is the arithmetic, and it must not depend
+        # on the order it is visited in.
         force = zeros(Float64, 3, npart)
         red = zeros(Float64, 4)
         w = 0.245
         GS = Vlasov.FIELD_GROUPSIZE
+        perm = collect(Int32, 1:npart)
         Vlasov._smoothed_field_kernel!(backend, GS)(
-            force, csol, sm.overlap, sm.gradient, knode, delta, x0, h,
+            force, csol, sm.overlap, sm.gradient, knode, delta, perm, x0, h,
             sm.spacing, Int32(sm.nbdt), w, Int32(size(sm.overlap, 2)),
             Int32(npart), 0.0, 0.0, 0.0, 0.0, 1.0, red;
             ndrange = cld(npart, GS) * GS)
@@ -1377,19 +1382,20 @@ end
         half = sm.spacing / 2
         lo, hi = knots[2] + half, knots[end-1] - half
         ncol = size(sm.nodes, 2)
+        # ⚠️ The columns are indexed by the particle, **not** by its rank in the
+        # sorted order: the deposition does that gather itself, in its staging.
         cols = Matrix{Int32}(undef, 3, npart)
         nout = 0
-        for s in 1:npart
-            i = sorter.perm[s]
+        for i in 1:npart
             p = pos[i]
             if all(d -> lo <= p[d] <= hi, 1:3)
                 for d in 1:3
-                    cols[d, s] = clamp(floor(Int32, (delta[d, i] + half) / sm.spacing *
+                    cols[d, i] = clamp(floor(Int32, (delta[d, i] + half) / sm.spacing *
                                              sm.nbdt + 0.5) + Int32(1),
                                        Int32(1), Int32(ncol))
                 end
             else
-                cols[1, s] = cols[2, s] = cols[3, s] = Int32(1)
+                cols[1, i] = cols[2, i] = cols[3, i] = Int32(1)
                 nout += 1
             end
         end
@@ -1397,8 +1403,8 @@ end
         ρ = zeros(Float64, n, n, n)
         DGS = Vlasov.DEPOSIT_GROUPSIZE
         Vlasov._deposit_sorted_kernel!(backend, DGS)(
-            ρ, sm.nodes, cols, sorter.occupied, sorter.bounds, Int32(nk);
-            ndrange = ncell * DGS)
+            ρ, sm.nodes, cols, sorter.perm, sorter.occupied, sorter.bounds,
+            Int32(nk); ndrange = ncell * DGS)
         synchronize(backend)
         ρ .*= (npart - nout) / total_charge(ρ, mesh)
 
