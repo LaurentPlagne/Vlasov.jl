@@ -125,11 +125,11 @@ collocation_axes(mesh::SplineMesh) = map(ax -> ax.colloc[2:end-1], mesh.axes)
 Solves `∇²φ = ρ` at the interior collocation points, with homogeneous Dirichlet
 conditions. `φ` and `ρ` may be the same array.
 """
-solve!(φ::Array{T,N}, ρ::Array{T,N}, mesh::SplineMesh{N,T}) where {T,N} =
+solve!(φ::AbstractArray{T,N}, ρ::AbstractArray{T,N}, mesh::SplineMesh{N,T}) where {T,N} =
     solve!(φ, ρ, mesh.solver)
 
 """Allocating version of [`solve!`](@ref)."""
-solve(ρ::Array{T,N}, mesh::SplineMesh{N,T}) where {T,N} = solve!(similar(ρ), ρ, mesh)
+solve(ρ::AbstractArray{T,N}, mesh::SplineMesh{N,T}) where {T,N} = solve!(similar(ρ), ρ, mesh)
 
 """
     laplacian!(dest, φ, mesh)
@@ -137,7 +137,7 @@ solve(ρ::Array{T,N}, mesh::SplineMesh{N,T}) where {T,N} = solve!(similar(ρ), �
 Applies the operator `∇² = Σ_d D_d` — the forward operation, of which
 [`solve!`](@ref) is the inverse. Used to check a residual.
 """
-function laplacian!(dest::Array{T,N}, φ::Array{T,N}, mesh::SplineMesh{N,T}) where {T,N}
+function laplacian!(dest::AbstractArray{T,N}, φ::AbstractArray{T,N}, mesh::SplineMesh{N,T}) where {T,N}
     fill!(dest, zero(T))
     tmp = similar(dest)
     for d in 1:N

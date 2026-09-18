@@ -184,7 +184,7 @@ end
 Converts values at the collocation points into spline coefficients by applying
 `S⁻¹` in each direction (the Fortran's `tensrus2`).
 """
-function spline_coefficients!(c::Array{T,N}, ρ::Array{T,N},
+function spline_coefficients!(c::AbstractArray{T,N}, ρ::AbstractArray{T,N},
                               mesh::SplineMesh{N,T}) where {T,N}
     # Same kernel as the tensor solver: `N` rotations, `N` matrix-matrix
     # products, no slicing. The buffer comes from the mesh rather than from a
@@ -193,7 +193,7 @@ function spline_coefficients!(c::Array{T,N}, ρ::Array{T,N},
 end
 
 """Allocating version of [`spline_coefficients!`](@ref)."""
-spline_coefficients(ρ::Array{T,N}, mesh::SplineMesh{N,T}) where {T,N} =
+spline_coefficients(ρ::AbstractArray{T,N}, mesh::SplineMesh{N,T}) where {T,N} =
     spline_coefficients!(similar(ρ), ρ, mesh)
 
 """

@@ -84,8 +84,8 @@ result in `dest`. Allocation-free.
 The array is viewed as `(L, nᵈ, R)`; for `d = 1` a single `mul!` suffices,
 otherwise we loop over slices — each of which stays contiguous in memory.
 """
-function apply_mode!(dest::Array{T,N}, A::AbstractMatrix{T}, src::Array{T,N},
-                     d::Integer) where {T,N}
+function apply_mode!(dest::AbstractArray{T,N}, A::AbstractMatrix{T},
+                     src::AbstractArray{T,N}, d::Integer) where {T,N}
     dims = size(src)
     L = prod(ntuple(i -> dims[i], d - 1))
     n = dims[d]
@@ -120,8 +120,8 @@ Two consequences: **one GEMM per dimension** instead of a loop over slices for
 the middle dimensions, and a shape — one large matrix-matrix product — which is
 exactly what a GPU runs best.
 """
-@inline function apply_rotating!(dest::Array{T,N}, A::AbstractMatrix{T},
-                                 src::Array{T,N}, dims::NTuple{N,Int}) where {T,N}
+@inline function apply_rotating!(dest::AbstractArray{T,N}, A::AbstractMatrix{T},
+                                 src::AbstractArray{T,N}, dims::NTuple{N,Int}) where {T,N}
     n = dims[1]
     m = length(src) ÷ n
     mul!(reshape(dest, m, n), transpose(reshape(src, n, m)), transpose(A))
@@ -146,8 +146,8 @@ number of remaining steps**, not from an ad-hoc counter. A single-buffer
 ping-pong would make source and destination coincide from the second step on —
 reading and writing would tread on each other, silently.
 """
-function apply_all_rotating!(dest::Array{T,N}, mats, src::Array{T,N},
-                             work::Array{T,N}) where {T,N}
+function apply_all_rotating!(dest::AbstractArray{T,N}, mats, src::AbstractArray{T,N},
+                             work::AbstractArray{T,N}) where {T,N}
     dest === src && throw(ArgumentError("`dest` and `src` must be distinct"))
     dims = size(src)
     cur = src
@@ -170,7 +170,7 @@ all: both buffers belong to the solver. Allocations count double here — they d
 not merely cost their price, they trigger a garbage collection that brings the
 threads to a halt.
 """
-function solve!(X::Array{T,N}, B::Array{T,N}, s::TensorSolver{N,T}) where {T,N}
+function solve!(X::AbstractArray{T,N}, B::AbstractArray{T,N}, s::TensorSolver{N,T}) where {T,N}
     size(X) == size(B) == size(s) ||
         throw(DimensionMismatch("dimensions incompatible with the solver"))
 
@@ -186,4 +186,4 @@ function solve!(X::Array{T,N}, B::Array{T,N}, s::TensorSolver{N,T}) where {T,N}
 end
 
 """Allocating version of [`solve!`](@ref)."""
-solve(B::Array{T,N}, s::TensorSolver{N,T}) where {T,N} = solve!(similar(B), B, s)
+solve(B::AbstractArray{T,N}, s::TensorSolver{N,T}) where {T,N} = solve!(similar(B), B, s)
