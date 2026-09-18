@@ -139,6 +139,11 @@ struct DeviceAccelerator{E,T,B,G,BC,BF,BR,BI,BU,BX,C} <: ForceAccelerator
     "Sorted order, and the count of particles the deposition drops."
     perm::BU
     nout::BU
+    """Particles whose stencil leaves the fine grid, compacted once per step.
+       Shared by the forces and the energy budget — see
+       [`_outside_kernel!`](@ref)."""
+    outlist::BU
+    outcount::BU
     "Constant tables, device-resident: they never change during a run."
     overlap::BX
     gradient::BX
@@ -204,6 +209,8 @@ function DeviceAccelerator(backend, ::Type{E}, fine::NTuple{3,SplineAxis{T}},
         dual_buffer(backend, Int32, length(fine[1].knots)^3 + 1),
         dual_buffer(backend, Int32, npart),    # perm
         dual_buffer(backend, Int32, 1),        # nout
+        dual_buffer(backend, Int32, npart),    # outlist
+        dual_buffer(backend, Int32, 1),        # outcount
         dev(sm.overlap), dev(sm.gradient), dev(sm.nodes),
         CellSort(fine[1], npart),
         T(fine[1].knots[1]), T(h), E(sm.spacing), Int32(sm.nbdt),
@@ -218,7 +225,17 @@ function _pack!(acc::DeviceAccelerator{E,T}, positions) where {E,T}
                           ndrange = length(positions))
     synchronize(cpu)
     upload!(acc.knode); upload!(acc.delta)
-    nothing
+
+    # The out-of-stencil list, built here because it depends only on where the
+    # particles are. Both the forces and the energy budget read it, and the
+    # budget runs first.
+    fill!(acc.outcount.device, Int32(0))
+    _outside_kernel!(acc.backend)(acc.outlist.device, acc.outcount.device,
+                                  acc.knode.device, Int32(size(acc.csol.device, 1)),
+                                  Int32(acc.npart); ndrange = acc.npart)
+    download!(acc.outcount, acc.backend)
+    download!(acc.outlist, acc.backend)
+    Int(acc.outcount.host[1])
 end
 
 """
@@ -306,34 +323,42 @@ function forces!(cloud::ParticleCloud{T}, acc::DeviceAccelerator{E,T},
     synchronize(acc.backend)
     download!(acc.force, acc.backend); download!(acc.reduction, acc.backend)
 
-    # The particles whose stencil overflowed the grid come back on the host:
-    # they are rare, and branching on them in the kernel is exactly what one
-    # does not want there.
-    n = 0
+    # ⚠️ Two passes, not one branchy loop over every particle. The conversion
+    # `E → T` has to touch all of them — `cloud.forces` is a host vector until
+    # the cloud itself moves across — but with the boundary cases no longer
+    # interleaved it becomes a flat loop, and a flat loop can be **threaded**.
+    # The one it replaces was serial.
+    #
+    # Measured: broadcasting through `reinterpret(reshape, …)` instead looks
+    # tidier and costs ×1.6 — the reinterpreted view does not vectorise the way
+    # a direct store of tuples does.
     w = cloud.weight
     w2 = w * w
     f = acc.force.host
-    @inbounds for i in 1:npart
-        if isnan(f[1, i])
-            n += 1
-            p = cloud.positions[i]
-            Ec = spline_field(coarse, csol_coarse, p)
-            force = if Ec === nothing
-                r3 = (p[1]^2 + p[2]^2 + p[3]^2)^T(1.5)
-                (-w2 * escaped / r3) .* p
-            else
-                w .* Ec
-            end
-            if projectile !== nothing
-                d = projectile.position .- p
-                m = -w * projectile.charge *
-                    force_kernel(projectile.softening, sum(abs2, d))
-                force = force .- m .* d
-            end
-            cloud.forces[i] = force
-        else
+    tforeach(npart) do slice
+        @inbounds for i in slice
             cloud.forces[i] = (T(f[1, i]), T(f[2, i]), T(f[3, i]))
         end
+    end
+
+    n = Int(acc.outcount.host[1])
+    @inbounds for s in 1:n
+        i = Int(acc.outlist.host[s])
+        p = cloud.positions[i]
+        Ec = spline_field(coarse, csol_coarse, p)
+        force = if Ec === nothing
+            r3 = (p[1]^2 + p[2]^2 + p[3]^2)^T(1.5)
+            (-w2 * escaped / r3) .* p
+        else
+            w .* Ec
+        end
+        if projectile !== nothing
+            d = projectile.position .- p
+            m = -w * projectile.charge *
+                force_kernel(projectile.softening, sum(abs2, d))
+            force = force .- m .* d
+        end
+        cloud.forces[i] = force
     end
     n
 end

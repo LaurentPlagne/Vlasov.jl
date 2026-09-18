@@ -444,3 +444,35 @@ there. The `NaN` is the visible trace should that guarantee ever be broken.
         φ[i, j, k] = v === nothing ? eltype(φ)(NaN) : v
     end
 end
+
+"""
+Compacts, into `outlist`, the indices of the particles whose 10³ stencil does
+not fit inside the fine grid.
+
+They take the coarse-grid path instead, and there are few of them. The list is
+built **once per step**, right after the packing, because it depends only on
+where the particles are — not on which potential is being evaluated. That is
+what lets the forces and the energy budget share it, although the budget runs
+first.
+
+The append is one atomic per outside particle, and the slot it returns is the
+particle's place in the list. Order is not preserved, and nothing downstream
+wants it to be.
+"""
+@kernel function _outside_kernel!(outlist, outcount, @Const(knode), n, npart)
+    i = @index(Global, Linear)
+    @inbounds if i <= npart
+        # ⚠️ The same test, spelled the same way, as in the field kernel. The
+        # two must agree exactly: one decides what to skip, the other what to
+        # pick up.
+        bx = Int32(2) * knode[1, i] - Int32(5)
+        by = Int32(2) * knode[2, i] - Int32(5)
+        bz = Int32(2) * knode[3, i] - Int32(5)
+        ok = bx >= Int32(1) && by >= Int32(1) && bz >= Int32(1) &&
+             bx + Int32(9) <= n && by + Int32(9) <= n && bz + Int32(9) <= n
+        if !ok
+            slot = Atomix.@atomic outcount[1] += Int32(1)
+            outlist[slot] = Int32(i)
+        end
+    end
+end
