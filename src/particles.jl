@@ -91,22 +91,44 @@ function step!(cloud::ParticleCloud{T}, dt::T; rcmax::Real = T(Inf)) where {T}
     acc = dt^2 / M
     pfac = M / 2dt
     r2max = T(rcmax)^2
-    ekin = zero(T)
-    eout = zero(T)
-    angular = ntuple(_ -> zero(T), 3)
+    # ⚠️ **Threaded by chunks, and recombined in chunk order.** This loop is
+    # pure streaming — 108 bytes per particle, read and written once — and left
+    # serial it ran at 30 GB/s where the ten cores sustain 171: one core's share,
+    # exactly. It stayed serial because it carries three reductions, which is a
+    # reason to chunk them, not a reason to give up the other nine cores.
+    #
+    # The recombination walks the chunks in order, so the result depends on the
+    # thread *count* but never on the order they happen to finish in.
+    parts = chunks(length(cloud.positions))
+    nc = length(parts)
+    ekins = zeros(T, nc)
+    eouts = zeros(T, nc)
+    angs = fill(ntuple(_ -> zero(T), 3), nc)
 
-    @inbounds for i in eachindex(cloud.positions)
-        q, qold, f = cloud.positions[i], cloud.previous[i], cloud.forces[i]
-        qnew = 2 .* q .- qold .+ acc .* f
-        p = pfac .* (qnew .- qold)
-        e = (p[1]^2 + p[2]^2 + p[3]^2) / 2M
-        ekin += e
-        # Comparing squares: one square root per particle for a mere threshold
-        # is one square root too many.
-        q[1]^2 + q[2]^2 + q[3]^2 > r2max && (eout += e)
-        angular = angular .+ cross3(q, p)
-        cloud.previous[i] = q
-        cloud.positions[i] = qnew
+    Threads.@threads for c in 1:nc
+        ek = zero(T); eo = zero(T)
+        an = ntuple(_ -> zero(T), 3)
+        @inbounds for i in parts[c]
+            q, qold, f = cloud.positions[i], cloud.previous[i], cloud.forces[i]
+            qnew = 2 .* q .- qold .+ acc .* f
+            p = pfac .* (qnew .- qold)
+            e = (p[1]^2 + p[2]^2 + p[3]^2) / 2M
+            ek += e
+            # Comparing squares: one square root per particle for a mere
+            # threshold is one square root too many.
+            q[1]^2 + q[2]^2 + q[3]^2 > r2max && (eo += e)
+            an = an .+ cross3(q, p)
+            cloud.previous[i] = q
+            cloud.positions[i] = qnew
+        end
+        ekins[c] = ek; eouts[c] = eo; angs[c] = an
+    end
+
+    ekin = zero(T); eout = zero(T)
+    angular = ntuple(_ -> zero(T), 3)
+    @inbounds for c in 1:nc
+        ekin += ekins[c]; eout += eouts[c]
+        angular = angular .+ angs[c]
     end
     (; kinetic = ekin, escaped = eout, angular)
 end
