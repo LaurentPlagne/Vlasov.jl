@@ -238,6 +238,15 @@ function _pack!(acc::DeviceAccelerator{E,T}, positions) where {E,T}
     copyto!(acc.perm.host, 1, acc.sorter.perm, 1, acc.npart)
     upload!(acc.perm)
 
+    # The occupied-cell list travels with the sort that produced it. It used to
+    # be uploaded inside `deposit_smoothed!`, which was harmless while the
+    # deposition was its only reader; the forces kernel reads it too now, and
+    # would then have depended on the order the two were called in.
+    ncell = length(acc.sorter.occupied)
+    copyto!(acc.cells.host, 1, acc.sorter.occupied, 1, ncell)
+    copyto!(acc.bounds.host, 1, acc.sorter.bounds, 1, ncell + 1)
+    upload!(acc.cells); upload!(acc.bounds)
+
     # The out-of-stencil list, built here because it depends only on where the
     # particles are. Both the forces and the energy budget read it, and the
     # budget runs first.
@@ -279,13 +288,10 @@ end
 function deposit_smoothed!(ρ::AbstractArray, acc::DeviceAccelerator{E,T},
                            mesh::SplineMesh{3,T}, sm::GaussianSmoothing{T},
                            positions; charge::T) where {E,T}
-    _pack!(acc, positions)          # packs, sorts, and lists the boundary cases
+    # packs, sorts, uploads the cell list, and lists the boundary cases
+    _pack!(acc, positions)
     nout = _fill_columns!(acc, mesh, sm, positions)
-
     ncell = length(acc.sorter.occupied)
-    copyto!(acc.cells.host, 1, acc.sorter.occupied, 1, ncell)
-    copyto!(acc.bounds.host, 1, acc.sorter.bounds, 1, ncell + 1)
-    upload!(acc.cells); upload!(acc.bounds)
 
     # A `ρ` that already lives on this backend is deposited into **directly**:
     # on the resident path the density never leaves the device, and the staging
@@ -341,13 +347,17 @@ function forces!(cloud::ParticleCloud{T}, acc::DeviceAccelerator{E,T},
     σ = projectile === nothing ? one(E) : E(scale(projectile.softening))
     fill!(acc.reduction.device, zero(E))
 
+    # One group per occupied cell, not per block of particles: the kernel stages
+    # each cell's stencil in threadgroup memory. `_pack!` has sorted and
+    # uploaded the cell list, so this holds however `forces!` was reached.
+    ncell = length(acc.sorter.occupied)
     _smoothed_field_kernel!(acc.backend, FIELD_GROUPSIZE)(
         acc.force.device, csol, acc.overlap, acc.gradient,
-        acc.knode.device, acc.delta.device, acc.perm.device,
-        E(acc.x0), E(acc.h), acc.spacing,
-        acc.nbdt, E(cloud.weight), acc.ncol, Int32(npart),
+        acc.delta.device, acc.perm.device, acc.cells.device, acc.bounds.device,
+        Int32(acc.sorter.nknots), E(acc.x0), E(acc.h), acc.spacing,
+        acc.nbdt, E(cloud.weight), acc.ncol,
         pp[1], pp[2], pp[3], coef, σ, acc.reduction.device;
-        ndrange = cld(npart, FIELD_GROUPSIZE) * FIELD_GROUPSIZE)
+        ndrange = ncell * FIELD_GROUPSIZE)
     synchronize(acc.backend)
     download!(acc.force, acc.backend); download!(acc.reduction, acc.backend)
 

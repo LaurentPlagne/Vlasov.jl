@@ -1355,30 +1355,32 @@ end
         @test maximum(abs(delta[d, i] - (pos[i][d] - knots[knode[d, i]]))
                       for i in 1:npart, d in 1:3) < 1e-12
 
+        # --- the sort, which both kernels below are organised around ---------
+        sorter = CellSort(ax, npart)
+        cellsort!(sorter, pos)
+        ncell = length(sorter.occupied)
+
         # --- smoothed field: must reproduce `smoothed_field` exactly ---------
-        # The kernel walks the particles through a permutation — in production
-        # the cell order, which is what gives it its stencil reuse. Here the
-        # identity: what is under test is the arithmetic, and it must not depend
-        # on the order it is visited in.
+        # One group per occupied cell, each staging that cell's 10³ stencil. The
+        # assertion is per particle and says nothing about the order they are
+        # visited in — which is the point: the cell traversal is an optimisation
+        # and must leave every value exactly where the scalar reference puts it.
         force = zeros(Float64, 3, npart)
         red = zeros(Float64, 4)
         w = 0.245
         GS = Vlasov.FIELD_GROUPSIZE
-        perm = collect(Int32, 1:npart)
         Vlasov._smoothed_field_kernel!(backend, GS)(
-            force, csol, sm.overlap, sm.gradient, knode, delta, perm, x0, h,
+            force, csol, sm.overlap, sm.gradient, delta, sorter.perm,
+            sorter.occupied, sorter.bounds, Int32(nk), x0, h,
             sm.spacing, Int32(sm.nbdt), w, Int32(size(sm.overlap, 2)),
-            Int32(npart), 0.0, 0.0, 0.0, 0.0, 1.0, red;
-            ndrange = cld(npart, GS) * GS)
+            0.0, 0.0, 0.0, 0.0, 1.0, red;
+            ndrange = ncell * GS)
         synchronize(backend)
         @test !any(isnan, force)
         @test all(Tuple(force[:, i]) === w .* smoothed_field((ax, ax, ax), csol, sm, pos[i])
                   for i in 1:npart)
 
         # --- deposition: sorted, one group per occupied cell -----------------
-        sorter = CellSort(ax, npart)
-        cellsort!(sorter, pos)
-        ncell = length(sorter.occupied)
         half = sm.spacing / 2
         lo, hi = knots[2] + half, knots[end-1] - half
         ncol = size(sm.nodes, 2)

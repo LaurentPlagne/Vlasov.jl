@@ -130,18 +130,107 @@ the host positions — free, the memory being unified. On a backend with hardwar
 end
 
 """
+    contract_tile(tile, ovl, grad, cx, cy, cz)
+
+[`contract_spline_10`](@ref) reading its 10³ stencil from threadgroup memory
+instead of from `csol`.
+
+The arithmetic is the same, in the same order — the two agree bit for bit. Only
+the indexing differs: the stencil has been copied into a dense `10×10×10` block,
+so the strides are 1, 10 and 100 rather than those of the grid.
+
+⚠️ **The offsets into `tile` are computed in `Int`, not in `Int32`** — and this
+is worth a factor of four. Everything else in this file narrows its indices to
+`Int32` deliberately, to save registers, so writing `Int32(100) * (Int32(kk) −
+Int32(1))` here is what the surrounding style asks for. Measured, 8×10⁷
+particles:
+
+| offsets | ms |
+|---|---:|
+| `Int` | **520.3** |
+| `Int32` | 1969.2 |
+
+×3.8, with the arithmetic otherwise identical and no error, no warning, nothing
+to read in the source that would suggest it. The accumulator's type is *not* the
+cause: `eltype(ovl)` and a hard-wired `Float32` measure the same to within a
+percent, in both index regimes.
+
+So: `Int32` for indices into device arrays, plain `Int` for indices into
+threadgroup memory, until someone establishes why.
+"""
+@inline function contract_tile(tile, ovl, grad, cx, cy, cz)
+    T = eltype(ovl)
+    fx = zero(T); fy = zero(T); fz = zero(T)
+    @inbounds for kk in 1:10
+        oz = ovl[kk, cz]; gz = grad[kk, cz]
+        bk = 100 * (kk - 1)
+        for jj in 1:10
+            oy = ovl[jj, cy]; gy = grad[jj, cy]
+            b = bk + 10 * (jj - 1)
+            dxp = zero(T); val = zero(T)
+            for ii in 1:10
+                c = tile[b+ii]
+                dxp = fma(c, grad[ii, cx], dxp)
+                val = fma(c, ovl[ii, cx], val)
+            end
+            fx = fma(oy * oz, dxp, fx)
+            fy = fma(gy * oz, val, fy)
+            fz = fma(oy * gz, val, fz)
+        end
+    end
+    (fx, fy, fz)
+end
+
+"""
 Smoothed field at each pseudo-particle, with the projectile fused in.
 
-One work-item per particle, a 10×10×10 contraction against `csol` — about 3000
-operations for 4 KB read, so the kernel is memory-bound and there is nothing to
-gain by rearranging the arithmetic.
+**One group per occupied cell**, and the cell's 10³ stencil of `csol` — 4 KB —
+staged once in threadgroup memory. Every particle of a cell shares the *same*
+stencil, so the version that gave one work-item to each particle made each of
+them fetch those 4 KB for itself.
 
-Particles whose stencil overflows the grid write a `NaN` and are handed back to
-the caller: they are rare, and branching on them here is exactly what one does
-not want in a kernel.
+That was not a guess. Apple's counters, on this kernel at 8×10⁷ particles:
 
-The projectile's reaction is accumulated in threadgroup memory, reduced in a
-tree, and committed with **one** atomic per group rather than one per particle.
+| counter | |
+|---|---:|
+| **Buffer Read Limiter** | **98.5 %** |
+| GPU Last Level Cache Limiter | 85.3 % |
+| **Threadgroup/Imageblock Load Limiter** | **0.0 %** |
+| Compute Occupancy | 18.4 % |
+| ALU Utilization | 12.9 % |
+| GPU Read Bandwidth | 7.6 GB/s |
+
+The load port was saturated while the threadgroup path sat idle and the ALUs
+ran at 13 %. Staging moves the traffic from the port that was full onto the one
+that was empty:
+
+    619.4 -> 518.3 ms   ×1.20   at 8×10⁷ particles, 428 per occupied cell
+
+Bit for bit identical: the summation order is untouched, only where the values
+are read from changes.
+
+⚠️ **The cell index *is* `knode`.** [`CellSort`](@ref) keys on
+`round((p−x₀)/h)+1` clamped to `[1,nk]`, which is exactly what
+[`_pack_kd_kernel!`](@ref) stores. So `(bx,by,bz)` follows from the cell and the
+per-particle gather of `knode` disappears with it.
+
+⚠️ For the same reason the "does the stencil fit in the grid" test depends only
+on the cell, so it is **uniform over the group** and is evaluated once rather
+than per particle. Particles of a cell that does not fit all write `NaN` and are
+handed back to the caller through the compacted list.
+
+⚠️ The projectile's contribution is accumulated **even for those particles** —
+it does not need the grid — then reduced in a tree and committed with one atomic
+per group. A work-item now handles several particles, so it sums them into a
+register first and touches threadgroup memory once.
+
+What this did *not* fix, and the measurements that say so: the kernel now runs
+at 756 GFLOP/s against the 836 it reaches with every read served from L1, so
+90 % of the remaining distance is arithmetic, not memory. Rejected on the way,
+each by measurement — hoisting the `x` tables into registers (×0.96, LLVM
+already does it), splitting the accumulator into four chains (×1.01, not latency
+bound), and reading `csol` in pairs (×0.99, already vectorised by the
+compiler).
 
 ⚠️ `unsafe_indices = true`: the tree reduction below calls `@synchronize`, which
 every work-item of a group must reach. KernelAbstractions' automatic bounds
@@ -149,11 +238,11 @@ check would wrap the body in a conditional and make that false, so the guard is
 written by hand and `ndrange` is padded to a whole number of groups.
 """
 @kernel unsafe_indices = true function _smoothed_field_kernel!(
-        force, @Const(csol), @Const(ovl), @Const(grad), @Const(knode),
-        @Const(delta), @Const(perm), x0, h, spacing, nbdt, w, nc, npart,
-        px0, py0, pz0, coef, σ, red)
-    t = @index(Global, Linear)
+        force, @Const(csol), @Const(ovl), @Const(grad),
+        @Const(delta), @Const(perm), @Const(cellids), @Const(bounds), nk,
+        x0, h, spacing, nbdt, w, nc, px0, py0, pz0, coef, σ, red)
     tid = @index(Local, Linear)
+    gi = @index(Global, Linear)
     @uniform GS = Int32(FIELD_GROUPSIZE)
     @uniform E = eltype(force)
     # ⚠️ `@uniform`, and declared here rather than beside its loop: the CPU
@@ -162,63 +251,97 @@ written by hand and `ndrange` is padded to a whole number of groups.
     # reduction's counter crosses every barrier, so it has to live outside them.
     @uniform redhalf = Int32(FIELD_GROUPSIZE) ÷ Int32(2)
     sh = @localmem eltype(force) (4 * FIELD_GROUPSIZE,)
+    "The cell's 10³ stencil of `csol`, read once for all its particles."
+    tile = @localmem eltype(force) (1000,)
+    "`[lo, hi, bx, by, bz, ok]` — group-uniform, hence threadgroup memory."
+    st = @localmem Int32 (6,)
 
     for c in Int32(0):Int32(3)
         @inbounds sh[c*GS+tid] = zero(E)
     end
-
-    @inbounds if t <= npart
-        # ⚠️ Work-items walk the particles in **sorted** order. Each reads a 10³
-        # stencil of `csol` — 4 KB — and in cell order the neighbours of a
-        # work-item read very nearly the same 4 KB, which the cache then serves
-        # once instead of once per particle. The price is that `knode` and
-        # `delta` become a gather: 24 bytes against the 4 KB it protects.
-        i = perm[t]
-        kx = knode[1, i]; ky = knode[2, i]; kz = knode[3, i]
-        dx0 = delta[1, i]; dy0 = delta[2, i]; dz0 = delta[3, i]
+    @inbounds if tid == Int32(1)
+        g = (Int32(gi) - Int32(1)) ÷ GS + Int32(1)
+        c0 = cellids[g] - Int32(1)
+        kx = c0 % nk + Int32(1); c0 ÷= nk
+        ky = c0 % nk + Int32(1); c0 ÷= nk
+        kz = c0 + Int32(1)
         bx = Int32(2) * kx - Int32(5)
         by = Int32(2) * ky - Int32(5)
         bz = Int32(2) * kz - Int32(5)
-
         nn = Int32(size(csol, 1))
-        ok = bx >= Int32(1) && by >= Int32(1) && bz >= Int32(1) &&
-             bx + Int32(9) <= nn && by + Int32(9) <= nn && bz + Int32(9) <= nn
+        st[1] = bounds[g]; st[2] = bounds[g+Int32(1)]
+        st[3] = bx; st[4] = by; st[5] = bz
+        st[6] = (bx >= Int32(1) && by >= Int32(1) && bz >= Int32(1) &&
+                 bx + Int32(9) <= nn && by + Int32(9) <= nn &&
+                 bz + Int32(9) <= nn) ? Int32(1) : Int32(0)
+    end
+    @synchronize
 
+    # --- the stencil, fetched once for the whole cell ----------------------
+    @inbounds if st[6] == Int32(1)
+        bx = st[3]; by = st[4]; bz = st[5]
+        e = tid
+        while e <= Int32(1000)
+            e0 = e - Int32(1)
+            ii = e0 % Int32(10)
+            jj = (e0 ÷ Int32(10)) % Int32(10)
+            kk = e0 ÷ Int32(100)
+            tile[e] = csol[bx+ii, by+jj, bz+kk]
+            e += GS
+        end
+    end
+    @synchronize
+
+    # --- the cell's particles ----------------------------------------------
+    @inbounds begin
+        lo = st[1]; hi = st[2]; ok = st[6] == Int32(1)
+        kx = (st[3] + Int32(5)) ÷ Int32(2)
+        ky = (st[4] + Int32(5)) ÷ Int32(2)
+        kz = (st[5] + Int32(5)) ÷ Int32(2)
+        halfsp = spacing * E(0.5)
         nan = E(NaN)
-        fxp = nan; fyp = nan; fzp = nan
-        if ok
-            halfsp = spacing * E(0.5)
-            cx = min(max(floor(Int32, (dx0 + halfsp) / spacing * nbdt + E(0.5)) +
-                         Int32(1), Int32(1)), nc)
-            cy = min(max(floor(Int32, (dy0 + halfsp) / spacing * nbdt + E(0.5)) +
-                         Int32(1), Int32(1)), nc)
-            cz = min(max(floor(Int32, (dz0 + halfsp) / spacing * nbdt + E(0.5)) +
-                         Int32(1), Int32(1)), nc)
-            fx, fy, fz = contract_spline_10(csol, ovl, grad, bx, by, bz, cx, cy, cz)
-            fxp = -w * fx; fyp = -w * fy; fzp = -w * fz
-        end
-
-        # --- projectile ↔ pseudo-electron, fused ----------------------------
-        if coef != zero(E)
-            px = x0 + E(kx - Int32(1)) * h + dx0
-            py = x0 + E(ky - Int32(1)) * h + dy0
-            pz = x0 + E(kz - Int32(1)) * h + dz0
-            dx = px0 - px; dy = py0 - py; dz = pz0 - pz
-            d2 = dx * dx + dy * dy + dz * dz
-            m = coef * gaussian_force_kernel(d2, σ)
-            fx2 = m * dx; fy2 = m * dy; fz2 = m * dz
+        ax = zero(E); ay = zero(E); az = zero(E); ae = zero(E)
+        s = lo + tid
+        while s <= hi
+            i = perm[s]
+            dx0 = delta[1, i]; dy0 = delta[2, i]; dz0 = delta[3, i]
+            fxp = nan; fyp = nan; fzp = nan
             if ok
-                fxp -= fx2; fyp -= fy2; fzp -= fz2       # reaction
+                cx = min(max(floor(Int32, (dx0 + halfsp) / spacing * nbdt + E(0.5)) +
+                             Int32(1), Int32(1)), nc)
+                cy = min(max(floor(Int32, (dy0 + halfsp) / spacing * nbdt + E(0.5)) +
+                             Int32(1), Int32(1)), nc)
+                cz = min(max(floor(Int32, (dz0 + halfsp) / spacing * nbdt + E(0.5)) +
+                             Int32(1), Int32(1)), nc)
+                fx, fy, fz = contract_tile(tile, ovl, grad, cx, cy, cz)
+                fxp = -w * fx; fyp = -w * fy; fzp = -w * fz
             end
-            r = sqrt(d2)
-            sh[tid] = fx2
-            sh[GS+tid] = fy2
-            sh[2*GS+tid] = fz2
-            sh[3*GS+tid] = r < E(1.0e-4) * σ ? E(0.7978845608) / σ :
-                           erf(r / E(1.4142135624) / σ) / r
-        end
 
-        force[1, i] = fxp; force[2, i] = fyp; force[3, i] = fzp
+            # --- projectile ↔ pseudo-electron, fused ------------------------
+            # Runs whether or not the stencil fits: it needs no grid, and the
+            # reaction on the projectile is owed by every particle.
+            if coef != zero(E)
+                px = x0 + E(kx - Int32(1)) * h + dx0
+                py = x0 + E(ky - Int32(1)) * h + dy0
+                pz = x0 + E(kz - Int32(1)) * h + dz0
+                dx = px0 - px; dy = py0 - py; dz = pz0 - pz
+                d2 = dx * dx + dy * dy + dz * dz
+                mm = coef * gaussian_force_kernel(d2, σ)
+                fx2 = mm * dx; fy2 = mm * dy; fz2 = mm * dz
+                if ok
+                    fxp -= fx2; fyp -= fy2; fzp -= fz2       # reaction
+                end
+                r = sqrt(d2)
+                ax += fx2; ay += fy2; az += fz2
+                ae += r < E(1.0e-4) * σ ? E(0.7978845608) / σ :
+                      erf(r / E(1.4142135624) / σ) / r
+            end
+
+            force[1, i] = fxp; force[2, i] = fyp; force[3, i] = fzp
+            s += GS
+        end
+        # One visit to threadgroup memory per work-item, not one per particle.
+        sh[tid] = ax; sh[GS+tid] = ay; sh[2*GS+tid] = az; sh[3*GS+tid] = ae
     end
 
     @synchronize
