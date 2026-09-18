@@ -25,7 +25,8 @@ include("meanfield.jl")
 include("initial.jl")
 include("energy.jl")
 include("projectile.jl")
-# After `projectile.jl`: its methods name `Projectile` and `Jellium`.
+# After `projectile.jl`: their methods name `Projectile` and `Jellium`.
+include("devicemesh.jl")
 include("accelerator.jl")
 include("simulation.jl")
 include("entropy.jl")
@@ -57,7 +58,7 @@ export EnergyBudget, energy_budget, interaction_energy, hartree_energy, ion_self
 export SimulationParameters, read_parameters, Simulation, run!
 export Projectile, projectile_forces!, energy_loss, kinetic_energy, HARTREE_TO_EV
 export Softening, BallSoftening, GaussianSoftening, force_kernel, pair_potential, gaussian_force_kernel
-export ForceAccelerator, DeviceAccelerator
+export ForceAccelerator, DeviceAccelerator, DeviceMesh
 export DualBuffer, dual_buffer, upload!, download!
 export CellSort, cellsort!, noccupied
 export enclosed_charge, capture!, advance_projectile!

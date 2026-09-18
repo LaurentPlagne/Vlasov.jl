@@ -170,19 +170,23 @@ all: both buffers belong to the solver. Allocations count double here — they d
 not merely cost their price, they trigger a garbage collection that brings the
 threads to a halt.
 """
-function solve!(X::AbstractArray{T,N}, B::AbstractArray{T,N}, s::TensorSolver{N,T}) where {T,N}
-    size(X) == size(B) == size(s) ||
-        throw(DimensionMismatch("dimensions incompatible with the solver"))
-
+function _solve!(X, B, Minvs, Ms, invλsum, work1, work2)
     # Forward transform: into the eigenbasis of each dimension.
-    apply_all_rotating!(s.work1, map(o -> o.Minv, s.ops), B, s.work2)
+    apply_all_rotating!(work1, Minvs, B, work2)
 
     # The heart of the method: inversion becomes an element-wise division.
-    s.work1 .*= s.invλsum
+    work1 .*= invλsum
 
     # Inverse transform. `X` may be `B`: the right-hand side has already been
     # fully consumed by the forward transform.
-    apply_all_rotating!(X, map(o -> o.M, s.ops), s.work1, s.work2)
+    apply_all_rotating!(X, Ms, work1, work2)
+end
+
+function solve!(X::AbstractArray{T,N}, B::AbstractArray{T,N}, s::TensorSolver{N,T}) where {T,N}
+    size(X) == size(B) == size(s) ||
+        throw(DimensionMismatch("dimensions incompatible with the solver"))
+    _solve!(X, B, map(o -> o.Minv, s.ops), map(o -> o.M, s.ops),
+            s.invλsum, s.work1, s.work2)
 end
 
 """Allocating version of [`solve!`](@ref)."""

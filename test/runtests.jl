@@ -1428,6 +1428,45 @@ end
         end
     end
 
+    # Every function of the Poisson chain was split in two: one half taking the
+    # tables, one taking the mesh that holds them. On `CPU()` in `Float64` the
+    # device mirror therefore runs *the same code over the same numbers* as the
+    # host mesh — so anything but bit-for-bit equality here is a real defect in
+    # the split, not a rounding difference.
+    @testset "Device mirror of a mesh" begin
+        axf = uniform_axis(-78.0, 78.0, 16)
+        axc = uniform_axis(-235.0, 235.0, 16)
+        fine, coarse = SplineMesh(axf, axf, axf), SplineMesh(axc, axc, axc)
+        nested = NestedMeshes(fine, coarse)
+        nf, nc = nbasis(axf), nbasis(axc)
+
+        gf, gc = axf.colloc, axc.colloc
+        ρf = [1e-3 * exp(-(x^2 + y^2 + z^2) / 400) for x in gf, y in gf, z in gf]
+        ρc = [1e-5 * exp(-(x^2 + y^2 + z^2) / 4000) for x in gc, y in gc, z in gc]
+
+        dmf = DeviceMesh(CPU(), Float64, fine)
+        dmc = DeviceMesh(CPU(), Float64, coarse)
+
+        φref = (zeros(nf, nf, nf), zeros(nc, nc, nc))
+        poisson!(φref, (ρf, ρc), nested)
+        φdev = (zeros(nf, nf, nf), zeros(nc, nc, nc))
+        poisson!(φdev, (ρf, ρc), (dmf, dmc))
+        @test φdev[1] == φref[1]
+        @test φdev[2] == φref[2]
+
+        @test total_charge(ρf, dmf) == total_charge(ρf, fine)
+        @test multipole(ρc, dmc).charge == multipole(ρc, coarse).charge
+
+        @test spline_coefficients!(similar(φref[1]), φref[1], dmf) ==
+              spline_coefficients!(similar(φref[1]), φref[1], fine)
+
+        jel = Jellium(1000.0)
+        er, ed = zeros(nf, nf, nf), zeros(nf, nf, nf)
+        effective_potential!(er, ρf, fine, jel)
+        effective_potential!(ed, ρf, dmf, jel)
+        @test ed == er
+    end
+
     @testset "Generic accelerator on CPU()" begin
         npart = 4_000
         ax = uniform_axis(-78.0, 78.0, 44)

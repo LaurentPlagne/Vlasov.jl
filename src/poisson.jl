@@ -152,12 +152,21 @@ already keeps them transformed.
 function multipole(ρ::AbstractArray{T,3}, mesh::SplineMesh{3,T}) where {T}
     # The dual moments already carry `S⁻ᵀ`: we contract the density directly,
     # without forming its spline coefficients.
-    p0 = map(m -> m[1], mesh.dual_moments)
-    p1 = map(m -> m[2], mesh.dual_moments)
-    p2 = map(m -> m[3], mesh.dual_moments)
+    _multipole(T, all_moments(ρ, map(m -> m[1], mesh.dual_moments),
+                              map(m -> m[2], mesh.dual_moments),
+                              map(m -> m[3], mesh.dual_moments),
+                              mesh.moment_partials))
+end
 
-    q, d100, d010, d001, m200, m020, m002, mxy, mxz, myz =
-        all_moments(ρ, p0, p1, p2, mesh.moment_partials)
+"""
+    _multipole(T, moments) -> Multipole
+
+Assembles the expansion from the ten raw moments. Scalar arithmetic on ten
+numbers, so it stays on the host whatever produced them — which is what lets a
+host mesh and a device companion share it.
+"""
+function _multipole(::Type{T}, moments) where {T}
+    q, d100, d010, d001, m200, m020, m002, mxy, mxz, myz = T.(moments)
 
     # Dipole, brought to the barycentre. A vanishing charge density has none.
     dip = (d100, d010, d001)
@@ -288,9 +297,12 @@ function poisson_rhs!(rhs::AbstractArray{T,3}, ρ::AbstractArray{T,3},
                       mesh::SplineMesh{3,T}, φ::AbstractArray{T,3}) where {T}
     size(rhs) == size(mesh) ||
         throw(DimensionMismatch("rhs must have the size of the interior problem"))
+    _poisson_rhs!(rhs, ρ, φ, mesh.laplacians, size(mesh))
+end
 
-    Dx, Dy, Dz = mesh.laplacians
-    nsx, nsy, nsz = size(mesh)
+function _poisson_rhs!(rhs::AbstractArray{T,3}, ρ, φ, laplacians, interior) where {T}
+    Dx, Dy, Dz = laplacians
+    nsx, nsy, nsz = interior
     nx, ny, nz = size(φ)
     c = -4 * T(π)
 
