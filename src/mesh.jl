@@ -42,6 +42,11 @@ struct SplineMesh{N,T,M}
     Deposition on the **coarse** grid searched for the cell by bisection, which
     made up half its cost. The table is built once, here."""
     locators::NTuple{N,LocateTable{T}}
+    """Partial sums of the moment reductions: ten rows — the ten moments of
+    [`all_moments`](@ref), the first of which is the charge — and one column per
+    `(j,k)` pair. Preallocated for the same reason as `scratch`: the reduction
+    runs at every step, on both grids."""
+    moment_partials::Matrix{T}
 end
 
 function SplineMesh(axes::SplineAxis{T}...) where {T}
@@ -58,7 +63,8 @@ function SplineMesh(axes::SplineAxis{T}...) where {T}
     SplineMesh(axes, cms, full, duals, solver,
                ntuple(_ -> Array{T,length(axes)}(undef, full_dims), 3),
                Array{T,length(axes)}(undef, size(solver)),
-               map(LocateTable, axes))
+               map(LocateTable, axes),
+               Matrix{T}(undef, 10, prod(Base.tail(full_dims))))
 end
 
 """
