@@ -46,8 +46,8 @@ function run_xenon_80M_simulation(; npart = 80_000_000, dt = 0.5)
         return deserialize(cache_file)
     end
 
-    prof = read_radial_profile(joinpath(ROOT, "ref", "fortran", "hm1.dat"),
-                               joinpath(ROOT, "ref", "fortran", "rhoinit.dat"))
+    prof = read_radial_profile(joinpath(ROOT, "ref", "fortran", "data", "hm1.dat"),
+                               joinpath(ROOT, "ref", "fortran", "data", "rhoinit.dat"))
     nfine = 64
     m = nfine ÷ 2 + 1
     n1 = m ÷ 2

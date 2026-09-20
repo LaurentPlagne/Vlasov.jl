@@ -43,7 +43,7 @@ function parse_args(argv)
 end
 
 function build(profil, params)
-    profil == "radial" && return read_radial_profile(joinpath(ROOT, "ref", "fortran"))
+    profil == "radial" && return read_radial_profile(joinpath(ROOT, "ref", "fortran", "data"))
     profil == "rejet" && return read_potential_profile(
         joinpath(ROOT, "ref", "fortran98", "pot.dat"))
     error("unknown profile: $profil (radial or rejet)")

@@ -1,0 +1,14 @@
+# An environment for an NVIDIA card, mirroring `gpu/` — which carries Metal.
+#
+# ⚠️ Never run: there is no CUDA hardware where this project was developed. The
+# kernels are `KernelAbstractions` and the accelerator takes any backend, so
+# this is expected to work; expected is not measured.
+#
+#     julia --project=cuda -e 'using Pkg; Pkg.instantiate()'
+#     julia --project=cuda -t auto scripts/xenon.jl
+[deps]
+CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
+Vlasov = "2b4e4dc6-bb65-44a8-9970-a8d90b7ff1a4"
+
+[sources]
+Vlasov = {path = ".."}

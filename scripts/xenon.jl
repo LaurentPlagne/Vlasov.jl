@@ -34,10 +34,23 @@ same command then measures something else entirely.
 using Vlasov
 using Printf
 
-# Optional, and loaded before anything is timed. `Metal` carries the GPU path;
-# `AppleAccelerate` is worth ×1.31 on the CPU one — not only on the GEMMs, the
-# particle loops gain 15–25 % because OpenBLAS's threads stop competing.
-const METAL = try; @eval using Metal; true; catch; false; end
+# Optional, and loaded before anything is timed. `AppleAccelerate` is worth
+# ×1.31 on the CPU path — not only on the GEMMs, the particle loops gain 15–25 %
+# because OpenBLAS's threads stop competing for the cores.
+#
+# ⚠️ **Loading the package is not the same as having the hardware.** `using
+# Metal` *succeeds* on a machine that has no Apple GPU — it only logs an error —
+# so a check that merely imported it announced the GPU path on a Linux box with
+# an NVIDIA card, and failed later and elsewhere. Both vendors answer
+# `functional()`, and that is the question being asked.
+#
+# ⚠️ Each probe is wrapped in its own `@eval`: inside one, the `using` and the
+# call would be lowered together, against a world where the package's name is
+# not yet bound.
+const METAL = try; @eval using Metal; @eval Metal.functional(); catch; false; end
+const CUDA_OK = METAL ? false :
+                try; @eval using CUDA; @eval CUDA.functional(); catch; false; end
+const GPU = METAL || CUDA_OK
 const ACCELERATE = try; @eval using AppleAccelerate; true; catch; false; end
 
 const ROOT = dirname(@__DIR__)
@@ -67,8 +80,8 @@ function main(argv)
     o = parse_args(argv)
     # Defaults sized so that either path is about a minute and a half of wall
     # clock — 5×10⁵ on 90³ for the CPU, 8×10⁶ on 130³ for the GPU.
-    npart = o["particules"] > 0 ? o["particules"] : (METAL ? 8_000_000 : 500_000)
-    nfine = o["nfine"] > 0 ? o["nfine"] : (METAL ? 64 : 44)
+    npart = o["particules"] > 0 ? o["particules"] : (GPU ? 8_000_000 : 500_000)
+    nfine = o["nfine"] > 0 ? o["nfine"] : (GPU ? 64 : 44)
     g = grids(nfine)
     dt = 0.5
 
@@ -76,7 +89,7 @@ function main(argv)
     # block-buffered: without this the run shows nothing for minutes and looks
     # hung, which is exactly what a first run must not do.
     @printf("path: %s%s, %d threads\n",
-            METAL ? "GPU (Metal)" : "CPU",
+            METAL ? "GPU (Metal)" : CUDA_OK ? "GPU (CUDA)" : "CPU",
             ACCELERATE ? " + AppleAccelerate" : "",
             Threads.nthreads())
     @printf("Na196 + Xe25+, 500 keV, b = 45 a0 | %.1e particles, grid %d^3\n",
@@ -96,14 +109,33 @@ function main(argv)
                       impact = 45.0, x0 = -70.0, dt = dt,
                       softening = BallSoftening(5.0))
 
-    prof = read_radial_profile(joinpath(ROOT, "ref", "fortran", "hm1.dat"),
-                               joinpath(ROOT, "ref", "fortran", "rhoinit.dat"))
+    # ⚠️ `ref/fortran/data/`, and not `ref/fortran/`: the Fortran's Makefile
+    # copies these two files to the directory above when it builds the oracle,
+    # and those copies are gitignored. Reading them there worked on the machine
+    # that had run the Fortran, and only there — a fresh clone got a
+    # `SystemError` on the very first command the README gives.
+    data = joinpath(ROOT, "ref", "fortran", "data")
+    isfile(joinpath(data, "hm1.dat")) ||
+        error("cannot find the cluster profile in $data — is this a complete " *
+              "clone of the repository?")
+    prof = read_radial_profile(data)
 
     t0 = time()
-    sim = METAL ?
-          Simulation(p, prof; projectile = proj, backend = MetalBackend(),
-                     precision = Float32, packed = true) :
-          Simulation(p, prof; projectile = proj)
+    # `@eval` again, for the same world-age reason: the backend type is bound
+    # by the `using` above, which ran after this function was compiled.
+    sim = if METAL
+        Simulation(p, prof; projectile = proj, backend = @eval(MetalBackend()),
+                   precision = Float32, packed = true)
+    elseif CUDA_OK
+        # ⚠️ Untested: no CUDA hardware where this was written. The kernels are
+        # `KernelAbstractions` and the accelerator takes any backend, so this is
+        # expected to work — `Float32` to stay on the path that is measured,
+        # though CUDA would also give `Float64`.
+        Simulation(p, prof; projectile = proj, backend = @eval(CUDABackend()),
+                   precision = Float32, packed = true)
+    else
+        Simulation(p, prof; projectile = proj)
+    end
     @printf("built in %.1f s\n\n", time() - t0)
 
     println("   step     t (fs)    x_ion (a0)   q(<8 a0)    ms/step")
@@ -114,6 +146,13 @@ function main(argv)
         step!(sim; energy = false)
         if s % o["tous"] == 0 || s == o["pas"]
             now = time()
+            # ⚠️ The diagnostic below reads the cloud **on the host**, and on a
+            # discrete GPU that is a different array from the one the kernels
+            # move particles in. Unified memory hides this; CUDA would not, and
+            # the capture curve would be whatever was uploaded at construction.
+            # A no-op where the two halves are the same bytes.
+            GPU && Vlasov.download!(sim.device.accelerator.particles,
+                                    sim.device.backend)
             @printf("%7d %10.2f %12.1f %10.3f %10.1f\n",
                     s, s * dt / FS, sim.projectile.position[1],
                     enclosed_charge(sim.cloud, sim.projectile, 8.0),

@@ -127,12 +127,24 @@ The script names the path it took on its first line, and that line is worth
 reading: a missing package is otherwise silent, and the same command then
 measures something else.
 
+On an NVIDIA card there is an environment ready, and a script that will pick it
+up on its own:
+
+```sh
+julia --project=cuda -e 'using Pkg; Pkg.instantiate()'
+julia --project=cuda -t auto scripts/xenon.jl
+```
+
 > [!WARNING]
-> **CUDA, ROCm and oneAPI have never been run.** Nothing in the kernels is
-> Apple-specific and the accelerator takes any `KernelAbstractions` backend, so
-> the port is *expected* to work by adding the vendor package and passing its
-> backend — but expected is not measured, and whoever tries first should expect
-> to fix something.
+> **CUDA, ROCm and oneAPI have never been run here** — there is no such card on
+> the machine this was written on. Nothing in the kernels is Apple-specific and
+> the accelerator takes any `KernelAbstractions` backend, so it is *expected* to
+> work; expected is not measured. The first attempt on a Linux box with an
+> NVIDIA card found three real bugs in ten seconds — a data file read from a
+> path that only exists after the Fortran is built, a GPU probe that mistook
+> *loading* Metal for *having* Metal, and a host-side diagnostic that on a
+> discrete card would have read a stale copy of the cloud. All three are fixed
+> above. Please report the next one.
 
 ---
 

@@ -16,3 +16,4 @@ gpu/Manifest.toml
 !docs/src/assets/*.png
 !docs/src/assets/*.gif
 !docs/src/assets/*.mp4
+cuda/Manifest.toml
