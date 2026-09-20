@@ -655,22 +655,33 @@ function forces!(cloud::ParticleCloud{T}, acc::DeviceAccelerator{E,T},
     n = Int(acc.outcount.host[1])
     # ⚠️ The loop below reads the cloud **on the host**, at slots the device
     # chose — and on a discrete GPU the host half is a stale mirror that the
-    # sort has since reordered. Refresh exactly those records rather than the
-    # whole cloud: `n` is a few hundred out of 8×10⁷, and downloading it all to
-    # fix them would cost gigabytes over PCIe. Free and skipped where the two
-    # halves are the same bytes.
+    # sort has since reordered. So those records are gathered on the device and
+    # brought back in **one** transfer, into the sort's scratch buffer, which is
+    # free by now. Skipped entirely where the two halves are the same bytes.
     #
-    # ⚠️ Reasoned, not measured: there is no discrete GPU here.
-    if resident && !acc.particles.shared
-        @inbounds for s in 1:n
-            slot = Int(acc.outlist.host[s])
-            copyto!(acc.particles.host, slot, acc.particles.device, slot, 1)
-        end
+    # ⚠️ **One transfer, not `n`.** The first version copied each record on its
+    # own — 48 bytes per particle outside the fine grid — on the reasoning that
+    # `n` was a few hundred. It is a few hundred at the start and **216 793** by
+    # the end of a crossing, as the cloud spreads past the fine grid, and each
+    # of those little copies costs a PCIe round trip: measured on a CUDA
+    # machine, the step went from 111 ms to 1655 as `n` grew, while the same
+    # run on unified memory stayed at 158. Reported, not guessed.
+    staged = nothing
+    if resident && !acc.particles.shared && n > 0
+        _gather_particles_kernel!(acc.backend)(
+            acc.sorted.device, acc.particles.device, acc.outlist.device,
+            Int32(n); ndrange = n)
+        synchronize(acc.backend)
+        copyto!(acc.sorted.host, 1, acc.sorted.device, 1, n)
+        staged = PackedPositions(acc.sorted.host, T(acc.x0), T(acc.h), false)
     end
     @inbounds for s in 1:n
         slot = Int(acc.outlist.host[s])
         i = resident ? slot : Int(acc.perm.host[slot])
-        p = cloud.positions[i]
+        # `staged[s]` and `cloud.positions[i]` are the same particle: the first
+        # is the copy just brought back, the second the host half that is only
+        # authoritative when it *is* the device half.
+        p = staged === nothing ? cloud.positions[i] : staged[s]
         Ec = spline_field(coarse, csol_coarse, p)
         force = if Ec === nothing
             r3 = (p[1]^2 + p[2]^2 + p[3]^2)^T(1.5)

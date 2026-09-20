@@ -154,7 +154,11 @@ function main(argv)
     end
     @printf("built in %.1f s\n\n", time() - t0)
 
-    println("   step     t (fs)    x_ion (a0)   q(<8 a0)    ms/step")
+    # `out` is the number of particles whose 10³ stencil no longer fits in the
+    # fine grid: they take the coarse path, on the host. It starts at zero and
+    # grows as the cloud spreads — and it is the size of the only per-step
+    # host/device traffic left, so it is worth watching on a discrete GPU.
+    println("   step     t (fs)    x_ion (a0)   q(<8 a0)        out    ms/step")
     flush(stdout)
     t0 = time()
     tprev = t0
@@ -169,9 +173,10 @@ function main(argv)
             # A no-op where the two halves are the same bytes.
             GPU && Vlasov.download!(sim.device.accelerator.particles,
                                     sim.device.backend)
-            @printf("%7d %10.2f %12.1f %10.3f %10.1f\n",
+            nout = GPU ? Int(sim.device.accelerator.outcount.host[1]) : 0
+            @printf("%7d %10.2f %12.1f %10.3f %10d %10.1f\n",
                     s, s * dt / FS, sim.projectile.position[1],
-                    enclosed_charge(sim.cloud, sim.projectile, 8.0),
+                    enclosed_charge(sim.cloud, sim.projectile, 8.0), nout,
                     1000 * (now - tprev) / o["tous"])
             flush(stdout)
             tprev = now
