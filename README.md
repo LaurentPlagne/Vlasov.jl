@@ -157,8 +157,11 @@ julia --project=gpu -t auto scripts/film_xenon.jl        # 6×10⁵ particles
 
 It writes `film_xenon.mp4`, `film_xenon.gif` and `xenon_snapshots.png` **at the
 root of the repository** (all three are gitignored), and caches its run in
-`xenon_data_cache.jls` — delete that file to recompute rather than redraw. On
-the machine above: 31 s of physics, 31 s of drawing, 176 frames.
+`xenon_data_cache.jls` — delete that file to recompute rather than redraw.
+
+Timed from nothing on the machine above — no cache, cold start: **2 min 12 s**,
+of which 30 s of physics, 31 s of drawing and the rest loading the plotting
+stack and encoding. 176 frames, 8.5 fs of collision.
 
 `scripts/render_xenon_glmakie.jl` redraws the cached run **six times faster**,
 and the reason is worth knowing: it is not the backend, it is the primitive.
