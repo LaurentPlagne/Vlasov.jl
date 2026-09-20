@@ -3,6 +3,7 @@ using LinearAlgebra
 using Test
 import SpecialFunctions
 using KernelAbstractions: CPU, synchronize
+using SpecialFunctions: erf
 
 """Non-uniform test grid, in the spirit of the original code's."""
 function testaxis(n = 8; L = 1.0)
@@ -462,6 +463,41 @@ end
         Lz = [L[3] for L in Ls]
         @test maximum(abs, Lz .- first(Lz)) / abs(first(Lz)) < 1e-3
         @test all(L -> abs(L[1]) < 1e-14 && abs(L[2]) < 1e-14, Ls)
+    end
+
+    @testset "Smoothing columns in closed form" begin
+        ax = uniform_axis(-78.0, 78.0, 110)
+        sm = GaussianSmoothing(ax)
+        h = ax.knots[2] - ax.knots[1]
+
+        # The closed form must reproduce the tables it is meant to replace.
+        # ⚠️ The tolerance is the *table's* error, not the formula's: the
+        # tables come from a 1000-point trapezoid, the closed form is exact.
+        eo = 0.0; eg = 0.0
+        for i in 0:50:sm.nbdt
+            δ = (i / sm.nbdt) * h - h / 2
+            ov, gr = Vlasov.smoothing_columns(δ, h)
+            eo = max(eo, maximum(abs, collect(ov) .- sm.overlap[:, i+1]))
+            eg = max(eg, maximum(abs, collect(gr) .- sm.gradient[:, i+1]))
+        end
+        @test eo < 1e-9
+        @test eg < 1e-8
+        # Scale, so the tolerances above mean something.
+        @test maximum(abs, sm.overlap) > 0.5
+        @test maximum(abs, sm.gradient) > 0.5
+
+        # Five bounds, five transcendentals: the moments share one `erf` and
+        # one `exp`, and `gradient` reuses those of `overlap`.
+        m = Vlasov.smoothing_moments(0.7)
+        @test length(m) == 5
+        @test m[1] ≈ sqrt(π/2) * erf(0.7/sqrt(2))
+        @test m[2] ≈ -exp(-0.7^2/2)
+        @test m[3] ≈ m[1] - 0.7*exp(-0.7^2/2)
+
+        # `Float32` keeps the agreement well inside a table column (1.42e-3).
+        ov32, _ = Vlasov.smoothing_columns(0.1f0, Float32(h))
+        ov64, _ = Vlasov.smoothing_columns(0.1, h)
+        @test maximum(abs, collect(ov32) .- collect(ov64)) < 1e-5
     end
 
     @testset "PackedPositions" begin

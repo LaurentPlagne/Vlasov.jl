@@ -60,6 +60,97 @@ overlap with the Gaussian there is of order `e⁻¹⁸`.
 const SMOOTHING_SUPPORTS = ((1, 2), (1, 2), (1, 3), (1, 3), (2, 4),
                             (2, 4), (3, 5), (3, 5), (4, 5), (4, 5))
 
+"""
+    smoothing_moments(u) -> NTuple{5}
+
+The five primitives `∫uⁿ·exp(−u²/2)du`, `n = 0…4`, at one point.
+
+One `erf` and one `exp` serve all five — which is the whole reason the closed
+form below is affordable:
+
+| n | primitive |
+|---|---|
+| 0 | `√(π/2)·erf(u/√2)` |
+| 1 | `−exp(−u²/2)` |
+| 2 | `M₀ − u·exp(−u²/2)` |
+| 3 | `−(u²+2)·exp(−u²/2)` |
+| 4 | `3M₀ − (u³+3u)·exp(−u²/2)` |
+"""
+@inline function smoothing_moments(u::T) where {T}
+    e = exp(-u * u / 2)
+    s = T(sqrt(π / 2)) * erf(u / T(sqrt(2)))
+    (s, -e, s - u * e, -(u * u + 2) * e, 3s - (u * u * u + 3u) * e)
+end
+
+"""
+    smoothing_columns(δ, h) -> (overlap, gradient)
+
+The ten overlap integrals and their `r`-derivatives at offset `δ`, **computed**
+rather than read from [`GaussianSmoothing`](@ref)'s tables.
+
+The tables cost three quarters of the force kernel — measured by ablation at
+8×10⁷ particles, 460 ms against 110 with every table read removed — and no
+rearrangement recovers it: hoisting all three columns into registers with the
+loops unrolled measures *worse* (570 ms), the register file overflowing. The
+reads have to go, not move.
+
+They can, because the integral of a Hermite cubic against a Gaussian has a
+closed form. With `σ = h/3` and `u = (x−r)/σ`, each half-support contributes a
+combination of [`smoothing_moments`](@ref), and `gradient = ∂overlap/∂r` merely
+shifts the moments up one rank — the same `erf` and `exp` serve both.
+
+Two facts make it cheap:
+
+  * the tabulation window is centred on its third knot, so **`r = g₃ + δ`**;
+  * with `σ = h/3` the five integration bounds are `uⱼ = 3(j−3) − t`, where
+    `t = 3δ/h` — no lookup, just arithmetic.
+
+So **five `erf` and five `exp` per direction** cover all ten basis functions and
+both tables. Measured on Metal: 90 ms per step at 8×10⁷ particles against the
+350 the reads cost.
+
+Agrees with the tabulated values to `5.4e-11` on `overlap` and `4.9e-10` on
+`gradient` — which is the error of *the table*, built by 1000-point trapezoid,
+not of this.
+"""
+function smoothing_columns(δ::T, h::T) where {T}
+    t = 3δ / h
+    M = ntuple(j -> smoothing_moments(3 * T(j - 3) - t), Val(5))
+    ov = ntuple(_ -> zero(T), Val(10))
+    gr = ntuple(_ -> zero(T), Val(10))
+    third = T(1) / 3
+    for a in 1:10
+        b = BasisIndex(a)
+        k = b.knot
+        lo, hi = SMOOTHING_SUPPORTS[a]
+        o = zero(T); dg = zero(T)
+        for (j, dir) in ((k - 1, 1), (k, -1))
+            (1 <= j <= 4 && j >= lo && j + 1 <= hi) || continue
+            d = ntuple(n -> M[j+1][n] - M[j][n], Val(5))
+            α = dir > 0 ? -(3 * T(j - 3) - t) * third : (3 * T(j - 2) - t) * third
+            β = dir > 0 ? third : -third
+            # 3a² − 2a³ with a = α + βu, or ±(a² − a³) for the slope function
+            q2 = α * α * d[1] + 2α * β * d[2] + β * β * d[3]
+            q3 = α^3 * d[1] + 3α^2 * β * d[2] + 3α * β^2 * d[3] + β^3 * d[4]
+            r2 = α * α * d[2] + 2α * β * d[3] + β * β * d[4]
+            r3 = α^3 * d[2] + 3α^2 * β * d[3] + 3α * β^2 * d[4] + β^3 * d[5]
+            sgn = dir > 0 ? -one(T) : one(T)
+            cv, cs = b.kind == Value ? (T(3), T(-2)) : (sgn, -sgn)
+            sc = b.kind == Value ? one(T) : h
+            o += sc * (cv * q2 + cs * q3)
+            dg += sc * (cv * r2 + cs * r3)
+        end
+        ov = Base.setindex(ov, o, a)
+        gr = Base.setindex(gr, dg, a)
+    end
+    σ = h / 3
+    norm = inv(sqrt(2 * T(π)) * σ)
+    # ⚠️ `overlap` carries `N·σ` (from `dx = σ du`), `gradient` only `N`: the
+    # extra `1/σ` of `∂g/∂r = (x−r)/σ²·g` cancels one of them. Getting this
+    # wrong is invisible on `overlap` and a clean factor of three on `gradient`.
+    (norm * σ .* ov, norm .* gr)
+end
+
 function GaussianSmoothing(ax::SplineAxis{T}; nbdt::Int = 1000,
                            quadrature::Int = 1000) where {T}
     g = ax.knots
