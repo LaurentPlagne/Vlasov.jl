@@ -351,30 +351,86 @@ missing from the table by construction, not by accident.
 **Hardware counters.** `xctrace` records Apple's *Performance Limiters* set —
 `Compute Occupancy`, `ALU Limiter`, `Buffer Read/Write Limiter`,
 `Threadgroup/Imageblock Load/Store Limiter`, `GPU Last Level Cache Limiter`,
-`MMU TLB Miss Rate`, and the read/write bandwidths:
+`MMU TLB Miss Rate`, and the read/write bandwidths.
+
+This used to be an afternoon's work. It is now a minute, and the difference is
+entirely in **what you record**: one kernel, on a fraction of its work, for a
+tenth of a second.
+
+### The recipe
+
+**1. Shrink the work, not the problem.** Keep the production cloud and give the
+kernel fewer cells — the regime is what must be preserved, not the size. At
+8×10⁷ particles, 20 000 occupied cells out of 109 054 run at 3.93 µs per cell
+against 4.22 for the whole grid: **93 % of the regime for 17 % of the time**.
+
+!!! warning "Shrinking the grid instead does not work"
+    Halving `nfine` doubles the cell width, the 10³ stencil then overruns the
+    grid, and the forces come back `NaN`. The particles-per-cell count and the
+    stencil geometry are the regime; the number of groups is not.
+
+**2. Loop the kernel alone, for much longer than the recording.** Then every
+sample belongs to it, with no attribution to do afterwards — and the window
+cannot fall outside the run. A first attempt recorded a **GPU at rest**, because
+a 31 s loop had ended before `xctrace` attached: the counters read zero at the
+median with absurd values in the tail, which is what that failure looks like.
+
+**3. Record 100 ms.** The counters are stable to 1 % — mean equals median — so
+nothing is bought by recording longer:
+
+| | 4 s | **0.1 s** |
+|---|---:|---:|
+| Buffer Read Limiter | 98.6 % | **99.0 %** |
+| Last Level Cache Limiter | 93.1 % | **93.0 %** |
+| ALU Limiter | 13.7 % | **14.0 %** |
+| trace | 2.4 GB of XML | **248 MB** |
+| export | minutes | 38 s |
 
 ```
-xcrun xctrace list templates                          # "Metal System Trace"
 xcrun xctrace record --template "Metal System Trace" \
      --instrument "Metal GPU Counters" --no-prompt \
-     --output t.trace --attach <pid> --time-limit 45s
-xcrun xctrace export --input t.trace --toc
+     --output t.trace --attach <pid> --time-limit 100ms
 xcrun xctrace export --input t.trace \
      --xpath '/trace-toc/run[@number="1"]/data/table[@schema="gpu-counter-value"]'
 ```
 
-Three things cost an hour each, so they are written down:
+**4. Parse by position, in a stream.** The table's columns are `timestamp,
+counter-id, value, accelerator-id, sample-index, ring-buffer-index`, and the
+export **compresses by reference**: a value appears once as `id="N"` and every
+repetition is `ref="N"`. Resolve each row's elements in order, keeping a
+dictionary of definitions — matching on names instead gives plausible-looking
+nonsense, such as occupancies above 100 %.
 
-  * **`--attach`, never `--launch`.** Recording from launch captures the 50 s of
-    construction as well; at 8×10⁷ particles that is 50 million counter samples
-    and a **7.6 GB** XML export, none of it about the kernels.
-  * **The export compresses by reference.** A value is written once as
-    `id="N"`, and every repetition is `<process ref="5"/>`. So
-    `grep 'fmt="9239"'` matches only the *first* row — the pid, the counter id
-    and the timestamp all have to be resolved through their references.
-  * **Do not attribute samples to kernels after the fact.** Run **one kernel per
-    phase**, seconds long, separated by GPU silence; then every sample in a
-    phase belongs to that kernel, and the idle troughs mark the boundaries.
+`--attach`, never `--launch`: recording from launch captures the 50 s of
+construction, which at 8×10⁷ particles is 50 million samples and a **7.6 GB**
+export, none of it about the kernel.
+
+### What the counters say about the force kernel
+
+Measured this way, on `_smoothed_field_kernel!` alone:
+
+| | |
+|---|---:|
+| **Buffer Read Limiter** | **99 %** |
+| **GPU Last Level Cache Limiter** | **93 %** |
+| Buffer Load Utilization | 26 % |
+| ALU Limiter | 14 % |
+| Compute Occupancy | 12 % |
+| Threadgroup Load Limiter | 7 % |
+| GPU Read Bandwidth | **2.3 GB/s** |
+
+The kernel is saturated on reads that **never leave the cache**: 2.3 GB/s to
+external memory on a machine that sustains 336, and threadgroup memory — where
+the 10³ tile lives — at 7 %. Whatever it is waiting for, it is a buffer load
+served by the last level cache.
+
+!!! note "And the contradiction is not resolved"
+    If the three table columns are hoisted into registers, some sixty buffer
+    loads per particle remain — 4.8 G per step, or 10 G/s, where a micro-bench
+    of the same table sustains 179 G/s. One of those two numbers does not mean
+    what it appears to. Hoisting the `cx` column **explicitly**, with the inner
+    loop unrolled to keep it in registers, changes nothing (459.1 ms against
+    460.2), so the compiler was already doing it and the loads are elsewhere.
 
 Ablation — remove a piece, measure again — gives the *gain* but never the
 *cause*. It is what found that the projectile's tree reduction was worth 227 ms
