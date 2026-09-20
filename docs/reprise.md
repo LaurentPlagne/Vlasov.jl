@@ -206,14 +206,24 @@ bande passante hôte).
 
 ### Ce qui reste, par ordre de certitude
 
-1. **Recouvrir les deux dépôts (~180 ms).** Le dépôt fin et le CIC grossier
-   lisent les mêmes `(knode, δ)` et écrivent dans deux grilles distinctes :
-   rien ne les lie. Ils sont sérialisés parce qu'ils partagent une file. C'est
-   le seul gain restant qui ne dépende de la compréhension d'aucun noyau.
-2. **Le budget énergétique**, encore particule par particule sur l'hôte. Pris un
+1. **Le budget énergétique**, encore particule par particule sur l'hôte. Pris un
    pas sur dix, jamais profilé à 8×10⁷.
-3. **Disposition par composante** pour `ParticleCloud`, qui aiderait le packing
+2. **Disposition par composante** pour `ParticleCloud`, qui aiderait le packing
    hôte (19 % de la bande passante).
+
+~~Recouvrir les deux dépôts (~180 ms)~~ — **mesuré et écarté** cette session.
+L'hypothèse semblait ne dépendre d'aucun noyau : le dépôt fin et le CIC
+grossier écrivent deux grilles distinctes, rien ne les lie en sortie. Mais
+`global_queue` de Metal.jl est **task-local** — deux `Threads.@spawn` donnent
+bien deux `MTLCommandQueue` distinctes, confirmé par `Metal.@profile`
+(`[MTLDevice newCommandQueue]` ×2. Malgré ça, deux lancements du noyau de dépôt
+(80M particules, 122 636 cellules occupées) prennent 634 → 624 → 593 ms en
+A-B-A — aucun gain. Le profil dit pourquoi : les deux appels durent 306,89 ms
+± 8,82 **chacun**, et leur somme colle au temps GPU occupé total : ils
+s'exécutent bout à bout, pas ensemble. Deux files ne donnent pas deux noyaux
+concurrents sur ce GPU, et les deux dépôts sont de toute façon liés par
+atomiques — il n'y avait pas de débit de reste à prendre. Détail dans
+`docs/src/performance.md`, section « Dead ends, measured ».
 
 ### Le noyau des forces : 447 ms, et je ne sais pas ce qui le borne
 

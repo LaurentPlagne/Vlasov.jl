@@ -259,15 +259,15 @@ brings them to 28.4 and puts deposition in front.
 
 ## What remains
 
-1. **Overlapping the two depositions (≈180 ms).** The fine deposit and the
-   coarse cloud-in-cell read the same `(knode, δ)` and write into two different
-   grids: nothing connects them. They run one after the other only because they
-   are submitted to the same queue.
-2. A **component-wise particle layout**. `ParticleCloud` stores positions as
+1. A **component-wise particle layout**. `ParticleCloud` stores positions as
    `Vector{NTuple{3,T}}`; storing by component would help vectorise the host
    packing, which runs at 19 % of the machine's memory bandwidth.
-3. The **energy budget**, still particle-by-particle on the host. It is a
+2. The **energy budget**, still particle-by-particle on the host. It is a
    diagnostic taken one step in ten, and has never been profiled at 8×10⁷.
+
+Not on this list any more: **overlapping the two depositions**, which looked
+like it needed nothing but not draining the queue between them. Measured and
+dropped — see "Dead ends, measured" below.
 
 Not on the list: **GEMMs on the GPU**. Accelerate already runs them in `Float64`
 at 400–470 GFLOPS, which the GPU cannot do at all, and they are 1.7 ms per
@@ -313,6 +313,24 @@ physics rather than from the code: the mean displacement is 0.356 a₀ against a
 cell of 1.219, so 0.29 of a cell per step, which over three dimensions gives a
 crossing probability near 40 %. There is no temporal coherence to exploit at
 this `dt`.
+
+**Overlapping the two depositions on separate Metal queues: no gain.** The fine
+and coarse depositions write disjoint grids and looked like the one item on the
+list that didn't depend on understanding a kernel — just stop draining the
+queue between them. Metal.jl 1.11's `global_queue` is **task-local**, so two
+`Threads.@spawn` around independent kernel launches do get two distinct
+`MTLCommandQueue`s — confirmed with `Metal.@profile`, which counted
+`[MTLDevice newCommandQueue]` twice. That was the mechanism this idea needed,
+and it does not help: two launches of the same deposit kernel (80 M particles,
+122 636 occupied cells) measured **634 → 624 → 593 ms** in three consecutive
+A-B-A runs, no significant difference. The profile of the concurrent run says
+why — the GPU was busy 614.7 ms of a 689.1 ms wall clock, and the two kernel
+calls logged 306.89 ms ± 8.82 **each**, summing to the device-busy time almost
+exactly: they ran back to back, not together. Two command queues do not buy
+concurrent *compute* dispatch on this GPU — the M1 Max's single compute engine
+serializes them regardless, and the deposit kernels are atomic-scatter bound in
+the first place, so there was no spare throughput for a second one to use even
+if it had overlapped.
 
 ## Profiling a kernel
 
