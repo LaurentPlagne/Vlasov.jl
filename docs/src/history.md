@@ -4,8 +4,10 @@ CurrentModule = Vlasov
 
 # The original code
 
-Forty-three Fortran versions survive in the thesis archive, across parallel
-directories, with no version control and — in places — no reliable timestamps.
+Forty-three Fortran versions survive in the archive of the thesis — Laurent
+Plagne's, prepared at CEA-Grenoble under the supervision of Claude Guet — across
+parallel directories, with no version control and, in places, no reliable
+timestamps.
 Knowing *which* of them the port targets is not archaeology for its own sake: the
 versions differ on physics, and porting the wrong one would reproduce the wrong
 results.

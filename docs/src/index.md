@@ -8,7 +8,8 @@ Semi-classical dynamics of the valence electrons of a metal cluster, and the
 energy an ion loses crossing one.
 
 This package is an idiomatic Julia port of the Fortran 77 code written for
-L. Plagne's PhD thesis (1996–1998). The original solved the Vlasov–Poisson
+Laurent Plagne's PhD thesis, prepared at **CEA-Grenoble** under the supervision
+of **Claude Guet** (1996–1998). The original solved the Vlasov–Poisson
 system for a sodium cluster Na\_N by a pseudo-particle method, on a cubic Hermite
 spline collocation grid, with a tensor-product Poisson solver. The port
 reproduces it — and, on one point, corrects it.

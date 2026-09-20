@@ -1,9 +1,10 @@
 # Vlasov.jl
 
 The electron dynamics of a sodium cluster struck by a fast ion, by the
-pseudo-particle (Vlasov) method — a Julia port of the Fortran 77 code of a 1998
-thesis, kept honest against the original, which still compiles and runs and
-serves as the oracle.
+pseudo-particle (Vlasov) method — a Julia port of the Fortran 77 code written
+for Laurent Plagne's PhD thesis, prepared at **CEA-Grenoble** under the
+supervision of **Claude Guet** (1996–1998). The original still compiles and
+runs, and serves as the oracle the port is kept honest against.
 
 ![Na₁₉₆ + Xe²⁵⁺, 500 keV, b = 45 a₀](docs/src/assets/film_xenon_80M.gif)
 
@@ -229,7 +230,7 @@ open docs/build/index.html
 |---|---|
 | `scripts/` | the thesis figures, the films, the profiles and the benchmarks |
 | `ref/` | the original Fortran, its data, and the thesis's published curves |
-| [`lpthese2.pdf`](lpthese2.pdf) | the thesis itself — the physics this code is the instrument of |
+| [`lpthese2.pdf`](lpthese2.pdf) | the thesis itself (CEA-Grenoble, 1998) — the physics this code is the instrument of |
 | `test/` | 4824 tests — `julia --project=. -e 'include("test/runtests.jl")'` |
 
 ⚠️ The measurement log under `docs/*.md` — as opposed to `docs/src/` — is in
