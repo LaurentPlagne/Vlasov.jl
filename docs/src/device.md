@@ -64,33 +64,7 @@ On Apple Silicon the CPU and the GPU address one pool of memory, so a
 transfers are free. On a discrete GPU they are two allocations and the transfers
 are real. Call sites do not change; only the price does.
 
-```mermaid
-flowchart LR
-    subgraph unified["unified memory — Apple Silicon"]
-        direction TB
-        uh["host face<br/><code>unsafe_wrap(Array, mtl)</code>"]
-        ub[("one allocation")]
-        ud["device face<br/><code>MtlArray</code>"]
-        uh --- ub --- ud
-    end
-
-    subgraph discrete["discrete GPU"]
-        direction TB
-        dh["host face"]
-        dhb[("host allocation")]
-        ddb[("device allocation")]
-        dd["device face"]
-        dh --- dhb
-        dhb <-->|"a real copy"| ddb
-        ddb --- dd
-    end
-
-    unified -.->|"upload! / download!<br/><b>free</b>"| note1["same call sites"]
-    discrete -.->|"upload! / download!<br/><b>a transfer</b>"| note1
-
-    classDef mem fill:#1f3a4d,stroke:#4a90a4,color:#e8f1f5
-    class ub,dhb,ddb mem
-```
+![One allocation, or two](assets/diagrams/dual-buffer.svg)
 
 Flattening this into a uniform "always copy" would cost Apple Silicon a copy of
 every buffer at every step, on the very machine the campaigns run on.
@@ -117,25 +91,7 @@ poisson_rhs!(rhs, ρ, mesh::SplineMesh, φ) = _poisson_rhs!(rhs, ρ, φ, mesh.la
 poisson_rhs!(rhs, ρ, dm::DeviceMesh,  φ) = _poisson_rhs!(rhs, ρ, φ, dm.laplacians, dm.interior)
 ```
 
-```mermaid
-flowchart TB
-    mesh["SplineMesh<br/><i>banded factorisations, eigenbasis,<br/>locator tables — none of it for a GPU</i>"]
-    dm["DeviceMesh<br/><i>the short list the loop reads,<br/>copied once, in E</i>"]
-    m1["poisson_rhs!(rhs, ρ, mesh, φ)"]
-    m2["poisson_rhs!(rhs, ρ, dm, φ)"]
-    core["_poisson_rhs!(rhs, ρ, φ, laplacians, interior)<br/><b>never asks where its arrays live</b>"]
-
-    mesh -->|"mirror, once per run"| dm
-    mesh --> m1
-    dm --> m2
-    m1 -->|"supplies tables"| core
-    m2 -->|"supplies tables"| core
-
-    classDef obj fill:#2f2a3d,stroke:#7a6b9a,color:#efe8f5
-    classDef work fill:#1f3a4d,stroke:#4a90a4,color:#e8f1f5
-    class mesh,dm obj
-    class core work
-```
+![One worker, two suppliers of tables](assets/diagrams/split-in-two.svg)
 
 [`DeviceMesh`](@ref) is then a *mirror*, not a reimplementation: it copies, once,
 the short list of tables the time loop actually reads, in the kernels'
@@ -167,40 +123,7 @@ Drawn out, one step looks like this. Everything inside the shaded band runs as a
 kernel; only the three dashed arrows cross to the host, and two of them are
 diagnostics:
 
-```mermaid
-flowchart TB
-    subgraph host["host"]
-        direction TB
-        scan["scan of the counts<br/><i>O(cells)</i>, sequential"]
-        budget["energy budget<br/><i>one step in ten</i>"]
-        outside["out-of-stencil forces<br/><i>a few hundred particles</i>"]
-    end
-
-    subgraph device["device — the cloud never leaves"]
-        direction TB
-        cloud[("cloud<br/>(k, δ) + previous")]
-        hist["histogram<br/>_hist_cells_kernel!"]
-        sort["placement, two stages<br/>_place_coarse! → _place_fine!"]
-        dep["deposition<br/>fine 8³ · coarse CIC"]
-        pois["poisson!<br/>coarse, then fine"]
-        mf["effective_potential!"]
-        force["_smoothed_field_kernel!<br/><i>forces, projectile fused</i>"]
-        verlet["_verlet_packed_kernel!"]
-    end
-
-    cloud --> hist --> sort --> dep --> pois --> mf --> force --> verlet
-    verlet -.-> cloud
-    hist -.->|counts| scan
-    scan -.->|offsets| sort
-    mf -.->|csol coarse| outside
-    outside -.->|corrections| force
-    force -.->|φ, one step in ten| budget
-
-    classDef dev fill:#1f3a4d,stroke:#4a90a4,color:#e8f1f5
-    classDef hst fill:#3d3320,stroke:#9a7b3f,color:#f5efe0
-    class cloud,hist,sort,dep,pois,mf,force,verlet dev
-    class scan,budget,outside hst
-```
+![What a step crosses](assets/diagrams/step-boundary.svg)
 
 Before the cloud was held as `(k, δ)`, two more arrows crossed that boundary on
 **every** step and carried the whole cloud with them: the packing read 8×10⁷
@@ -225,33 +148,7 @@ wide. So the error is **0.54 % of a column** — and 0.05 % of particles land on
 the wrong side of a boundary and get the wrong Gaussian sample. That is a wrong
 *discrete choice*, not a rounding error that averages out.
 
-```mermaid
-flowchart TB
-    subgraph bad["deriving δ from an absolute coordinate"]
-        direction TB
-        a1["x = 78.000<b>4213</b> a₀<br/><i>Float32 resolves 7.6e-6 here</i>"]
-        a2["− knot = 77.99929…"]
-        a3["δ = 0.00113…<br/><b>the leading digits cancelled</b><br/>what survives is the resolution of 78, not of δ"]
-        a1 --> a2 --> a3
-    end
-
-    subgraph good["holding (k, δ)"]
-        direction TB
-        b1["k = 111  <i>exact, Int32</i>"]
-        b2["δ = 0.00113…  <i>bounded by h/2</i><br/><i>Float32 resolves 6e-8 here</i>"]
-        b3["x rebuilt only when someone asks"]
-        b1 --> b3
-        b2 --> b3
-    end
-
-    a3 -->|"0.54 % of a table column<br/>0.05 % of particles pick the wrong sample"| verdict1["✗"]
-    b2 -->|"0.004 % of a column"| verdict2["✓"]
-
-    classDef bad fill:#4d2020,stroke:#a44a4a,color:#f5e8e8
-    classDef good fill:#1f4d2f,stroke:#4aa46a,color:#e8f5ec
-    class a1,a2,a3,verdict1 bad
-    class b1,b2,b3,verdict2 good
-```
+![Cancellation, and the form that avoids it](assets/diagrams/packed-positions.svg)
 
 For a long time the conclusion drawn from this was "the packing must run on the
 host, in `Float64`". It is the wrong conclusion. The obstacle is not the width
@@ -339,29 +236,7 @@ that each bucket's write front advances nearly sequentially — and
 the first stage produced**, so neighbouring work-items carry particles of
 neighbouring cells and their destinations share pages.
 
-```mermaid
-flowchart TB
-    subgraph one["one pass — 118 ms"]
-        direction LR
-        i1["particle i"] -->|"its cell, anywhere in 1 367 631"| o1[("perm<br/>305 MB")]
-        i2["particle i+1"] -->|"a different page"| o1
-        i3["particle i+2"] -->|"a different page again"| o1
-    end
-
-    subgraph two["two stages — 17.5 + 29.4 ms"]
-        direction TB
-        s1["<b>stage 1</b> — bucket = cell ≫ 9<br/>2 672 destinations, each advancing in order"]
-        mid[("permtmp<br/><i>particles now grouped by region</i>")]
-        s2["<b>stage 2</b> — exact cell, walking that order<br/>neighbouring work-items → neighbouring cells"]
-        out[("perm<br/><i>identical to the host sort</i>")]
-        s1 --> mid --> s2 --> out
-    end
-
-    classDef slow fill:#4d2020,stroke:#a44a4a,color:#f5e8e8
-    classDef fast fill:#1f4d2f,stroke:#4aa46a,color:#e8f5ec
-    class i1,i2,i3,o1 slow
-    class s1,s2,mid,out fast
-```
+![Scatter, and the locality two stages buy](assets/diagrams/two-stage-sort.svg)
 
 The first stage does not sort anything anyone wants; it only buys the second one
 its locality.

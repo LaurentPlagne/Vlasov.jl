@@ -1,8 +1,15 @@
 using Documenter, Vlasov
 
-# Renders ```mermaid blocks. The diagrams stay plain text in the sources, so
-# they diff like code rather than like an image.
-using DocumenterMermaid
+# The architecture diagrams, rendered by `dot` into `src/assets/diagrams/`.
+# Their sources are DOT, so they diff like code; the SVG is produced **here**
+# rather than in the reader's browser.
+#
+# ⚠️ Not a client-side renderer. Mermaid and its kin import their script as an
+# ES module, which a page opened over `file://` refuses to load — the diagram
+# then shows as its own source text, silently. This site is read locally
+# (`open docs/build/index.html`), so nothing may depend on the network or on
+# JavaScript.
+include(joinpath(@__DIR__, "diagrams", "make_diagrams.jl"))
 
 # The figures are generated at build time by the `@example` blocks; CairoMakie
 # is loaded there, not here. Loading it once up front only warms the cache.
