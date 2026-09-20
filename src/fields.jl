@@ -88,16 +88,10 @@ end
 The ten overlap integrals and their `r`-derivatives at offset `δ`, **computed**
 rather than read from [`GaussianSmoothing`](@ref)'s tables.
 
-The tables cost three quarters of the force kernel — measured by ablation at
-8×10⁷ particles, 460 ms against 110 with every table read removed — and no
-rearrangement recovers it: hoisting all three columns into registers with the
-loops unrolled measures *worse* (570 ms), the register file overflowing. The
-reads have to go, not move.
-
-They can, because the integral of a Hermite cubic against a Gaussian has a
-closed form. With `σ = h/3` and `u = (x−r)/σ`, each half-support contributes a
-combination of [`smoothing_moments`](@ref), and `gradient = ∂overlap/∂r` merely
-shifts the moments up one rank — the same `erf` and `exp` serve both.
+The integral of a Hermite cubic against a Gaussian has a closed form. With
+`σ = h/3` and `u = (x−r)/σ`, each half-support contributes a combination of
+[`smoothing_moments`](@ref), and `gradient = ∂overlap/∂r` merely shifts the
+moments up one rank — the same `erf` and `exp` serve both.
 
 Two facts make it cheap:
 
@@ -106,8 +100,22 @@ Two facts make it cheap:
     `t = 3δ/h` — no lookup, just arithmetic.
 
 So **five `erf` and five `exp` per direction** cover all ten basis functions and
-both tables. Measured on Metal: 90 ms per step at 8×10⁷ particles against the
-350 the reads cost.
+both tables.
+
+⚠️ **This was written to replace the tables in the force kernel, and it does
+not: measured in place, it is worse.** The table reads were indeed costing
+three quarters of that kernel — 460 ms against 110 with every read ablated —
+but what they were waiting for was *where* they were read, not that they were
+read at all. Staging the columns in threadgroup memory takes the kernel to
+208.5 ms; this closed form grafted in its place measures **697.1**. Fifteen
+`erf` and fifteen `exp` per particle cost more than sixty cached loads, and a
+micro-benchmark of the arithmetic alone (90 ms per step) said otherwise only
+because it left out the register pressure it adds to the contraction. See
+[`contract_tile`](@ref) for the measurements.
+
+What it is good for is being **exact**: it is the reference the tables are
+checked against, and it is what a backend with no room for an 80 KB table, or a
+smoothing whose width was not tied to the step, would have to use.
 
 Agrees with the tabulated values to `5.4e-11` on `overlap` and `4.9e-10` on
 `gradient` — which is the error of *the table*, built by 1000-point trapezoid,

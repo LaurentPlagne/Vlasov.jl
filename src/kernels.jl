@@ -60,6 +60,11 @@ atomics onto `red`, and too few work-items to hide the contraction's latency.
 ⚠️ The contraction is register-hungry enough that Metal refuses 512 work-items
 outright ("should not exceed 448"), which is the same story seen from the other
 side.
+
+**64 survives the column staging**, which could have moved the optimum: the
+staged columns cost `40·group` words of threadgroup memory, so a bigger group
+now buys occupancy with the very resource it needs. Re-measured with the
+staging in place — 32: 237.5, **64: 195.9**, 96: 261.1, 128: 211.9 ms.
 """
 const FIELD_GROUPSIZE = 64
 
@@ -129,15 +134,89 @@ the host positions — free, the memory being unified. On a backend with hardwar
     end
 end
 
+# Offsets of the four staged columns inside `cols`, in blocks of ten values:
+# `overlap[:, cy]`, `gradient[:, cy]`, `overlap[:, cz]`, `gradient[:, cz]`.
+# ⚠️ A docstring cannot attach to a multiple assignment — and Revise then
+# leaves the whole file unloaded, `contract_tile` included, with nothing but a
+# "could not find something to document" to say so.
+const COL_OY, COL_GY, COL_OZ, COL_GZ = Int32(0), Int32(10), Int32(20), Int32(30)
+
+"""Number of smoothing values [`_smoothed_field_kernel!`](@ref) stages per
+work-item — see [`contract_tile`](@ref)."""
+const FIELD_COLUMNS = 40
+
 """
-    contract_tile(tile, ovl, grad, cx, cy, cz)
+    colslot(tid, gs, block, a) -> Int32
+
+Where the `a`-th value of `block` lives, for the work-item `tid` of a group of
+`gs`. **Strided by the group size**, not packed per work-item: neighbouring
+work-items then read neighbouring words and no two of them fall on the same
+bank.
+"""
+@inline colslot(tid, gs, block, a) = tid + (block + a - Int32(1)) * gs
+
+"""
+    stage_columns!(cols, tid, gs, ovl, grad, cy, cz)
+
+Copies one particle's `y` and `z` smoothing columns into threadgroup memory.
+Forty values, read once each — see [`contract_tile`](@ref) for why these two
+directions and not the third.
+"""
+@inline function stage_columns!(cols, tid, gs, ovl, grad, cy, cz)
+    @inbounds for a in Int32(1):Int32(10)
+        cols[colslot(tid, gs, COL_OY, a)] = ovl[a, cy]
+        cols[colslot(tid, gs, COL_GY, a)] = grad[a, cy]
+        cols[colslot(tid, gs, COL_OZ, a)] = ovl[a, cz]
+        cols[colslot(tid, gs, COL_GZ, a)] = grad[a, cz]
+    end
+end
+
+"""
+    contract_tile(tile, cols, ovl, grad, tid, gs, cx)
 
 [`contract_spline_10`](@ref) reading its 10³ stencil from threadgroup memory
-instead of from `csol`.
+instead of from `csol`, and the particle's `y` and `z` smoothing columns from
+threadgroup memory instead of from the tables.
 
 The arithmetic is the same, in the same order — the two agree bit for bit. Only
 the indexing differs: the stencil has been copied into a dense `10×10×10` block,
 so the strides are 1, 10 and 100 rather than those of the grid.
+
+⚠️ **The costly reads are those of `y` and `z`, not those of `x`.** This is the
+opposite of what the loop nest suggests, and it cost months of looking at the
+wrong loop. The inner loop reads `ovl[ii, cx]` a thousand times per particle,
+and the compiler hoists those ten values into registers by itself — staging
+them as well buys *nothing*. The middle loop reads `ovl[jj, cy]` two hundred
+times and the outer `ovl[kk, cz]` twenty, and those it does **not** hoist:
+keeping them would cost twenty more registers live across the whole
+contraction, which is exactly what it refuses to spend. Copying them once per
+particle into threadgroup memory costs 40 values and 10 KB a group:
+
+| staged in threadgroup memory | ms |
+|---|---:|
+| nothing — the tables, read where they lie | 505.9 |
+| `x` only | 505.6 |
+| all three directions | 260.8 |
+| **`y` and `z`** | **208.5** |
+
+Measured at 8×10⁷ particles, the five variants interleaved in one process with
+the baseline repeated last (506.1), and **bit for bit identical** over the 13.6
+million slots checked: the same values, read from somewhere else. On the whole
+step, A-B-A: 1291.2 → 988.1 → 1294.7 ms.
+
+Staging all three is *worse* than staging two, by the same mechanism read
+backwards: the `x` values then make a round trip through threadgroup memory
+that the register file was doing for free, and the extra 20 values a work-item
+push the group's threadgroup footprint from 15 to 20 KB.
+
+⚠️ This closes the question the counters had been asking — Buffer Read Limiter
+at 99 % with 2.3 GB/s to DRAM, so reads that never leave the cache. It also
+retires the remedy that had been prepared for it:
+[`smoothing_columns`](@ref) computes those columns in closed form instead of
+reading them, and grafted here it measures **697.1 ms** — worse than the tables
+it replaces, and three times the staging. Fifteen `erf` and fifteen `exp` per
+particle are dearer than sixty cached loads. The closed form keeps its own
+value as an exact reference; it is not the way to feed this kernel.
 
 ⚠️ **The index width must be the same throughout.** An `Int32` offset added to
 an `Int` loop variable costs a factor of four here, silently. Measured, 8×10⁷
@@ -161,14 +240,16 @@ offsets already come out of `_stencil_offset` as `Int32`: there everything is
 `Int32` and widening the offsets to `Int` costs 17 % (242.2 → 282.9 ms). So the
 rule is not "prefer one width" but "do not mix them".
 """
-@inline function contract_tile(tile, ovl, grad, cx, cy, cz)
+@inline function contract_tile(tile, cols, ovl, grad, tid, gs, cx)
     T = eltype(ovl)
     fx = zero(T); fy = zero(T); fz = zero(T)
     @inbounds for kk in Int32(1):Int32(10)
-        oz = ovl[kk, cz]; gz = grad[kk, cz]
+        oz = cols[colslot(tid, gs, COL_OZ, kk)]
+        gz = cols[colslot(tid, gs, COL_GZ, kk)]
         bk = Int32(100) * (kk - Int32(1))
         for jj in Int32(1):Int32(10)
-            oy = ovl[jj, cy]; gy = grad[jj, cy]
+            oy = cols[colslot(tid, gs, COL_OY, jj)]
+            gy = cols[colslot(tid, gs, COL_GY, jj)]
             b = bk + Int32(10) * (jj - Int32(1))
             dxp = zero(T); val = zero(T)
             for ii in Int32(1):Int32(10)
@@ -227,13 +308,18 @@ it does not need the grid — then reduced in a tree and committed with one atom
 per group. A work-item now handles several particles, so it sums them into a
 register first and touches threadgroup memory once.
 
-What this did *not* fix, and the measurements that say so: the kernel now runs
-at 756 GFLOP/s against the 836 it reaches with every read served from L1, so
-90 % of the remaining distance is arithmetic, not memory. Rejected on the way,
-each by measurement — hoisting the `x` tables into registers (×0.96, LLVM
-already does it), splitting the accumulator into four chains (×1.01, not latency
-bound), and reading `csol` in pairs (×0.99, already vectorised by the
-compiler).
+Rejected on the way, each by measurement — hoisting the `x` tables into
+registers (×0.96, LLVM already does it), splitting the accumulator into four
+chains (×1.01, not latency bound), and reading `csol` in pairs (×0.99, already
+vectorised by the compiler).
+
+⚠️ **A roofline said, at that point, that what remained was arithmetic** — 756
+GFLOP/s against the 836 the kernel reaches with every read served from L1,
+hence "90 % of the remaining distance is not memory". It was wrong, and the
+refutation is [`contract_tile`](@ref): staging the `y` and `z` columns, which
+changes no arithmetic whatsoever, took the same kernel to 208.5 ms, some two
+and a half times the throughput that roof allowed. A measured ceiling is a
+ceiling on the code as written, never on the problem.
 
 ⚠️ `unsafe_indices = true`: the tree reduction below calls `@synchronize`, which
 every work-item of a group must reach. KernelAbstractions' automatic bounds
@@ -256,6 +342,8 @@ written by hand and `ndrange` is padded to a whole number of groups.
     sh = @localmem eltype(force) (4 * FIELD_GROUPSIZE,)
     "The cell's 10³ stencil of `csol`, read once for all its particles."
     tile = @localmem eltype(force) (1000,)
+    "The `y` and `z` smoothing columns of the particle each work-item is on."
+    cols = @localmem eltype(force) (FIELD_COLUMNS * FIELD_GROUPSIZE,)
     "`[lo, hi, bx, by, bz, ok]` — group-uniform, hence threadgroup memory."
     st = @localmem Int32 (6,)
 
@@ -319,7 +407,8 @@ written by hand and `ndrange` is padded to a whole number of groups.
                              Int32(1), Int32(1)), nc)
                 cz = min(max(floor(Int32, (dz0 + halfsp) / spacing * nbdt + E(0.5)) +
                              Int32(1), Int32(1)), nc)
-                fx, fy, fz = contract_tile(tile, ovl, grad, cx, cy, cz)
+                stage_columns!(cols, tid, GS, ovl, grad, cy, cz)
+                fx, fy, fz = contract_tile(tile, cols, ovl, grad, tid, GS, cx)
                 fxp = -w * fx; fyp = -w * fy; fzp = -w * fz
             end
 

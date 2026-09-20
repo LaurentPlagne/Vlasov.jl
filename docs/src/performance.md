@@ -314,6 +314,20 @@ cell of 1.219, so 0.29 of a cell per step, which over three dimensions gives a
 crossing probability near 40 %. There is no temporal coherence to exploit at
 this `dt`.
 
+**The smoothing columns in closed form: 697.1 ms against 505.9.** The force
+kernel's table reads were worth three quarters of it, so
+[`smoothing_columns`](@ref) was written to compute those columns instead —
+five `erf` and five `exp` per direction cover all ten basis functions and both
+tables, and a micro-benchmark of that arithmetic alone measured 90 ms per step
+against the 350 the reads cost. Grafted into the kernel, with the sixty values
+staged in threadgroup memory, it measures **697.1 ms** — worse than the tables
+it replaces, and more than three times the 208.5 ms that staging the
+*tabulated* columns reaches. The micro-benchmark was right about the
+arithmetic and silent about what it does to the contraction around it.
+
+The function stays, tested and exact: it is the reference the tables are
+checked against. It is simply not how this kernel should be fed.
+
 **Overlapping the two depositions on separate Metal queues: no gain.** The fine
 and coarse depositions write disjoint grids and looked like the one item on the
 list that didn't depend on understanding a kernel — just stop draining the
@@ -424,13 +438,37 @@ external memory on a machine that sustains 336, and threadgroup memory — where
 the 10³ tile lives — at 7 %. Whatever it is waiting for, it is a buffer load
 served by the last level cache.
 
-!!! note "And the contradiction is not resolved"
-    If the three table columns are hoisted into registers, some sixty buffer
-    loads per particle remain — 4.8 G per step, or 10 G/s, where a micro-bench
-    of the same table sustains 179 G/s. One of those two numbers does not mean
-    what it appears to. Hoisting the `cx` column **explicitly**, with the inner
-    loop unrolled to keep it in registers, changes nothing (459.1 ms against
-    460.2), so the compiler was already doing it and the loads are elsewhere.
+!!! note "Resolved: the loads were in the middle of the loop nest"
+    "The compiler was already hoisting `cx`, so the loads are elsewhere" was
+    the right conclusion, and *elsewhere* is the other two directions. The
+    inner loop reads `ovl[ii, cx]` a thousand times per particle and gets it
+    for free; the middle loop reads `ovl[jj, cy]` two hundred times and the
+    outer one `ovl[kk, cz]` twenty, and **those** the compiler will not hoist —
+    carrying them would cost twenty registers live across the whole
+    contraction.
+
+    Staging them in threadgroup memory, 40 values per particle, is the whole
+    fix:
+
+    | staged | ms |
+    |---|---:|
+    | nothing | 505.9 |
+    | `x` only | 505.6 |
+    | all three directions | 260.8 |
+    | **`y` and `z`** | **208.5** |
+
+    Bit for bit identical over the 13.6 million slots checked — the same
+    values, read from somewhere else. The kernel loses 297 ms and the step
+    goes from 1291.2 to 988.1 ms (A-B-A, the closing A at 1294.7), for a change
+    that touches no arithmetic.
+
+    Staging all three directions is worse than staging two: the `x` values then
+    make a round trip through threadgroup memory that the register file was
+    doing for free.
+
+    Two lessons, both already on this page and both paid again: a counter names
+    the limiter but not the line, and an ablation gives the gain but not the
+    cause. What closed it was an A-B over *which* reads were staged.
 
 Ablation — remove a piece, measure again — gives the *gain* but never the
 *cause*. It is what found that the projectile's tree reduction was worth 227 ms

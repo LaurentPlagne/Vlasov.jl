@@ -10,7 +10,9 @@ oracle reconstruit, **les figures 5.2 et 5.3 de la thèse sont reproduites**, le
 pas de temps a été accéléré **×3,95** (307,9 → 77,9 ms à 800 000 particules), et
 le tout est documenté dans un site Documenter en anglais. À l'échelle de
 production — 8×10⁷ particules — le pas est passé de 4213 à **1090 ms** sur la
-branche `gpu-portable`, où le nuage vit désormais sur le device.
+branche `gpu-portable`, où le nuage vit désormais sur le device, puis le noyau
+des forces a été **divisé par 2,4** : A-B-A le même jour, **1291 → 988 ms** sur
+le pas entier, sans qu'un seul chiffre change.
 
 ## Par où entrer
 
@@ -188,7 +190,8 @@ sont dans la section [Branche `gpu-portable`](#branche-gpu-portable) ci-dessous.
 Le portage est entièrement en `KernelAbstractions` : les mêmes noyaux servent
 `CPU()`, Metal, et — non validé, faute de matériel — CUDA/ROCm/oneAPI. **Le
 nuage vit sur le device**, et le pas à 8×10⁷ particules sur 222³ est passé de
-4213 ms à **1090**.
+4213 ms à **1090**, puis le noyau des forces de 502 à **209** (A-B-A du jour :
+1291 → 988 ms sur le pas).
 
 ### Où passe le temps aujourd'hui
 
@@ -196,14 +199,22 @@ Profil mesuré en séquence, la somme fermant à 99,9 % :
 
 | étage | ms | % |
 |---|---:|---:|
-| **forces + projectile** | **458** | **41 %** |
-| **dépôt fin** | **199** | 18 % |
-| dépôt grossier (CIC) | 194 | 17 % |
-| `_pack!` + tri | 123 | 11 % |
-| poisson! (2 niveaux) | 58 | 5 % |
-| Verlet (device) | 40 | 4 % |
-| champ moyen | 24 | 2 % |
-| le reste | 27 | 2 % |
+| **dépôt grossier (CIC)** | **236** | **24 %** |
+| **dépôt fin** | **216** | **22 %** |
+| forces + projectile | 209 | 21 % |
+| `_pack!` + tri | 162 | 16 % |
+| poisson! (2 niveaux) | 62 | 6 % |
+| Verlet (device) | 39 | 4 % |
+| champ moyen | 27 | 3 % |
+| copie de retour du tri | 23 | 2 % |
+| csolc | 12 | 1 % |
+| le reste | 2 | 0 % |
+
+⚠️ **Ne pas comparer ce tableau ligne à ligne avec le précédent** (forces 458,
+dépôt fin 199, grossier 194, tri 123, pas à 1090 ms) : il a été mesuré dans une
+autre session, sur un nuage plus jeune, et tous les postes y sont 10 à 30 % plus
+bas. Les comparaisons qui valent quelque chose sont **entrelacées dans un seul
+processus** ; celle qui a fait passer les forces de 502 à 209 est plus bas.
 
 ### Ce qui a changé, et qu'il faut savoir avant de toucher au code
 
@@ -229,28 +240,40 @@ conséquences, dont deux ont coûté un bug :
 nuage étant déjà presque trié (dérive médiane : 2230 places sur 8×10⁷), un
 premier étage qui « fabrique » de la localité la détruit : 151 ms contre 35,5.
 
-### Le noyau des forces : la question est fermée, le remède reste à écrire
+### Le noyau des forces : fait, et pas par le chemin prévu
 
-Ce qui le borne est **les tables `ovl`/`grad`**, et non plus un mystère :
-retirer toute lecture de table le fait passer de **460 à 110 ms**. Les
-compteurs le disaient (Buffer Read 99 %, cache de dernier niveau 93 %, ALU
-14 %, DRAM 2,3 Go/s) ; il manquait de savoir quoi lire.
+**×2,4 sans toucher à un seul calcul.** Les colonnes `y` et `z` du lissage sont
+recopiées une fois par particule en mémoire de groupe, et la contraction les y
+lit. Quarante valeurs, 10 Ko par groupe, **bit à bit identique** sur les 13,6
+millions de fentes vérifiées.
 
-**Aucune réorganisation ne le récupère** : hisser les trois colonnes en
-registres, boucles déroulées, mesure 570 ms — pire que l'original, le fichier
-de registres débordant.
+| ce qui est mis en mémoire de groupe | ms |
+|---|---:|
+| rien — les tables, lues où elles sont | 505,9 |
+| `x` seul | 505,6 |
+| les trois directions | 260,8 |
+| **`y` et `z`** | **208,5** |
 
-La sortie est écrite et testée mais **pas branchée** :
-[`smoothing_columns`](@ref) donne les dix `overlap` et `gradient` en forme
-fermée, à 5,4e-11 et 4,9e-10 des tables — soit l'erreur *de la table*. Cinq
-`erf` et cinq `exp` par direction suffisent, **90 ms** contre les 350 que
-coûtent les lectures.
+Les cinq variantes entrelacées dans un même processus, témoin répété en
+dernier (506,1). Sur le pas entier, A-B-A : **1291,2 → 988,1 → 1294,7 ms**.
 
-**Ce qui bloque** : loger les soixante valeurs calculées. Les deux greffes
-essayées échouent — registres saturés (570 ms), et un `@localmem` de 15 Ko qui
-casse l'inférence du noyau. Il faut restructurer la contraction, probablement
-en **trois passes séparables** n'ayant chacune besoin que de vingt valeurs.
-C'est un autre noyau, pas une retouche. Gain visé : **−260 ms**, ~−24 % du pas.
+**Ce qui coûtait n'était pas ce qu'on croyait.** La boucle interne lit
+`ovl[ii, cx]` mille fois par particule et le compilateur la hisse tout seul —
+la mettre en mémoire de groupe ne rend rien (505,6). Ce sont les boucles du
+milieu et du dehors, `ovl[jj, cy]` deux cents fois et `ovl[kk, cz]` vingt,
+qu'il refuse de hisser : il faudrait vingt registres vivants sur toute la
+contraction. Mettre les trois directions est déjà moins bon (260,8) — les
+valeurs de `x` font alors un aller-retour que le fichier de registres faisait
+gratuitement.
+
+**Et la forme fermée est une impasse.** [`smoothing_columns`](@ref), écrite et
+testée pour remplacer ces lectures, greffée dans le noyau mesure **697,1 ms** —
+pire que les tables, et plus de trois fois le coût de leur mise en cache.
+Quinze `erf` et quinze `exp` par particule coûtent plus cher que soixante
+lectures servies par le cache. Le micro-banc qui annonçait 90 ms mesurait
+l'arithmétique seule et taisait ce qu'elle fait à la contraction autour d'elle.
+La fonction reste : elle est exacte, c'est la référence contre laquelle les
+tables sont vérifiées.
 
 ### Profiler un noyau : une minute, pas une heure
 
@@ -276,6 +299,8 @@ Détail chiffré dans `docs/src/performance.md`, section « Dead ends, measured 
 | hisser les colonnes en registres | 570 ms, pire que l'original |
 | déséquilibre de charge entre groupes | les cellules peu peuplées portent 0,09 % du travail |
 | tri sur device **des clés** | ×1,17 — mais trier les *particules* gagne |
+| **les colonnes en forme fermée** | **697,1 ms** contre 505,9 — l'arithmétique coûte plus que les lectures |
+| mettre `x` aussi en mémoire de groupe | 505,6 puis 260,8 ms — le compilateur le faisait déjà |
 
 ⚠️ **Deux de ces mesures étaient justes et sont devenues fausses** parce que
 leur prémisse avait bougé : le tri device « à ×1,17 » triait des clés, et le
@@ -297,12 +322,22 @@ de rouvrir une impasse, vérifier ce qui a changé sous elle.
 
 ### Ce qui reste, par ordre de rendement
 
-1. **Brancher la forme fermée** (−260 ms), ce qui demande de restructurer la
-   contraction — voir ci-dessus.
-2. **Le dépôt fin**, 199 ms, jamais profilé aux compteurs. Il partage la
-   structure du noyau des forces (un groupe par cellule, stencil en mémoire de
-   groupe) et lit `nodes` : la forme fermée y est plus simple encore, `nodes`
-   étant une gaussienne et non une intégrale.
-3. La copie de retour du tri (~20 ms) et les 11,5 ms de `csolc`.
-4. Le budget énergétique, encore particule par particule sur l'hôte, jamais
-   profilé à 8×10⁷.
+Les deux dépôts sont passés devant les forces : à eux deux, **452 ms, 46 % du
+pas**.
+
+1. **Le dépôt grossier (CIC)**, 236 ms, jamais profilé aux compteurs. Huit
+   atomiques par particule dans le désordre voulu — c'est ce désordre qui le
+   rend rapide (trié : 4874 ms), donc la question est ce que coûtent les
+   atomiques elles-mêmes.
+2. **Le dépôt fin**, 216 ms, jamais profilé aux compteurs non plus. Il partage
+   la structure du noyau des forces — un groupe par cellule, stencil en
+   mémoire de groupe — et il **met déjà ses valeurs en mémoire de groupe** :
+   la leçon des forces y est appliquée depuis le début, ce qui est justement
+   pourquoi il faut chercher ailleurs. Aux compteurs avant toute hypothèse.
+3. **`_pack!` + tri**, 162 ms sur l'hôte, et la copie de retour, 23 ms.
+4. Les 12 ms de `csolc`, puis le budget énergétique, encore particule par
+   particule sur l'hôte et jamais profilé à 8×10⁷.
+
+⚠️ Le noyau des forces est désormais le **troisième** poste ; ce qui reste à y
+prendre est de l'ordre de 100 ms (110 ms sans aucune lecture de table, mesuré
+par ablation), et il faudrait le payer en fidélité. Les dépôts valent mieux.
