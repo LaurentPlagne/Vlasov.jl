@@ -18,9 +18,10 @@ CairoMakie.activate!(type = "png")
 
 makedocs(
     modules = [Vlasov],
-    # Stated explicitly rather than read from `git remote`: this repository has
-    # no origin configured, and Documenter would refuse to build without it.
-    repo = Documenter.Remotes.GitHub("laurentplagne", "Vlasov.jl"),
+    # Stated explicitly rather than read from `git remote`: it was written when
+    # the repository had no origin at all, and it stays because a name is
+    # clearer than a lookup. The spelling is the owner's canonical one.
+    repo = Documenter.Remotes.GitHub("LaurentPlagne", "Vlasov.jl"),
     format = Documenter.HTML(;
         prettyurls = get(ENV, "CI", nothing) == "true",
         canonical = "https://laurentplagne.github.io/Vlasov.jl",
@@ -48,6 +49,11 @@ makedocs(
     checkdocs = :none,
 )
 
+# ⚠️ The owner's canonical spelling, and the branch the work is actually on.
+# Documenter compares this against what the CI hands it: `laurentplagne` is a
+# redirect, and `master` is not pushed — either mismatch makes the deploy a
+# silent no-op rather than an error.
 deploydocs(
-    repo = "github.com/laurentplagne/Vlasov.jl.git",
+    repo = "github.com/LaurentPlagne/Vlasov.jl.git",
+    devbranch = "gpu-portable",
 )

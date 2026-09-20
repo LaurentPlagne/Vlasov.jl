@@ -1,0 +1,45 @@
+# Builds the Documenter site and publishes it to the `gh-pages` branch, from
+# which GitHub Pages serves https://laurentplagne.github.io/Vlasov.jl/
+#
+# The eight figures of the site are *computed* during the build — they are
+# `@example` blocks, not images checked in — so this job runs the physics. It
+# takes minutes rather than seconds, and that is the point: a figure that no
+# longer reproduces breaks the build instead of quietly going stale.
+name: Documentation
+
+on:
+  push:
+    branches: [gpu-portable]
+  workflow_dispatch:
+
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  docs:
+    runs-on: ubuntu-latest
+    permissions:
+      # Documenter pushes the built site to `gh-pages` with GITHUB_TOKEN.
+      contents: write
+      statuses: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: '1'
+
+      - uses: julia-actions/cache@v2
+
+      # `docs/Project.toml` already points its `Vlasov` at `..`, and
+      # `docs/Manifest.toml` is tracked, so this replays known versions.
+      # Graphviz comes as a Julia artifact (`Graphviz_jll`): nothing to
+      # apt-get.
+      - name: Instantiate
+        run: julia --project=docs -e 'using Pkg; Pkg.instantiate()'
+
+      - name: Build and deploy
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: julia --project=docs docs/make.jl

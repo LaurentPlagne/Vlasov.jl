@@ -76,6 +76,23 @@ at zero, rises as the ion passes the cluster, peaks above one, and settles at
 what the ion actually takes with it. **That curve is the physics** — everything
 else on this page is about computing it faster or more finely.
 
+Four options, and nothing else to learn:
+
+| | | default |
+|---|---|---|
+| `--particules=N` | pseudo-particles | 5×10⁵ on CPU, 8×10⁶ on GPU |
+| `--nfine=n` | intervals of the fine grid — **even** | 44 on CPU, 64 on GPU |
+| `--pas=N` | time steps; 700 is the whole crossing | 700 |
+| `--tous=N` | print one line every N steps | 50 |
+
+```sh
+julia --project=. -t auto scripts/xenon.jl --particules=200000 --nfine=28
+```
+
+is the quickest whole crossing — **43 seconds** on the ten cores above, and the
+capture still comes out at 1.0 electron. Coarser than the run before it, and it
+tells the same story.
+
 ### 4. Run it on the GPU
 
 The device path is portable by construction — the kernels are written once, in
@@ -181,19 +198,43 @@ on `DimensionMismatch: ρ must cover the whole collocation grid`.
 
 ---
 
+## Documentation
+
+**[laurentplagne.github.io/Vlasov.jl](https://laurentplagne.github.io/Vlasov.jl/)**
+— fourteen pages, and the figures on them are *computed* when the site is
+built, not checked in.
+
+| page | what it answers |
+|---|---|
+| [Principles](docs/src/principles.md) | what equations are being solved, and why this model |
+| [Numerics](docs/src/numerics.md) | splines, collocation, the tensor Poisson solver, Verlet |
+| [Architecture](docs/src/architecture.md) | how the code is laid out, and what one step does |
+| [The device path](docs/src/device.md) | what runs on the GPU, what it costs in memory, and why the cloud changed shape |
+| [Validation](docs/src/validation.md) | how we know it is right — and where the original was not |
+| [Performance](docs/src/performance.md) | where the time goes, and what was done about it |
+| [The original code](docs/src/history.md) | the 43 Fortran versions, and which one is the target |
+
+Those links go to the Markdown sources, which GitHub renders directly; the
+built site is prettier and has the cross-references. To build it yourself:
+
+```sh
+julia --project=docs -e 'using Pkg; Pkg.instantiate()'
+julia --project=docs docs/make.jl        # a few minutes: it runs the physics
+open docs/build/index.html
+```
+
 ## What else is here
 
 | | |
 |---|---|
-| `docs/` | the documentation — build with `julia --project=docs docs/make.jl`, then open `docs/build/index.html` |
 | `scripts/` | the thesis figures, the films, the profiles and the benchmarks |
 | `ref/` | the original Fortran, its data, and the thesis's published curves |
 | `test/` | 4824 tests — `julia --project=. -e 'include("test/runtests.jl")'` |
 
-The documentation carries the physics, the numerics and the performance work.
-The measurement log under `docs/*.md` is in French: it is the lab notebook, it
-keeps the raw numbers and the reasoning, and the site quotes from it what
-matters.
+⚠️ The measurement log under `docs/*.md` — as opposed to `docs/src/` — is in
+French and is **not** part of the site: it is the lab notebook, it keeps the raw
+numbers and the reasoning behind every decision, and the site quotes from it
+what matters.
 
 ## Licence
 
