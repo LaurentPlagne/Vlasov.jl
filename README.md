@@ -160,11 +160,19 @@ root of the repository** (all three are gitignored), and caches its run in
 `xenon_data_cache.jls` — delete that file to recompute rather than redraw. On
 the machine above: 31 s of physics, 31 s of drawing, 176 frames.
 
-> [!NOTE]
-> `scripts/render_xenon_glmakie.jl` redraws the cached run with **GLMakie**
-> instead of Cairo, and measures the same: 31.3 s against 30.9 for the 176
-> frames. The cost is the contour tessellation and the video encoder, which the
-> two backends share — a GPU backend has nothing to speed up there.
+`scripts/render_xenon_glmakie.jl` redraws the cached run **six times faster**,
+and the reason is worth knowing: it is not the backend, it is the primitive.
+
+| encoding 176 frames | CairoMakie | GLMakie |
+|---|---:|---:|
+| `contourf`, 45 levels, on a 350×350 resample | 30.9 s | 31.3 s |
+| `heatmap`, `interpolate = true`, raw 130³ slice | *refused* | **4.6 s** |
+
+Swapping the backend under `contourf` buys nothing — the tessellation is CPU
+work inside Makie either way. A `heatmap` is a texture, which is what a GPU can
+actually draw, and its sampler does the smoothing the 350×350 pre-pass was
+doing by hand. Cairo declines that combination outright: the collocation points
+are not equally spaced, and it does not interpolate non-regular grids.
 
 The film on this page is the same script at production scale,
 `scripts/film_xenon_80M.jl`: 80 million particles, some eleven gigabytes of

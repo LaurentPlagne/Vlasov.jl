@@ -9,29 +9,31 @@ It reads `xenon_data_cache.jls`, which `scripts/film_xenon.jl` leaves behind, so
 the physics is not recomputed: the two renderers draw **the same 176 frames**
 and can be compared.
 
-⚠️ **It is not faster, and that is the measurement worth keeping.** Encoding
-the same 176 frames:
+⚠️ **The primitive matters more than the backend.** Swapping CairoMakie for
+GLMakie while keeping `contourf` changes nothing — the contour tessellation is
+CPU work inside Makie either way. What a GPU backend can accelerate is a
+**texture**, and that is what `heatmap` is. Encoding the same 176 frames:
 
-| | 176 frames | rate |
+| | CairoMakie | GLMakie |
 |---|---:|---:|
-| CairoMakie | 30.9 s | 5.7 frames/s |
-| GLMakie | 31.3 s | 5.6 frames/s |
+| `contourf`, 45 levels, on a 350×350 resample | 30.9 s (5.7 fps) | 31.3 s (5.6 fps) |
+| `heatmap`, `interpolate = true`, raw 130×130 | **refused** | **4.6 s (37.9 fps)** |
+| `heatmap`, `interpolate = false` | 7.7 s (22.8 fps) | — |
 
-The cost is not rasterisation: it is the tessellation of a 45-level `contourf`
-over 350×350 — done on the CPU, in Makie, whichever backend draws the result —
-plus the video encoder, which is the same `ffmpeg` on both sides. A GPU backend
-has nothing to speed up here.
+Three things follow. The primitive is worth ×6.8 and the backend on its own is
+worth nothing. Cairo **cannot** interpolate here at all — *"Vector{Float32} with
+interpolate = true with a non-regular grid is not supported right now"*, the
+collocation points not being equally spaced — which is exactly why the Cairo
+script resamples to 350×350 first and draws bands. And the GPU sampler doing
+that bilinear pass removes the resampling code along with the time it took.
 
-What *did* make the film cheaper was the physics: moving `film_xenon.jl` to the
-resident device path took the simulation from 73.8 s to **31.3 s**. The drawing
-was never where the time went — and the whole pass differs (82.6 s against 47.0)
-only because the Cairo script also draws the six-panel snapshot strip.
+What also made the film cheaper, on the other side of the ledger: moving
+`film_xenon.jl` to the resident device path took its simulation from 73.8 s to
+31.3 s.
 
-⚠️ `scripts/render_proton_glmakie.jl` calls itself "fast GLMakie rendering" on
-the same assumption. That claim has **not** been re-measured.
-
-The script stays because it works and because a machine without a usable Cairo
-stack can still produce the film with it.
+⚠️ `scripts/render_proton_glmakie.jl` calls itself "fast GLMakie rendering"
+while drawing `contourf`. By the table above that name is unearned; it has not
+been re-measured.
 
 ⚠️ **GLMakie needs a display.** On a headless Linux box it wants an EGL-capable
 setup or a virtual framebuffer; the Cairo path in `film_xenon.jl` has no such
@@ -45,26 +47,6 @@ using GLMakie
 const ROOT = dirname(@__DIR__)
 const GREY = RGBf(0.80, 0.80, 0.80)
 
-"""Bilinear upsampling of one slice — the same 350×350 the Cairo path uses, so
-that the comparison is of renderers and not of resolutions."""
-function resample_2d(xs, ys, V, n_out_x = 350, n_out_y = 350)
-    xs_fine = range(xs[1], xs[end], length = n_out_x)
-    ys_fine = range(ys[1], ys[end], length = n_out_y)
-    V_fine = Matrix{Float32}(undef, n_out_x, n_out_y)
-    nx, ny = length(xs), length(ys)
-    for (j, y) in enumerate(ys_fine)
-        jy = clamp(searchsortedlast(ys, y), 1, ny - 1)
-        uy = clamp(Float32((y - ys[jy]) / (ys[jy+1] - ys[jy])), 0.0f0, 1.0f0)
-        for (i, x) in enumerate(xs_fine)
-            ix = clamp(searchsortedlast(xs, x), 1, nx - 1)
-            tx = clamp(Float32((x - xs[ix]) / (xs[ix+1] - xs[ix])), 0.0f0, 1.0f0)
-            V_fine[i, j] = (1 - tx) * (1 - uy) * V[ix, jy] + tx * (1 - uy) * V[ix+1, jy] +
-                           (1 - tx) * uy * V[ix, jy+1] + tx * uy * V[ix+1, jy+1]
-        end
-    end
-    xs_fine, ys_fine, V_fine
-end
-
 function main()
     cache = joinpath(ROOT, "xenon_data_cache.jls")
     isfile(cache) ||
@@ -75,13 +57,13 @@ function main()
     nframes = length(data.frames)
     @printf("%d frames, grid %s\n", nframes, string(size(data.frames[1])))
 
-    t0 = time()
-    xs_f, ys_f, _ = resample_2d(data.xs, data.ys, data.frames[1])
-    fine = [resample_2d(data.xs, data.ys, fr)[3] for fr in data.frames]
-    @printf("resampled to 350x350 in %.1f s\n", time() - t0)
-
+    # ⚠️ **No resampling, and no `contourf`.** The whole point of a GPU backend
+    # is the one primitive it can actually accelerate: a `heatmap` is a texture
+    # upload, and `interpolate = true` has the sampler do the bilinear
+    # smoothing that the 350×350 pre-pass was doing on the CPU. The raw 130×130
+    # slice goes straight to the card.
     rho_bulk = 0.00373f0
-    levels = range(0.02f0 * rho_bulk, 1.45f0 * rho_bulk, length = 45)
+    c_min, c_max = 0.02f0 * rho_bulk, 1.45f0 * rho_bulk
 
     fig = Figure(size = (900, 850), backgroundcolor = :white)
     idx = Observable(1)
@@ -90,8 +72,9 @@ function main()
                title = @lift(@sprintf("Na₁₉₆ + Xe²⁵⁺ (500 keV, b = 45 a₀) — t = %.2f fs, x_ion = %+.1f a₀",
                                       data.times_fs[$idx], data.proj_xs[$idx])),
                xlabel = "x (a₀)", ylabel = "y (a₀)")
-    contourf!(ax1, xs_f, ys_f, @lift(fine[$idx]);
-              levels, colormap = :turbo, extendlow = GREY)
+    heatmap!(ax1, data.xs, data.ys, @lift(data.frames[$idx]);
+             colormap = :turbo, colorrange = (c_min, c_max),
+             lowclip = GREY, interpolate = true)
     θ = range(0, 2π, length = 100)
     lines!(ax1, data.r_jel .* cos.(θ), data.r_jel .* sin.(θ),
            color = :white, linewidth = 2, linestyle = :dash)
