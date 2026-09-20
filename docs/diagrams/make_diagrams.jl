@@ -36,7 +36,7 @@ $(preamble(rankdir = "TB"))
     $(cluster("<B>device</B> — the cloud never leaves"))
     cloud [$(role(:device, shape = "cylinder")), label=<cloud<BR/><FONT POINT-SIZE="9">(k, δ) · previous · forces</FONT>>];
     hist  [$(role(:device)), label=<histogram<BR/><FONT POINT-SIZE="9">_hist_cells_kernel!</FONT>>];
-    sort  [$(role(:device)), label=<placement, two stages<BR/><FONT POINT-SIZE="9">coarse → fine</FONT>>];
+    sort  [$(role(:device)), label=<placement<BR/><FONT POINT-SIZE="9">moves the particles</FONT>>];
     dep   [$(role(:device)), label=<deposition<BR/><FONT POINT-SIZE="9">fine 8³ · coarse CIC</FONT>>];
     pois  [$(role(:device)), label=<poisson!<BR/><FONT POINT-SIZE="9">coarse, then fine</FONT>>];
     mf    [$(role(:device)), label=<effective_potential!>];
@@ -133,28 +133,24 @@ $(preamble(rankdir = "TB"))
 }
 """)
 
-# --- the two-stage placement ------------------------------------------------
+# --- the placement, and the locality a sorted cloud already has ------------
 
 render("two-stage-sort", """
 digraph {
 $(preamble(rankdir = "LR"))
-  subgraph cluster_one {
-    $(cluster("<B>one pass</B> — 118 ms"))
-    i1 [$(role(:bad)), label=<particle i>];
-    i2 [$(role(:bad)), label=<particle i+1>];
-    i3 [$(role(:bad)), label=<particle i+2>];
-    o1 [$(role(:bad, shape = "cylinder")), label=<perm<BR/><FONT POINT-SIZE="9">305 MB</FONT>>];
-    i1 -> o1 [label="a page"];
-    i2 -> o1 [label="another"];
-    i3 -> o1 [label="another again"];
-  }
   subgraph cluster_two {
-    $(cluster("<B>two stages</B> — 17.5 + 29.4 ms"))
-    s1  [$(role(:good)), label=<<B>stage 1</B> — bucket = cell ≫ 9<BR/><FONT POINT-SIZE="9">2 672 destinations, each advancing in order</FONT>>];
-    mid [$(role(:good, shape = "cylinder")), label=<permtmp<BR/><FONT POINT-SIZE="9">grouped by region</FONT>>];
-    s2  [$(role(:good)), label=<<B>stage 2</B> — exact cell, walking that order<BR/><FONT POINT-SIZE="9">neighbouring work-items → neighbouring cells</FONT>>];
-    out [$(role(:good, shape = "cylinder")), label=<perm<BR/><FONT POINT-SIZE="9">identical to the host sort</FONT>>];
-    s1 -> mid -> s2 -> out;
+    $(cluster("<B>two stages</B>, walking the coarse order — 151.0 ms"))
+    s1  [$(role(:bad)), label=<<B>stage 1</B> — bin into buckets<BR/><FONT POINT-SIZE="9">builds locality the cloud already had</FONT>>];
+    mid [$(role(:bad, shape = "cylinder")), label=<intermediate order>];
+    s2  [$(role(:bad)), label=<<B>stage 2</B> — walks <I>that</I> order<BR/><FONT POINT-SIZE="9">source and destination no longer neighbours</FONT>>];
+    s1 -> mid -> s2;
+  }
+  subgraph cluster_one {
+    $(cluster("<B>one pass</B>, walking the array — 35.5 ms"))
+    c0 [$(role(:good, shape = "cylinder")), label=<the cloud, sorted last step<BR/><FONT POINT-SIZE="9">median drift: 2230 places out of 8×10⁷</FONT>>];
+    c1 [$(role(:good)), label=<placement in array order<BR/><FONT POINT-SIZE="9">destination is a neighbour of the source</FONT>>];
+    c2 [$(role(:good, shape = "cylinder")), label=<sorted<BR/><FONT POINT-SIZE="9">a few pages touched, not 305 MB</FONT>>];
+    c0 -> c1 -> c2;
   }
 }
 """)

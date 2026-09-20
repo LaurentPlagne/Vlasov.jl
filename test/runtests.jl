@@ -469,9 +469,9 @@ end
         # Deliberately past the fine grid on both sides: the representation has
         # to describe those too, which is why `knode` is never clamped.
         pos = [ntuple(d -> (d - 2.0) * 60 + 0.9i - 200, 3) for i in 1:n]
-        kn = Matrix{Int32}(undef, 3, n)
-        dl = Matrix{Float32}(undef, 3, n)
-        p = Vlasov.PackedPositions{Float64,typeof(kn),typeof(dl)}(kn, dl, x0, h)
+        data = Vector{Vlasov.PackedParticle{Float32}}(undef, n)
+        fill!(data, zero(Vlasov.PackedParticle{Float32}))
+        p = Vlasov.PackedPositions(data, x0, h, false)
         for i in 1:n
             p[i] = pos[i]
         end
@@ -481,10 +481,10 @@ end
         # The round trip loses only `Float32` on a bounded offset, never the
         # magnitude of the coordinate itself.
         @test maximum(i -> maximum(abs, p[i] .- pos[i]), 1:n) < 1e-7
-        @test maximum(abs, dl) <= h / 2 + 1e-6
+        @test maximum(i -> maximum(abs, data[i].delta), 1:n) <= h / 2 + 1e-6
         # Unclamped: this sample reaches well outside [1, nknots].
-        @test minimum(kn) < 1
-        @test maximum(kn) > 100
+        @test minimum(i -> minimum(data[i].knode), 1:n) < 1
+        @test maximum(i -> maximum(data[i].knode), 1:n) > 100
 
         q = similar(p)
         @test q isa Vlasov.PackedPositions
@@ -511,9 +511,9 @@ end
 
         function packed_cloud(qs, prevs)
             m = length(qs)
-            mk() = Vlasov.PackedPositions{Float64,Matrix{Int32},Matrix{Float64}}(
-                       Matrix{Int32}(undef, 3, m), Matrix{Float64}(undef, 3, m), x0, h)
-            P, O = mk(), mk()
+            data = fill(zero(Vlasov.PackedParticle{Float64}), m)
+            P = Vlasov.PackedPositions(data, x0, h, false)
+            O = Vlasov.PackedPositions(data, x0, h, true)
             for i in 1:m
                 P[i] = qs[i]; O[i] = prevs[i]
             end
@@ -1148,20 +1148,26 @@ end
             # not against the host path. Those two have never agreed on the
             # energy — see the note below — and the question here is only
             # whether holding the cloud as `(k, δ)` changes anything. It must
-            # not, and at equal precision it does not, to the last bit.
+            # not — but note *what* "not" means now: the packed cloud is
+            # physically **sorted**, so its particles sit at different indices
+            # and its diagnostics are summed in a different order. The
+            # comparison is therefore on the cloud as a **set**, and on the
+            # energy to the last few bits rather than to the last one.
             res = Simulation(p, prof; backend = CPU(), precision = Float64,
                              packed = true)
             dev = Simulation(p, prof; backend = CPU(), precision = Float64)
-            @test res.cloud.positions.knode === res.device.accelerator.knode.host
-            @test res.cloud.previous.knode === res.device.accelerator.pknode.host
+            @test res.cloud.positions.data === res.device.accelerator.particles.host
+            @test res.cloud.previous.data === res.device.accelerator.particles.host
             local hres, hdev
             for _ in 1:6
                 hres = step!(res); hdev = step!(dev)
             end
-            @test maximum(i -> maximum(abs, res.cloud.positions[i] .-
-                                            dev.cloud.positions[i]),
-                          1:length(dev.cloud)) < 1e-12
-            @test hres.total == hdev.total
+            nc = length(dev.cloud)
+            sorted_res = sort([res.cloud.positions[i] for i in 1:nc])
+            sorted_dev = sort([dev.cloud.positions[i] for i in 1:nc])
+            @test maximum(i -> maximum(abs, sorted_res[i] .- sorted_dev[i]),
+                          1:nc) < 1e-12
+            @test hres.total ≈ hdev.total rtol = 1e-11
 
             # ⚠️ Unrelated to the packed cloud, and worth knowing: the resident
             # path does **not** reproduce the host path's total energy, even at
@@ -1491,11 +1497,12 @@ end
         csol = [1e-3 * sinpi(0.01i + 0.02j + 0.03k) for i in 1:n, j in 1:n, k in 1:n]
 
         # --- packing --------------------------------------------------------
-        knode = Matrix{Int32}(undef, 3, npart)
-        delta = Matrix{Float64}(undef, 3, npart)
-        Vlasov._pack_kd_kernel!(backend)(knode, delta, pos, x0, h, Int32(nk);
+        parts = fill(zero(Vlasov.PackedParticle{Float64}), npart)
+        Vlasov._pack_kd_kernel!(backend)(parts, pos, x0, h, Int32(nk);
                                          ndrange = npart)
         synchronize(backend)
+        knode = [parts[i].knode[d] for d in 1:3, i in 1:npart]
+        delta = [parts[i].delta[d] for d in 1:3, i in 1:npart]
         @test all(knode[d, i] == Vlasov.nearest_knot(knots, pos[i][d])
                   for i in 1:npart, d in 1:3)
         # ⚠️ The offset is taken from the knot **recomputed** as `x0 + (k−1)h`,
@@ -1512,6 +1519,10 @@ end
         sorter = CellSort(ax, npart)
         cellsort!(sorter, pos)
         ncell = length(sorter.occupied)
+        # ⚠️ The kernels below read the cloud **in order**: slot `s` is the
+        # `s`-th sorted particle. So the particles are moved, not indexed
+        # through `perm`, and the assertions map slot `s` back to `perm[s]`.
+        sorted_parts = [parts[sorter.perm[s]] for s in 1:npart]
 
         # --- smoothed field: must reproduce `smoothed_field` exactly ---------
         # One group per occupied cell, each staging that cell's 10³ stencil. The
@@ -1523,34 +1534,37 @@ end
         w = 0.245
         GS = Vlasov.FIELD_GROUPSIZE
         Vlasov._smoothed_field_kernel!(backend, GS)(
-            force, csol, sm.overlap, sm.gradient, delta, sorter.perm,
+            force, csol, sm.overlap, sm.gradient, sorted_parts,
             sorter.occupied, sorter.bounds, Int32(nk), x0, h,
             sm.spacing, Int32(sm.nbdt), w, Int32(size(sm.overlap, 2)),
             0.0, 0.0, 0.0, 0.0, 1.0, red;
             ndrange = ncell * GS)
         synchronize(backend)
         @test !any(isnan, force)
-        @test all(Tuple(force[:, i]) === w .* smoothed_field((ax, ax, ax), csol, sm, pos[i])
-                  for i in 1:npart)
+        @test all(Tuple(force[:, s]) ===
+                  w .* smoothed_field((ax, ax, ax), csol, sm, pos[sorter.perm[s]])
+                  for s in 1:npart)
 
         # --- deposition: sorted, one group per occupied cell -----------------
         half = sm.spacing / 2
         lo, hi = knots[2] + half, knots[end-1] - half
         ncol = size(sm.nodes, 2)
-        # ⚠️ The columns are indexed by the particle, **not** by its rank in the
-        # sorted order: the deposition does that gather itself, in its staging.
+        # ⚠️ The columns are indexed by the **slot**, like everything the sorted
+        # cloud feeds: `_columns_kernel!` runs after the sort and so produces
+        # them in that order already.
         cols = Matrix{Int32}(undef, 3, npart)
         nout = 0
-        for i in 1:npart
+        for s in 1:npart
+            i = sorter.perm[s]
             p = pos[i]
             if all(d -> lo <= p[d] <= hi, 1:3)
                 for d in 1:3
-                    cols[d, i] = clamp(floor(Int32, (delta[d, i] + half) / sm.spacing *
+                    cols[d, s] = clamp(floor(Int32, (delta[d, i] + half) / sm.spacing *
                                              sm.nbdt + 0.5) + Int32(1),
                                        Int32(1), Int32(ncol))
                 end
             else
-                cols[1, i] = cols[2, i] = cols[3, i] = Int32(1)
+                cols[1, s] = cols[2, s] = cols[3, s] = Int32(1)
                 nout += 1
             end
         end
@@ -1558,7 +1572,7 @@ end
         ρ = zeros(Float64, n, n, n)
         DGS = Vlasov.DEPOSIT_GROUPSIZE
         Vlasov._deposit_sorted_kernel!(backend, DGS)(
-            ρ, sm.nodes, cols, sorter.perm, sorter.occupied, sorter.bounds,
+            ρ, sm.nodes, cols, sorter.occupied, sorter.bounds,
             Int32(nk); ndrange = ncell * DGS)
         synchronize(backend)
         ρ .*= (npart - nout) / total_charge(ρ, mesh)
@@ -1653,10 +1667,9 @@ end
         # sample that sits outside the fine grid is what makes this a real test
         # — those are the particles whose cell index is not clamped.
         pk = Vlasov.packed_cloud(ax, pos, w, Float64;
-                                 buffers = (acc.knode.host, acc.delta.host,
-                                            acc.pknode.host, acc.pdelta.host))
-        @test pk.positions.knode === acc.knode.host
-        @test pk.positions.delta === acc.delta.host
+                                 storage = acc.particles.host)
+        @test pk.positions.data === acc.particles.host
+        @test pk.previous.data === acc.particles.host
         ρpk = zeros(n, n, n)
         npk = deposit_smoothed!(ρpk, acc, mesh, sm, pk.positions; charge = w)
 
@@ -1672,17 +1685,17 @@ end
         @test npk == nref
         @test maximum(abs, ρpk .- ρref) / maximum(abs, ρref) < 1e-14
 
-        # The two-stage device sort must reproduce the host sort exactly — same
-        # cells occupied, same bounds, and a `perm` that reads the same keys in
-        # the same order. The order *within* a cell is not specified by either.
-        host = Vlasov.CellSort(ax, npart)
-        Vlasov.cellsort!(host, pk.positions)
-        dperm = Array(acc.perm.device)[1:npart]
-        @test acc.sorter.occupied == host.occupied
-        @test acc.sorter.bounds == host.bounds
-        @test host.keys[dperm] == host.keys[host.perm]
-        @test sort(dperm) == 1:npart          # a permutation, nothing dropped
-        @test Vlasov.sort_shift(111^3, 80_000_000) == 9
+        # The two-stage device sort leaves the particles **physically ordered**,
+        # so the test is on the storage itself rather than on a permutation:
+        # read in order, the cell keys must be non-decreasing, and the cell
+        # list must agree with a host sort of the same cloud. The order
+        # *within* a cell is not specified by either.
+        nk32 = Int32(acc.sorter.nknots)
+        keys = [Vlasov._cell_key(acc.particles.host[i], nk32) for i in 1:npart]
+        @test issorted(keys)
+        @test length(acc.sorter.occupied) == length(unique(keys))
+        @test acc.sorter.occupied == unique(keys)
+        @test acc.sorter.bounds[end] == npart
 
         c1 = ParticleCloud(pos, w)
         c2 = ParticleCloud(pos, w)

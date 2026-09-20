@@ -46,15 +46,14 @@ struct ParticleCloud{T<:AbstractFloat,A<:AbstractVector{NTuple{3,T}},
 end
 
 """
-    PackedPositions(knode, delta, x0, h)
+    PackedParticle(knode, delta, pknode, pdelta)
 
-Positions held as **cell index and offset** rather than as absolute coordinates:
-`x = x0 + (knode − 1)·h + delta`, with `delta` bounded by `h/2`.
+One particle, whole: its cell and offset now, and the same one step ago.
 
-This is the form every device kernel already consumes — see
-[`_pack_kd_kernel!`](@ref) — so a cloud held this way needs no packing step at
-all. It reads as an ordinary `AbstractVector{NTuple{3,T}}`, rebuilding the
-absolute triple on access, so every consumer of `cloud.positions` keeps working.
+Positions are held as **cell index and offset** rather than as absolute
+coordinates: `x = x0 + (knode − 1)·h + delta`, with `delta` bounded by `h/2`.
+That is the form every device kernel consumes, so a cloud held this way needs
+no packing step at all.
 
 ⚠️ **`knode` is not clamped to the grid.** A particle that has left the fine
 mesh keeps a virtual cell index — negative, or past the last knot — so the pair
@@ -67,38 +66,96 @@ it to 6e-8, where the same `Float32` on an absolute coordinate at 78 a₀ resolv
 position Verlet, whose observables are all read from differences of positions:
 measured over 101 steps on the real cloud, the drift is **40×** smaller in this
 form (2.55e-4 a₀ against 1.03e-2).
+
+⚠️ **One record, not two arrays.** The layout is the second point, and it is
+what lets the cloud be *sorted* rather than indexed through a permutation. Such
+an indexed access costs a whole cache line for the handful of bytes it wants —
+128 fetched for 12 — and measured at 8×10⁷ particles the cost follows the
+**number of lines touched**, not the bytes used:
+
+| | ms |
+|---|---:|
+| gather of `delta` alone, 12 bytes, as two arrays | 132.2 |
+| permuting two arrays (`knode`, `delta`) | **429.7** |
+| permuting this record, 48 bytes, in one array | **145.5** |
+
+Two arrays mean two lines per particle, which is what made "keep the cloud
+sorted" look like a losing trade. In one record it is a single line, and
+carrying twice the bytes costs 13 ms more, not double.
 """
-struct PackedPositions{T,K,D} <: AbstractVector{NTuple{3,T}}
-    knode::K
-    delta::D
-    x0::T
-    h::T
+struct PackedParticle{E}
+    knode::NTuple{3,Int32}
+    delta::NTuple{3,E}
+    pknode::NTuple{3,Int32}
+    pdelta::NTuple{3,E}
 end
 
-Base.size(p::PackedPositions) = (size(p.knode, 2),)
+"""The precision of a particle's offsets. Spelled once, so that no call site
+has to reach into type parameters — a kernel that does produces dynamic code."""
+offset_type(::Type{PackedParticle{E}}) where {E} = E
+offset_type(a::AbstractArray) = offset_type(eltype(a))
+
+"""A particle at the grid's origin. Needed because the buffers are allocated
+through `zeros`, and overwritten before anything reads them."""
+Base.zero(::Type{PackedParticle{E}}) where {E} =
+    PackedParticle(ntuple(_ -> Int32(1), 3), ntuple(_ -> zero(E), 3),
+                   ntuple(_ -> Int32(1), 3), ntuple(_ -> zero(E), 3))
+
+"""
+    PackedPositions(data, x0, h, Val(previous))
+
+One half of a [`PackedParticle`](@ref) array, seen as positions.
+
+`positions` and `previous` are **two views of the same storage** — that is what
+lets one record hold both and still satisfy `ParticleCloud`, which wants two
+vectors *of the same type*. `prev` is therefore a field and not a type
+parameter: the two views must not differ in type, and the branch it costs falls
+only in the generic readers, never in a kernel.
+"""
+struct PackedPositions{T,A} <: AbstractVector{NTuple{3,T}}
+    data::A
+    x0::T
+    h::T
+    prev::Bool
+end
+
+Base.size(p::PackedPositions) = size(p.data)
 Base.IndexStyle(::Type{<:PackedPositions}) = IndexLinear()
 
-@inline Base.getindex(p::PackedPositions{T}, i::Int) where {T} =
-    ntuple(d -> @inbounds(p.x0 + (p.knode[d, i] - one(eltype(p.knode))) * p.h +
-                          T(p.delta[d, i])), 3)
+@inline _half(q::PackedParticle, prev::Bool) =
+    prev ? (q.pknode, q.pdelta) : (q.knode, q.delta)
 
-@inline function Base.setindex!(p::PackedPositions{T}, x, i::Int) where {T}
-    @inbounds for d in 1:3
-        k = round(Int32, (T(x[d]) - p.x0) / p.h) + Int32(1)
-        p.knode[d, i] = k
-        p.delta[d, i] = eltype(p.delta)(T(x[d]) - (p.x0 + (k - Int32(1)) * p.h))
-    end
+@inline function Base.getindex(p::PackedPositions{T}, i::Int) where {T}
+    @inbounds q = p.data[i]
+    k, d = _half(q, p.prev)
+    ntuple(j -> @inbounds(p.x0 + (k[j] - Int32(1)) * p.h + T(d[j])), 3)
+end
+
+"""Cell index and offset of one coordinate — the only place the split is made."""
+@inline function _split(x::T, x0::T, h::T, ::Type{E}) where {T,E}
+    k = round(Int32, (x - x0) / h) + Int32(1)
+    (k, E(x - (x0 + (k - Int32(1)) * h)))
+end
+
+@inline function Base.setindex!(p::PackedPositions{T,A}, x, i::Int) where {T,A}
+    E = offset_type(eltype(A))
+    s = ntuple(j -> _split(T(x[j]), p.x0, p.h, E), 3)
+    k = ntuple(j -> s[j][1], 3)
+    d = ntuple(j -> s[j][2], 3)
+    @inbounds q = p.data[i]
+    @inbounds p.data[i] = p.prev ? PackedParticle(q.knode, q.delta, k, d) :
+                                   PackedParticle(k, d, q.pknode, q.pdelta)
     x
 end
 
 Base.similar(p::PackedPositions) =
-    PackedPositions(similar(p.knode), similar(p.delta), p.x0, p.h)
+    PackedPositions(similar(p.data), p.x0, p.h, p.prev)
 
 Base.copy(p::PackedPositions) =
-    PackedPositions(copy(p.knode), copy(p.delta), p.x0, p.h)
+    PackedPositions(copy(p.data), p.x0, p.h, p.prev)
 
 Adapt.adapt_structure(to, p::PackedPositions) =
-    PackedPositions(adapt(to, p.knode), adapt(to, p.delta), p.x0, p.h)
+    PackedPositions(adapt(to, p.data), p.x0, p.h, p.prev)
 
 function ParticleCloud(positions::AbstractVector{NTuple{3,T}}, weight::T) where {T}
     # `similar` and not `fill`: a device cloud must yield device buffers.
@@ -201,22 +258,25 @@ The offsets are what the precision argument applies to: `k` is exact whatever
 `E` is, and that is the whole point of the form. `previous` is left at the
 origin — [`prime_leapfrog!`](@ref) is what fills it.
 
-`buffers` hands in the two `(knode, delta)` pairs the cloud is to live in —
-current positions then previous — which is how the accelerator's own staging
-becomes the cloud's storage: the step then has nothing to pack and nothing to
-copy, and the integrator finds both positions where its kernel runs.
+`storage` hands in the [`PackedParticle`](@ref) array the cloud is to live in,
+which is how the accelerator's own buffer becomes the cloud's storage: the step
+then has nothing to pack and nothing to copy, and the kernels find the cloud
+where they run.
 """
 function packed_cloud(axis::SplineAxis{T}, positions, weight::T,
-                      ::Type{E} = Float32; buffers = nothing) where {T,E}
+                      ::Type{E} = Float32; storage = nothing) where {T,E}
     k = axis.knots
     h = (k[end] - k[1]) / (length(k) - 1)
     n = length(positions)
-    geom(kn, dl) = PackedPositions{T,typeof(kn),typeof(dl)}(kn, dl, T(k[1]), T(h))
-    fresh() = geom(Matrix{Int32}(undef, 3, n), Matrix{E}(undef, 3, n))
-    P = buffers === nothing ? fresh() : geom(buffers[1], buffers[2])
-    O = buffers === nothing ? fresh() : geom(buffers[3], buffers[4])
-    size(P.knode) == (3, n) ||
-        throw(DimensionMismatch("buffers sized for $(size(P.knode, 2)) particles"))
+    zero3i = ntuple(_ -> Int32(1), 3)
+    zero3e = ntuple(_ -> zero(E), 3)
+    data = storage === nothing ?
+           fill(PackedParticle(zero3i, zero3e, zero3i, zero3e), n) : storage
+    length(data) == n ||
+        throw(DimensionMismatch("storage sized for $(length(data)) particles"))
+    # Both views share `data`; only the half they read differs.
+    P = PackedPositions(data, T(k[1]), T(h), false)
+    O = PackedPositions(data, T(k[1]), T(h), true)
     copyto!(P, positions)
     fill!(O, ntuple(_ -> zero(T), 3))
     ParticleCloud(P, O, fill(ntuple(_ -> zero(T), 3), n), weight)
@@ -226,7 +286,10 @@ end
 centred gap `q(t+dt) − q(t−dt)` that the diagnostics are read from."""
 @inline function _verlet_packed(kq, dq, ok, od, a, f, h::E) where {E}
     # The integer part carries no rounding whatsoever.
-    kn = 2kq - ok
+    # ⚠️ `Int32(2)`, not `2`: a bare literal promotes the cell index to `Int`,
+    # and the record wants `Int32`. Same rule as in `contract_tile` — do not
+    # mix index widths.
+    kn = Int32(2) * kq - ok
     dn = 2dq - od + a * E(f)
     # `δ` is kept inside half a cell; `m` is 0, ±1 or ±2 in practice.
     m = round(Int32, dn / h)
@@ -257,20 +320,19 @@ on a loop that is bound by memory.
 """
 function step!(cloud::ParticleCloud{T,<:PackedPositions}, dt::T;
                rcmax::Real = T(Inf)) where {T}
-    q, o = cloud.positions, cloud.previous
-    E = eltype(q.delta)
+    q = cloud.positions
+    E = offset_type(q.data)
     M = mass(cloud)
     # ⚠️ A function barrier, and not a convenience. Computing `E = eltype(...)`
     # and then `E(dt^2/M)` inside the sweep leaves the arithmetic type-unstable:
     # measured at 8×10⁷ particles, 162 ms that way against **56** with the
     # scalars passed in already typed — three times the cost of the whole step's
     # integrator, for a spelling.
-    _verlet_packed_sweep!(q.knode, q.delta, o.knode, o.delta, cloud.forces,
-                          E(dt^2 / M), E(q.h), q.x0, q.h, M / 2dt,
-                          T(rcmax)^2, M, chunks(length(q)))
+    _verlet_packed_sweep!(q.data, cloud.forces, E(dt^2 / M), E(q.h), q.x0, q.h,
+                          M / 2dt, T(rcmax)^2, M, chunks(length(q)))
 end
 
-function _verlet_packed_sweep!(kq, dq, ok, od, forces, a::E, h::E, x0::T, hT::T,
+function _verlet_packed_sweep!(data, forces, a::E, h::E, x0::T, hT::T,
                                pfac::T, r2max::T, M::T, parts) where {T,E}
     nc = length(parts)
     ekins = zeros(T, nc)
@@ -282,10 +344,11 @@ function _verlet_packed_sweep!(kq, dq, ok, od, forces, a::E, h::E, x0::T, hT::T,
         an = ntuple(_ -> zero(T), 3)
         @inbounds for i in parts[c]
             f = forces[i]
-            k1, k2, k3 = kq[1, i], kq[2, i], kq[3, i]
-            o1, o2, o3 = ok[1, i], ok[2, i], ok[3, i]
-            d1, d2, d3 = dq[1, i], dq[2, i], dq[3, i]
-            e1, e2, e3 = od[1, i], od[2, i], od[3, i]
+            part = data[i]
+            k1, k2, k3 = part.knode
+            d1, d2, d3 = part.delta
+            o1, o2, o3 = part.pknode
+            e1, e2, e3 = part.pdelta
 
             n1 = _verlet_packed(k1, d1, o1, e1, a, f[1], h)
             n2 = _verlet_packed(k2, d2, o2, e2, a, f[2], h)
@@ -300,10 +363,10 @@ function _verlet_packed_sweep!(kq, dq, ok, od, forces, a::E, h::E, x0::T, hT::T,
             qa[1]^2 + qa[2]^2 + qa[3]^2 > r2max && (eo += e)
             an = an .+ cross3(qa, p)
 
-            ok[1, i] = k1; ok[2, i] = k2; ok[3, i] = k3
-            od[1, i] = d1; od[2, i] = d2; od[3, i] = d3
-            kq[1, i] = n1[1]; kq[2, i] = n2[1]; kq[3, i] = n3[1]
-            dq[1, i] = n1[2]; dq[2, i] = n2[2]; dq[3, i] = n3[2]
+            # One store of the whole record: today's position becomes
+            # yesterday's, in the same line that was just read.
+            data[i] = PackedParticle((n1[1], n2[1], n3[1]), (n1[2], n2[2], n3[2]),
+                                     (k1, k2, k3), (d1, d2, d3))
         end
         ekins[c] = ek; eouts[c] = eo; angs[c] = an
     end

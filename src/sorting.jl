@@ -100,15 +100,17 @@ particles: **53.2 ms → 17.8**, for keys identical bit for bit.
 applies happens here instead.
 """
 function _count_cells!(cs::CellSort, positions::PackedPositions)
-    kn = positions.knode
+    data = positions.data
+    prev = positions.prev
     nk = Int32(cs.nknots)
     Threads.@threads for t in eachindex(cs.chunks)
         cnt = cs.partial[t]
         fill!(cnt, Int32(0))
         @inbounds for i in cs.chunks[t]
-            kx = clamp(kn[1, i], Int32(1), nk)
-            ky = clamp(kn[2, i], Int32(1), nk)
-            kz = clamp(kn[3, i], Int32(1), nk)
+            k, _ = _half(data[i], prev)
+            kx = clamp(k[1], Int32(1), nk)
+            ky = clamp(k[2], Int32(1), nk)
+            kz = clamp(k[3], Int32(1), nk)
             c = kx + nk * (ky - Int32(1) + nk * (kz - Int32(1)))
             cs.keys[i] = c
             cnt[c] += Int32(1)

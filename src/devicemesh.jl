@@ -93,8 +93,9 @@ function deposit_cic!(ρ::AbstractArray{E,3}, dm::DeviceMesh{E}, acc, npart,
     wx, wy, wz = dm.duals_len
     fill!(ρ, zero(E))
     _deposit_cic_kernel!(acc.backend)(
-        ρ, acc.knode.device, acc.delta.device, gx, gy, gz, dm.loc_cells,
-        E(x0f), E(hf), dm.loc_x0, dm.loc_invwidth, Int32(npart); ndrange = npart)
+        ρ, acc.particles.device, gx, gy, gz, dm.loc_cells,
+        E(x0f), E(hf), dm.loc_x0, dm.loc_invwidth, Int32(npart),
+        scatter_stride(npart); ndrange = npart)
     synchronize(acc.backend)
     ρ .*= E(charge) ./ (wx .* wy' .* reshape(wz, 1, 1, :))
     ρ

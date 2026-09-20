@@ -187,10 +187,8 @@ function Simulation(p::SimulationParameters{T}, profile::PhaseSpaceProfile{T};
     # the kernels read, so the cloud writing into them is what makes the packing
     # step disappear instead of merely moving.
     cloud = if packed
-        bufs = device === nothing ? nothing :
-               (device.accelerator.knode.host, device.accelerator.delta.host,
-                device.accelerator.pknode.host, device.accelerator.pdelta.host)
-        packed_cloud(fine, positions, weight, precision; buffers = bufs)
+        store = device === nothing ? nothing : device.accelerator.particles.host
+        packed_cloud(fine, positions, weight, precision; storage = store)
     else
         ParticleCloud(positions, weight)
     end
@@ -228,16 +226,29 @@ function prime_leapfrog!(sim::Simulation{T}, positions, momenta;
     # The forces are evaluated at q(−dt/2), not at q(0). The projectile, for its
     # part, does not move: the Fortran calls `incproj` only once priming is
     # over, and advancing it here would have it enter the cluster one step early.
+    # ⚠️ `q(0)` travels in the `previous` half rather than in a local array.
+    # The sort **moves the particles**, so anything held outside the cloud goes
+    # out of correspondence with it the moment `update_forces!` runs; the two
+    # halves of one record can never drift apart, because the sort moves them
+    # together. Without this the priming wrote `previous` in the old order over
+    # positions already reordered, and the trajectory started wrong.
     copyto!(sim.cloud.positions, half)
+    copyto!(sim.cloud.previous, positions)
     update_forces!(sim; advance = false)
     # ⚠️ The priming reads the forces **on the host**, and a resident cloud is
     # precisely the case where `forces!` no longer stages them there. This runs
     # once, outside the time loop, so it costs what the loop stopped paying.
     _stage_forces!(sim)
 
-    copyto!(sim.cloud.previous,
-            full_step_back(positions, half, sim.cloud.forces, M, dt; consistent))
-    copyto!(sim.cloud.positions, positions)
+    coef = consistent ? dt^2 / 4M : dt / M
+    @inbounds for i in eachindex(sim.cloud.positions)
+        q0 = sim.cloud.previous[i]      # q(0), carried through the sort
+        hp = sim.cloud.positions[i]     # q(−dt/2), in the same order
+        f = sim.cloud.forces[i]
+        back = .-q0 .+ 2 .* hp .+ coef .* f
+        sim.cloud.positions[i] = q0
+        sim.cloud.previous[i] = back
+    end
     sim
 end
 
@@ -372,7 +383,7 @@ _advance_cloud!(sim::Simulation) =
 
 function _advance_cloud!(sim::Simulation{T,P,<:PackedPositions}) where {T<:AbstractFloat,P}
     dev = sim.device
-    if dev !== nothing && sim.cloud.positions.knode === dev.accelerator.knode.host &&
+    if dev !== nothing && sim.cloud.positions.data === dev.accelerator.particles.host &&
        length(dev.accelerator.vpartials) > 0
         return step!(sim.cloud, sim.params.dt, dev.accelerator;
                      rcmax = sim.params.rcmax)

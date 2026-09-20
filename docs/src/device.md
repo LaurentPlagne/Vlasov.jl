@@ -215,12 +215,11 @@ thesis used PSRS instead, and for a reason that no longer applies: on a
 distributed machine, sorting particles is a *communication* problem and regular
 sampling balances the exchange. In shared memory there is nothing to balance.
 
-### Why the placement is in two stages
+### What the placement costs, and why it is one pass
 
-The counting sort's last pass writes each particle's index to its final slot —
-eighty million scattered 4-byte writes into a 305 MB array. That is the whole
-cost of the sort, and it is not the atomics: separated by ablation, the atomics
-are 16.9 ms and the scattered writes 107.2.
+The counting sort's last pass is where the cost sits. It is **not** the atomics:
+separated by ablation at 8×10⁷ particles, the atomics are 16.9 ms and the
+scattered writes 107.2.
 
 The cure is locality, and the lever is enormous. Confining the same writes to a
 window of destinations:
@@ -229,28 +228,46 @@ window of destinations:
 |---|---:|---:|---:|---:|---:|---:|
 | ms | 5.7 | 6.0 | 15.7 | 62.0 | 106.2 | **1.84** |
 
-So the placement is split. [`_place_coarse_kernel!`](@ref) first bins the
-particles into buckets of `2^shift` neighbouring cells — few enough destinations
-that each bucket's write front advances nearly sequentially — and
-[`_place_fine_kernel!`](@ref) then performs the exact sort **walking the order
-the first stage produced**, so neighbouring work-items carry particles of
-neighbouring cells and their destinations share pages.
+A cloud in random order has no such locality, and it can be manufactured: bin
+the particles into buckets of neighbouring cells first, then sort within each.
+That two-stage placement is a real technique, and on a freshly sampled cloud it
+works — 118 ms down to 47.
 
-![Scatter, and the locality two stages buy](assets/diagrams/two-stage-sort.svg)
+**It is the wrong answer here, because the cloud is never in random order.** It
+was sorted at the previous step, and one step of drift moves a particle a median
+of **2230 places out of 8×10⁷**: source and destination are already neighbours.
+The first stage then *destroys* that locality, by walking the particles in its
+own order rather than the array's. Measured on the cloud as the time loop leaves
+it:
 
-The first stage does not sort anything anyone wants; it only buys the second one
-its locality.
+| | ms |
+|---|---:|
+| two stages, walking the coarse order | 151.0 |
+| **one pass, walking the array** | **35.5** |
 
-Both extremes of that choice are bad, and symmetrically so:
+![Scatter, and the locality a sorted cloud already has](assets/diagrams/two-stage-sort.svg)
 
-| buckets | 1 | 334 | 1 336 | **2 672** | 10 685 | 1 367 631 |
-|---|---:|---:|---:|---:|---:|---:|
-| ms | 122.0 | 63.0 | 26.4 | **17.5** | 29.3 | 118.1 |
+So [`_place_particles_kernel!`](@ref) is a single pass in the array's own order,
+and the buckets, their tuning and their intermediate buffer are gone with the
+first stage. The first step of a run pays a disordered placement once; every
+step after it walks a cloud it sorted itself.
 
-One bucket is pure atomic contention; one cell per bucket is pure scatter. The
-floor sits at a few tens of thousands of particles per bucket, which is what
-[`sort_shift`](@ref) targets. The `perm` the two stages produce is identical to
-the host sort's, cell for cell.
+!!! note "Two measurements, both right, one premise that moved"
+    The two-stage placement *was* the measured optimum — for a cloud arriving in
+    random order. Sorting the particles rather than their keys changed that
+    premise, and the same measurement now says the opposite. Neither figure was
+    wrong; what they described stopped being the situation.
+
+### The cost the sort passes on
+
+Sorting by *fine* cell puts consecutive particles in the same *coarse* cell, and
+the coarse deposition's eight atomics per particle then all land on the same few
+addresses at once. Measured: **4874 ms** walking the sorted order against
+**193** walking it by a stride coprime with the particle count — a factor of 25.
+
+[`_deposit_cic_kernel!`](@ref) therefore reads deliberately out of order. The
+sorted order is what makes the fine deposition fast and what makes this one
+slow; the same property, read by two kernels that want opposite things.
 
 !!! warning "Two traps in the counting sort, both paid for"
     The counters **must be reset** — a repeated call otherwise accumulates them

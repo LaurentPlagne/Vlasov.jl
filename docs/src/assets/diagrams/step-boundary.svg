@@ -22,36 +22,36 @@
 <!-- cloud -->
 <g id="node1" class="node">
 <title>cloud</title>
-<path fill="#1f3a4d" stroke="#4a90a4" d="M155.95,-635.15C155.95,-637.32 130.43,-639.09 99,-639.09 67.57,-639.09 42.05,-637.32 42.05,-635.15 42.05,-635.15 42.05,-599.69 42.05,-599.69 42.05,-597.52 67.57,-595.75 99,-595.75 130.43,-595.75 155.95,-597.52 155.95,-599.69 155.95,-599.69 155.95,-635.15 155.95,-635.15"/>
-<path fill="none" stroke="#4a90a4" d="M155.95,-635.15C155.95,-632.98 130.43,-631.21 99,-631.21 67.57,-631.21 42.05,-632.98 42.05,-635.15"/>
-<text xml:space="preserve" text-anchor="start" x="86.25" y="-617.97" font-family="Helvetica,sans-Serif" font-size="11.00" fill="#e8f1f5">cloud</text>
-<text xml:space="preserve" text-anchor="start" x="52.12" y="-608.87" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#e8f1f5">(k, δ) · previous · forces</text>
+<path fill="#1f3a4d" stroke="#4a90a4" d="M161.95,-635.15C161.95,-637.32 136.43,-639.09 105,-639.09 73.57,-639.09 48.05,-637.32 48.05,-635.15 48.05,-635.15 48.05,-599.69 48.05,-599.69 48.05,-597.52 73.57,-595.75 105,-595.75 136.43,-595.75 161.95,-597.52 161.95,-599.69 161.95,-599.69 161.95,-635.15 161.95,-635.15"/>
+<path fill="none" stroke="#4a90a4" d="M161.95,-635.15C161.95,-632.98 136.43,-631.21 105,-631.21 73.57,-631.21 48.05,-632.98 48.05,-635.15"/>
+<text xml:space="preserve" text-anchor="start" x="92.25" y="-617.97" font-family="Helvetica,sans-Serif" font-size="11.00" fill="#e8f1f5">cloud</text>
+<text xml:space="preserve" text-anchor="start" x="58.12" y="-608.87" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#e8f1f5">(k, δ) · previous · forces</text>
 </g>
 <!-- hist -->
 <g id="node2" class="node">
 <title>hist</title>
-<path fill="#1f3a4d" stroke="#4a90a4" d="M135.33,-558.75C135.33,-558.75 62.67,-558.75 62.67,-558.75 56.67,-558.75 50.67,-552.75 50.67,-546.75 50.67,-546.75 50.67,-534.75 50.67,-534.75 50.67,-528.75 56.67,-522.75 62.67,-522.75 62.67,-522.75 135.33,-522.75 135.33,-522.75 141.33,-522.75 147.33,-528.75 147.33,-534.75 147.33,-534.75 147.33,-546.75 147.33,-546.75 147.33,-552.75 141.33,-558.75 135.33,-558.75"/>
-<text xml:space="preserve" text-anchor="start" x="75.38" y="-541.3" font-family="Helvetica,sans-Serif" font-size="11.00" fill="#e8f1f5">histogram</text>
-<text xml:space="preserve" text-anchor="start" x="60.75" y="-532.2" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#e8f1f5">_hist_cells_kernel!</text>
+<path fill="#1f3a4d" stroke="#4a90a4" d="M141.33,-558.75C141.33,-558.75 68.67,-558.75 68.67,-558.75 62.67,-558.75 56.67,-552.75 56.67,-546.75 56.67,-546.75 56.67,-534.75 56.67,-534.75 56.67,-528.75 62.67,-522.75 68.67,-522.75 68.67,-522.75 141.33,-522.75 141.33,-522.75 147.33,-522.75 153.33,-528.75 153.33,-534.75 153.33,-534.75 153.33,-546.75 153.33,-546.75 153.33,-552.75 147.33,-558.75 141.33,-558.75"/>
+<text xml:space="preserve" text-anchor="start" x="81.38" y="-541.3" font-family="Helvetica,sans-Serif" font-size="11.00" fill="#e8f1f5">histogram</text>
+<text xml:space="preserve" text-anchor="start" x="66.75" y="-532.2" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#e8f1f5">_hist_cells_kernel!</text>
 </g>
 <!-- cloud&#45;&gt;hist -->
 <g id="edge1" class="edge">
 <title>cloud&#45;&gt;hist</title>
-<path fill="none" stroke="#8a96a0" d="M99,-595.62C99,-587.76 99,-578.67 99,-570.23"/>
-<polygon fill="#8a96a0" stroke="#8a96a0" points="102.5,-570.43 99,-560.43 95.5,-570.43 102.5,-570.43"/>
+<path fill="none" stroke="#8a96a0" d="M105,-595.62C105,-587.76 105,-578.67 105,-570.23"/>
+<polygon fill="#8a96a0" stroke="#8a96a0" points="108.5,-570.43 105,-560.43 101.5,-570.43 108.5,-570.43"/>
 </g>
 <!-- sort -->
 <g id="node3" class="node">
 <title>sort</title>
-<path fill="#1f3a4d" stroke="#4a90a4" d="M141.7,-485.75C141.7,-485.75 38.3,-485.75 38.3,-485.75 32.3,-485.75 26.3,-479.75 26.3,-473.75 26.3,-473.75 26.3,-461.75 26.3,-461.75 26.3,-455.75 32.3,-449.75 38.3,-449.75 38.3,-449.75 141.7,-449.75 141.7,-449.75 147.7,-449.75 153.7,-455.75 153.7,-461.75 153.7,-461.75 153.7,-473.75 153.7,-473.75 153.7,-479.75 147.7,-485.75 141.7,-485.75"/>
-<text xml:space="preserve" text-anchor="start" x="36.38" y="-468.3" font-family="Helvetica,sans-Serif" font-size="11.00" fill="#e8f1f5">placement, two stages</text>
-<text xml:space="preserve" text-anchor="start" x="61.88" y="-459.2" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#e8f1f5">coarse → fine</text>
+<path fill="#1f3a4d" stroke="#4a90a4" d="M142.45,-485.75C142.45,-485.75 67.55,-485.75 67.55,-485.75 61.55,-485.75 55.55,-479.75 55.55,-473.75 55.55,-473.75 55.55,-461.75 55.55,-461.75 55.55,-455.75 61.55,-449.75 67.55,-449.75 67.55,-449.75 142.45,-449.75 142.45,-449.75 148.45,-449.75 154.45,-455.75 154.45,-461.75 154.45,-461.75 154.45,-473.75 154.45,-473.75 154.45,-479.75 148.45,-485.75 142.45,-485.75"/>
+<text xml:space="preserve" text-anchor="start" x="80.25" y="-468.3" font-family="Helvetica,sans-Serif" font-size="11.00" fill="#e8f1f5">placement</text>
+<text xml:space="preserve" text-anchor="start" x="65.62" y="-459.2" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#e8f1f5">moves the particles</text>
 </g>
 <!-- hist&#45;&gt;sort -->
 <g id="edge2" class="edge">
 <title>hist&#45;&gt;sort</title>
-<path fill="none" stroke="#8a96a0" d="M96.82,-522.56C95.85,-514.89 94.68,-505.64 93.58,-496.99"/>
-<polygon fill="#8a96a0" stroke="#8a96a0" points="97.08,-496.76 92.35,-487.28 90.13,-497.64 97.08,-496.76"/>
+<path fill="none" stroke="#8a96a0" d="M105,-522.56C105,-514.98 105,-505.85 105,-497.29"/>
+<polygon fill="#8a96a0" stroke="#8a96a0" points="108.5,-497.29 105,-487.29 101.5,-497.29 108.5,-497.29"/>
 </g>
 <!-- scan -->
 <g id="node9" class="node">
@@ -63,35 +63,35 @@
 <!-- hist&#45;&gt;scan -->
 <g id="edge9" class="edge">
 <title>hist&#45;&gt;scan</title>
-<path fill="none" stroke="#8a96a0" stroke-dasharray="1,5" d="M147.82,-537.57C193.9,-532.58 256,-516.91 256,-468.75 256,-468.75 256,-468.75 256,-310.5 256,-279.49 254.63,-243.97 253.5,-219.81"/>
-<polygon fill="#8a96a0" stroke="#8a96a0" points="257.01,-219.95 253.02,-210.13 250.02,-220.29 257.01,-219.95"/>
-<text xml:space="preserve" text-anchor="middle" x="270.62" y="-390.88" font-family="Helvetica,sans-Serif" font-size="10.00" fill="#8a96a0">counts</text>
+<path fill="none" stroke="#8a96a0" stroke-dasharray="1,5" d="M153.51,-536.89C198,-531.33 257,-515.21 257,-468.75 257,-468.75 257,-468.75 257,-310.5 257,-279.48 255.29,-243.96 253.87,-219.81"/>
+<polygon fill="#8a96a0" stroke="#8a96a0" points="257.38,-219.9 253.28,-210.13 250.4,-220.33 257.38,-219.9"/>
+<text xml:space="preserve" text-anchor="middle" x="271.62" y="-390.88" font-family="Helvetica,sans-Serif" font-size="10.00" fill="#8a96a0">counts</text>
 </g>
 <!-- dep -->
 <g id="node4" class="node">
 <title>dep</title>
-<path fill="#1f3a4d" stroke="#4a90a4" d="M116.08,-412.75C116.08,-412.75 41.92,-412.75 41.92,-412.75 35.92,-412.75 29.92,-406.75 29.92,-400.75 29.92,-400.75 29.92,-388.75 29.92,-388.75 29.92,-382.75 35.92,-376.75 41.92,-376.75 41.92,-376.75 116.08,-376.75 116.08,-376.75 122.08,-376.75 128.08,-382.75 128.08,-388.75 128.08,-388.75 128.08,-400.75 128.08,-400.75 128.08,-406.75 122.08,-412.75 116.08,-412.75"/>
-<text xml:space="preserve" text-anchor="start" x="54.62" y="-395.3" font-family="Helvetica,sans-Serif" font-size="11.00" fill="#e8f1f5">deposition</text>
-<text xml:space="preserve" text-anchor="start" x="40" y="-386.2" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#e8f1f5">fine 8³ · coarse CIC</text>
+<path fill="#1f3a4d" stroke="#4a90a4" d="M117.08,-412.75C117.08,-412.75 42.92,-412.75 42.92,-412.75 36.92,-412.75 30.92,-406.75 30.92,-400.75 30.92,-400.75 30.92,-388.75 30.92,-388.75 30.92,-382.75 36.92,-376.75 42.92,-376.75 42.92,-376.75 117.08,-376.75 117.08,-376.75 123.08,-376.75 129.08,-382.75 129.08,-388.75 129.08,-388.75 129.08,-400.75 129.08,-400.75 129.08,-406.75 123.08,-412.75 117.08,-412.75"/>
+<text xml:space="preserve" text-anchor="start" x="55.62" y="-395.3" font-family="Helvetica,sans-Serif" font-size="11.00" fill="#e8f1f5">deposition</text>
+<text xml:space="preserve" text-anchor="start" x="41" y="-386.2" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#e8f1f5">fine 8³ · coarse CIC</text>
 </g>
 <!-- sort&#45;&gt;dep -->
 <g id="edge3" class="edge">
 <title>sort&#45;&gt;dep</title>
-<path fill="none" stroke="#8a96a0" d="M87.34,-449.56C86.15,-441.89 84.72,-432.64 83.38,-423.99"/>
-<polygon fill="#8a96a0" stroke="#8a96a0" points="86.86,-423.62 81.87,-414.27 79.94,-424.69 86.86,-423.62"/>
+<path fill="none" stroke="#8a96a0" d="M98.95,-449.56C96.18,-441.71 92.84,-432.22 89.74,-423.41"/>
+<polygon fill="#8a96a0" stroke="#8a96a0" points="93.12,-422.48 86.5,-414.21 86.52,-424.8 93.12,-422.48"/>
 </g>
 <!-- pois -->
 <g id="node5" class="node">
 <title>pois</title>
-<path fill="#1f3a4d" stroke="#4a90a4" d="M112.83,-329.5C112.83,-329.5 49.17,-329.5 49.17,-329.5 43.17,-329.5 37.17,-323.5 37.17,-317.5 37.17,-317.5 37.17,-305.5 37.17,-305.5 37.17,-299.5 43.17,-293.5 49.17,-293.5 49.17,-293.5 112.83,-293.5 112.83,-293.5 118.83,-293.5 124.83,-299.5 124.83,-305.5 124.83,-305.5 124.83,-317.5 124.83,-317.5 124.83,-323.5 118.83,-329.5 112.83,-329.5"/>
-<text xml:space="preserve" text-anchor="start" x="61.12" y="-312.05" font-family="Helvetica,sans-Serif" font-size="11.00" fill="#e8f1f5">poisson!</text>
-<text xml:space="preserve" text-anchor="start" x="47.25" y="-302.95" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#e8f1f5">coarse, then fine</text>
+<path fill="#1f3a4d" stroke="#4a90a4" d="M113.83,-329.5C113.83,-329.5 50.17,-329.5 50.17,-329.5 44.17,-329.5 38.17,-323.5 38.17,-317.5 38.17,-317.5 38.17,-305.5 38.17,-305.5 38.17,-299.5 44.17,-293.5 50.17,-293.5 50.17,-293.5 113.83,-293.5 113.83,-293.5 119.83,-293.5 125.83,-299.5 125.83,-305.5 125.83,-305.5 125.83,-317.5 125.83,-317.5 125.83,-323.5 119.83,-329.5 113.83,-329.5"/>
+<text xml:space="preserve" text-anchor="start" x="62.12" y="-312.05" font-family="Helvetica,sans-Serif" font-size="11.00" fill="#e8f1f5">poisson!</text>
+<text xml:space="preserve" text-anchor="start" x="48.25" y="-302.95" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#e8f1f5">coarse, then fine</text>
 </g>
 <!-- dep&#45;&gt;pois -->
 <g id="edge4" class="edge">
 <title>dep&#45;&gt;pois</title>
-<path fill="none" stroke="#8a96a0" d="M79.42,-376.52C79.68,-366.25 80,-352.95 80.3,-341.14"/>
-<polygon fill="#8a96a0" stroke="#8a96a0" points="83.79,-341.58 80.53,-331.5 76.79,-341.41 83.79,-341.58"/>
+<path fill="none" stroke="#8a96a0" d="M80.42,-376.52C80.68,-366.25 81,-352.95 81.3,-341.14"/>
+<polygon fill="#8a96a0" stroke="#8a96a0" points="84.79,-341.58 81.53,-331.5 77.79,-341.41 84.79,-341.58"/>
 </g>
 <!-- mf -->
 <g id="node6" class="node">
@@ -102,8 +102,8 @@
 <!-- pois&#45;&gt;mf -->
 <g id="edge5" class="edge">
 <title>pois&#45;&gt;mf</title>
-<path fill="none" stroke="#8a96a0" d="M83.62,-293.16C86.51,-274 91.22,-242.82 94.66,-219.99"/>
-<polygon fill="#8a96a0" stroke="#8a96a0" points="98.12,-220.52 96.15,-210.11 91.2,-219.47 98.12,-220.52"/>
+<path fill="none" stroke="#8a96a0" d="M84.47,-293.16C87.2,-274 91.65,-242.82 94.9,-219.99"/>
+<polygon fill="#8a96a0" stroke="#8a96a0" points="98.37,-220.5 96.31,-210.11 91.44,-219.52 98.37,-220.5"/>
 </g>
 <!-- force -->
 <g id="node7" class="node">
@@ -130,7 +130,7 @@
 <title>mf&#45;&gt;outside</title>
 <path fill="none" stroke="#8a96a0" stroke-dasharray="1,5" d="M116.29,-208.71C132.53,-224.59 158.41,-246.36 186,-255.56 235.75,-272.16 373.5,-275.51 422,-255.56 440.83,-247.82 457.15,-231.81 468.85,-217.59"/>
 <polygon fill="#8a96a0" stroke="#8a96a0" points="471.54,-219.83 474.92,-209.79 466.02,-215.53 471.54,-219.83"/>
-<text xml:space="preserve" text-anchor="middle" x="216" y="-266" font-family="Helvetica,sans-Serif" font-size="10.00" fill="#8a96a0">csol coarse</text>
+<text xml:space="preserve" text-anchor="middle" x="217" y="-266" font-family="Helvetica,sans-Serif" font-size="10.00" fill="#8a96a0">csol coarse</text>
 </g>
 <!-- verl -->
 <g id="node8" class="node">
@@ -162,16 +162,16 @@
 <!-- verl&#45;&gt;cloud -->
 <g id="edge8" class="edge">
 <title>verl&#45;&gt;cloud</title>
-<path fill="none" stroke="#8a96a0" stroke-dasharray="5,2" d="M133.39,-52.46C144.73,-61.83 156.89,-74.44 163,-89 191.76,-157.54 176.93,-183.23 163,-256.25 156.44,-290.64 150.68,-298.72 134,-329.5 127.24,-341.97 116.26,-345.47 121.25,-358.75 124.99,-368.7 131.62,-367.58 137,-376.75 154.43,-406.46 157.14,-415.81 163,-449.75 165.72,-465.52 163.76,-469.77 163,-485.75 161.44,-518.31 169.81,-529.23 156,-558.75 151.03,-569.37 143.27,-579.18 135.05,-587.58"/>
-<polygon fill="#8a96a0" stroke="#8a96a0" points="132.68,-585.01 127.87,-594.45 137.51,-590.07 132.68,-585.01"/>
-<text xml:space="preserve" text-anchor="middle" x="138.12" y="-349.25" font-family="Helvetica,sans-Serif" font-size="10.00" fill="#8a96a0">in place</text>
+<path fill="none" stroke="#8a96a0" stroke-dasharray="5,2" d="M133.39,-52.46C144.73,-61.83 156.89,-74.44 163,-89 191.76,-157.54 176.49,-183.15 163,-256.25 156.67,-290.52 152.49,-299.35 135,-329.5 127.69,-342.09 114.73,-345.28 120.25,-358.75 124.51,-369.15 132.09,-367.2 138,-376.75 156.05,-405.91 157.37,-415.92 163,-449.75 165.63,-465.53 163.11,-469.75 163,-485.75 162.78,-518.2 174.53,-528.82 162,-558.75 157.51,-569.46 150,-579.26 141.87,-587.62"/>
+<polygon fill="#8a96a0" stroke="#8a96a0" points="139.55,-585 134.73,-594.43 144.38,-590.06 139.55,-585"/>
+<text xml:space="preserve" text-anchor="middle" x="137.12" y="-349.25" font-family="Helvetica,sans-Serif" font-size="10.00" fill="#8a96a0">in place</text>
 </g>
 <!-- scan&#45;&gt;sort -->
 <g id="edge10" class="edge">
 <title>scan&#45;&gt;sort</title>
-<path fill="none" stroke="#8a96a0" stroke-dasharray="1,5" d="M233.94,-208.74C220.34,-222.72 202.05,-243.37 190,-264.25 154.97,-324.94 172.4,-352.27 137,-412.75 131.13,-422.78 123.28,-432.69 115.67,-441.23"/>
-<polygon fill="#8a96a0" stroke="#8a96a0" points="113.19,-438.75 108.96,-448.46 118.33,-443.51 113.19,-438.75"/>
-<text xml:space="preserve" text-anchor="middle" x="176.75" y="-349.25" font-family="Helvetica,sans-Serif" font-size="10.00" fill="#8a96a0">offsets</text>
+<path fill="none" stroke="#8a96a0" stroke-dasharray="1,5" d="M234.52,-208.51C221.13,-222.52 202.97,-243.32 191,-264.25 156.21,-325.08 168.21,-349.52 138,-412.75 133.69,-421.77 128.27,-431.2 123.08,-439.61"/>
+<polygon fill="#8a96a0" stroke="#8a96a0" points="120.17,-437.67 117.76,-447.99 126.08,-441.42 120.17,-437.67"/>
+<text xml:space="preserve" text-anchor="middle" x="175.42" y="-349.25" font-family="Helvetica,sans-Serif" font-size="10.00" fill="#8a96a0">offsets</text>
 </g>
 <!-- outside&#45;&gt;force -->
 <g id="edge12" class="edge">

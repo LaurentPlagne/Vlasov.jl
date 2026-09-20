@@ -116,16 +116,16 @@ the others: on Metal, where `Float64` does not exist, it runs on `CPU()` over
 the host positions — free, the memory being unified. On a backend with hardware
 `Float64` it runs on the device like everything else.
 """
-@kernel function _pack_kd_kernel!(knode, delta, @Const(positions), x0::T, h::T,
+@kernel function _pack_kd_kernel!(parts, @Const(positions), x0::T, h::T,
                                   nk) where {T}
     i = @index(Global, Linear)
     @inbounds begin
         p = positions[i]
-        for d in 1:3
-            k = clamp(round(Int32, (p[d] - x0) / h) + Int32(1), Int32(1), nk)
-            knode[d, i] = k
-            delta[d, i] = eltype(delta)(p[d] - (x0 + (k - Int32(1)) * h))
-        end
+        E = offset_type(eltype(parts))
+        ks = ntuple(d -> clamp(round(Int32, (p[d] - x0) / h) + Int32(1), Int32(1), nk), 3)
+        ds = ntuple(d -> E(p[d] - (x0 + (ks[d] - Int32(1)) * h)), 3)
+        old = parts[i]
+        parts[i] = PackedParticle(ks, ds, old.pknode, old.pdelta)
     end
 end
 
@@ -242,7 +242,7 @@ written by hand and `ndrange` is padded to a whole number of groups.
 """
 @kernel unsafe_indices = true function _smoothed_field_kernel!(
         force, @Const(csol), @Const(ovl), @Const(grad),
-        @Const(delta), @Const(perm), @Const(cellids), @Const(bounds), nk,
+        @Const(parts), @Const(cellids), @Const(bounds), nk,
         x0, h, spacing, nbdt, w, nc, px0, py0, pz0, coef, σ, red)
     tid = @index(Local, Linear)
     gi = @index(Global, Linear)
@@ -306,8 +306,11 @@ written by hand and `ndrange` is padded to a whole number of groups.
         ax = zero(E); ay = zero(E); az = zero(E); ae = zero(E)
         s = lo + tid
         while s <= hi
-            i = perm[s]
-            dx0 = delta[1, i]; dy0 = delta[2, i]; dz0 = delta[3, i]
+            # The cloud is sorted, so `s` *is* the particle. What used to be
+            # `perm[s]` then `delta[·, i]` was a gather of 132 ms; the store
+            # below was a scatter of 153.
+            dd = parts[s].delta
+            dx0 = dd[1]; dy0 = dd[2]; dz0 = dd[3]
             fxp = nan; fyp = nan; fzp = nan
             if ok
                 cx = min(max(floor(Int32, (dx0 + halfsp) / spacing * nbdt + E(0.5)) +
@@ -340,7 +343,7 @@ written by hand and `ndrange` is padded to a whole number of groups.
                       erf(r / E(1.4142135624) / σ) / r
             end
 
-            force[1, i] = fxp; force[2, i] = fyp; force[3, i] = fzp
+            force[1, s] = fxp; force[2, s] = fyp; force[3, s] = fzp
             s += GS
         end
         # One visit to threadgroup memory per work-item, not one per particle.
@@ -431,7 +434,7 @@ stencil offsets are **recomputed** on each side of a barrier — they are three
 integer divisions, cheaper than the machinery needed to carry them across.
 """
 @kernel unsafe_indices = true function _deposit_sorted_kernel!(
-        ρ, @Const(nodes), @Const(cols), @Const(perm), @Const(cellids),
+        ρ, @Const(nodes), @Const(cols), @Const(cellids),
         @Const(bounds), nk)
     @uniform E = eltype(ρ)
     t = @index(Local, Linear)
@@ -470,7 +473,9 @@ integer divisions, cheaper than the machinery needed to carry them across.
                 # The sort lives here, in the staging: one gather of 12 bytes
                 # per particle per cell, overlapped with the inner loop below —
                 # rather than a pass of its own over every particle.
-                q = perm[cursor+t]
+                # Sorted cloud: the slot *is* the particle, so these three
+                # reads are contiguous instead of gathered through `perm`.
+                q = cursor + t
                 b = Int32(3) * (t - Int32(1))
                 shared[b+Int32(1)] = cols[1, q]
                 shared[b+Int32(2)] = cols[2, q]
@@ -566,20 +571,23 @@ The density then agrees to 4.3e-05, which is the atomic ordering and not this.
 Particles outside are parked on column 1 — they deposit nothing, the kernel
 skips them — and counted into `nout`, one atomic each. They are rare.
 """
-@kernel function _columns_kernel!(cols, @Const(knode), @Const(delta),
+@kernel function _columns_kernel!(cols, @Const(parts),
                                   x0, h, lo, hi, spacing, nbdt, ncol, nout)
     i = @index(Global, Linear)
     @inbounds begin
+        q = parts[i]
+        knode = q.knode
+        delta = q.delta
         E = eltype(delta)
         half = spacing * E(0.5)
         inside = true
         for d in Int32(1):Int32(3)
-            p = x0 + E(knode[d, i] - Int32(1)) * h + delta[d, i]
+            p = x0 + E(knode[d] - Int32(1)) * h + delta[d]
             inside &= (lo <= p) & (p <= hi)
         end
         if inside
             for d in Int32(1):Int32(3)
-                cols[d, i] = min(max(floor(Int32, (delta[d, i] + half) / spacing *
+                cols[d, i] = min(max(floor(Int32, (delta[d] + half) / spacing *
                                            nbdt + E(0.5)) + Int32(1),
                                      Int32(1)), ncol)
             end
@@ -711,70 +719,67 @@ end
 
 """Linear cell index from an unclamped `knode` — the clamp
 [`PackedPositions`](@ref) does not apply lives here, where a stencil is indexed."""
-@inline function _cell_key(knode, i, nk::Int32)
-    @inbounds begin
-        kx = clamp(knode[1, i], Int32(1), nk)
-        ky = clamp(knode[2, i], Int32(1), nk)
-        kz = clamp(knode[3, i], Int32(1), nk)
-    end
+@inline function _cell_key(p::PackedParticle, nk::Int32)
+    k = p.knode
+    kx = clamp(k[1], Int32(1), nk)
+    ky = clamp(k[2], Int32(1), nk)
+    kz = clamp(k[3], Int32(1), nk)
     kx + nk * (ky - Int32(1) + nk * (kz - Int32(1)))
 end
 
 """Counts the particles of each cell — one atomic per particle, into `nk³` bins."""
-@kernel function _hist_cells_kernel!(counts, @Const(knode), nk::Int32, npart::Int32)
+@kernel function _hist_cells_kernel!(counts, @Const(parts), nk::Int32, npart::Int32)
     i = @index(Global, Linear)
     if i <= npart
-        @inbounds Atomix.@atomic counts[_cell_key(knode, i, nk)] += Int32(1)
+        @inbounds Atomix.@atomic counts[_cell_key(parts[i], nk)] += Int32(1)
     end
 end
 
 """
-First stage of the device sort: place each particle in its **bucket** of
-`2^shift` neighbouring cells.
+The placement — **moving the particles themselves**, not their indices, and
+walking the array in its own order.
 
-The point is the write pattern, not the ordering. A placement straight into
-`nk³` cells scatters eighty million 4-byte writes over 305 MB and costs 118 ms;
-with one bucket it degenerates into atomic contention and costs 122. Measured
-between those two, at 8×10⁷ particles on 111³ cells:
+⚠️ **The natural order is the fast one, because the cloud is already almost
+sorted.** It was sorted at the previous step, and one step of drift moves a
+particle a median of 2230 places out of 8×10⁷: source and destination are
+neighbours, so the scatter stays inside a few pages.
 
-| buckets | 1 | 334 | 1 336 | **2 672** | 10 685 | 1 367 631 |
-|---|---:|---:|---:|---:|---:|---:|
-| ms | 122.0 | 63.0 | 26.4 | **17.5** | 29.3 | 118.1 |
+That inverts an earlier design. A two-stage placement — bin into buckets of
+neighbouring cells, then sort within — exists to *manufacture* locality for a
+cloud in random order, and it works: 118 ms down to 47 on a freshly sampled
+cloud. But on a cloud kept sorted it **destroys** the locality that is already
+there, by walking the particles in the first stage's order instead of the
+array's. Measured at 8×10⁷ particles, on the cloud as the time loop leaves it:
 
-The floor of that curve is a few tens of thousands of particles per bucket —
-see [`sort_shift`](@ref) — where each bucket's write front advances nearly
-sequentially and the contention is still spread thin.
+| | ms |
+|---|---:|
+| two stages, walking the coarse order | 151.0 |
+| **one pass, walking the array** | **35.5** |
+
+So the first stage is gone, along with its buckets and its tuning. The first
+step of a run pays a disordered placement once; every step after it walks a
+cloud it sorted itself.
+
+The destination `out` cannot be `parts`: a scatter has no safe in-place form.
 """
-@kernel function _place_coarse_kernel!(perm, cursor, @Const(knode), nk::Int32,
-                                       shift::Int32, npart::Int32)
+@kernel function _place_particles_kernel!(out, cursor, @Const(parts),
+                                          nk::Int32, npart::Int32)
     i = @index(Global, Linear)
     if i <= npart
         @inbounds begin
-            b = ((_cell_key(knode, i, nk) - Int32(1)) >> shift) + Int32(1)
-            p = Atomix.@atomic cursor[b] += Int32(1)
-            perm[p] = Int32(i)
+            q = parts[i]
+            p = Atomix.@atomic cursor[_cell_key(q, nk)] += Int32(1)
+            out[p] = q
         end
     end
 end
 
-"""
-Second stage: the exact sort, walking the particles in the order the first
-stage produced.
-
-Neighbouring work-items then carry particles of neighbouring cells, so their
-destinations fall in the same handful of pages — the very locality the one-pass
-placement lacks. 29.4 ms here against 118 for the same work unordered, and the
-two stages together produce a `perm` **identical** to the host sort's.
-"""
-@kernel function _place_fine_kernel!(perm, cursor, @Const(order), @Const(knode),
-                                     nk::Int32, npart::Int32)
+"""Gathers the particles into the order `perm` gives. The host route's
+counterpart to [`_place_particles_kernel!`](@ref), which scatters."""
+@kernel function _gather_particles_kernel!(out, @Const(parts), @Const(perm), npart::Int32)
     s = @index(Global, Linear)
     if s <= npart
-        @inbounds begin
-            i = order[s]
-            p = Atomix.@atomic cursor[_cell_key(knode, i, nk)] += Int32(1)
-            perm[p] = i
-        end
+        @inbounds out[s] = parts[perm[s]]
     end
 end
 
@@ -797,20 +802,21 @@ work-item in `E`, not eighty million.
 position, which only `rcmax` and the angular momentum need; the trajectory never
 passes through it, which is the whole point of the packed form.
 """
-@kernel function _verlet_packed_kernel!(kq, dq, ok, od, @Const(force), partials,
-                                        a, h, x0, pfac, r2max, inv2M,
-                                        npart::Int32, stride::Int32)
+@kernel function _verlet_packed_kernel!(parts, @Const(force), partials,
+                                        a::E, h::E, x0::E, pfac::E, r2max::E,
+                                        inv2M::E, npart::Int32,
+                                        stride::Int32) where {E}
     t = @index(Global, Linear)
-    @uniform E = eltype(dq)
     ek = zero(E); eo = zero(E)
     lx = zero(E); ly = zero(E); lz = zero(E)
 
     i = Int32(t)
     @inbounds while i <= npart
-        k1 = kq[1, i]; k2 = kq[2, i]; k3 = kq[3, i]
-        o1 = ok[1, i]; o2 = ok[2, i]; o3 = ok[3, i]
-        d1 = dq[1, i]; d2 = dq[2, i]; d3 = dq[3, i]
-        e1 = od[1, i]; e2 = od[2, i]; e3 = od[3, i]
+        q = parts[i]
+        k1, k2, k3 = q.knode
+        d1, d2, d3 = q.delta
+        o1, o2, o3 = q.pknode
+        e1, e2, e3 = q.pdelta
 
         n1 = _verlet_packed(k1, d1, o1, e1, a, force[1, i], h)
         n2 = _verlet_packed(k2, d2, o2, e2, a, force[2, i], h)
@@ -827,10 +833,8 @@ passes through it, which is the whole point of the packed form.
         ly += qz * px - qx * pz
         lz += qx * py - qy * px
 
-        ok[1, i] = k1; ok[2, i] = k2; ok[3, i] = k3
-        od[1, i] = d1; od[2, i] = d2; od[3, i] = d3
-        kq[1, i] = n1[1]; kq[2, i] = n2[1]; kq[3, i] = n3[1]
-        dq[1, i] = n1[2]; dq[2, i] = n2[2]; dq[3, i] = n3[2]
+        parts[i] = PackedParticle((n1[1], n2[1], n3[1]), (n1[2], n2[2], n3[2]),
+                                  (k1, k2, k3), (d1, d2, d3))
         i += stride
     end
 
@@ -854,15 +858,16 @@ The append is one atomic per outside particle, and the slot it returns is the
 particle's place in the list. Order is not preserved, and nothing downstream
 wants it to be.
 """
-@kernel function _outside_kernel!(outlist, outcount, @Const(knode), n, npart)
+@kernel function _outside_kernel!(outlist, outcount, @Const(parts), n, npart)
     i = @index(Global, Linear)
     @inbounds if i <= npart
         # ⚠️ The same test, spelled the same way, as in the field kernel. The
         # two must agree exactly: one decides what to skip, the other what to
         # pick up.
-        bx = Int32(2) * knode[1, i] - Int32(5)
-        by = Int32(2) * knode[2, i] - Int32(5)
-        bz = Int32(2) * knode[3, i] - Int32(5)
+        knode = parts[i].knode
+        bx = Int32(2) * knode[1] - Int32(5)
+        by = Int32(2) * knode[2] - Int32(5)
+        bz = Int32(2) * knode[3] - Int32(5)
         ok = bx >= Int32(1) && by >= Int32(1) && bz >= Int32(1) &&
              bx + Int32(9) <= n && by + Int32(9) <= n && bz + Int32(9) <= n
         if !ok
@@ -919,15 +924,27 @@ sort it requires costs 356 ms on its own — see `_update_forces_resident!`.
     after a Verlet step and the densities differ by 4.5 % — not a numerical
     error, simply two different sets of particles.
 """
-@kernel function _deposit_cic_kernel!(ρ, @Const(knode), @Const(delta),
+@kernel function _deposit_cic_kernel!(ρ, @Const(parts),
                                       @Const(gx), @Const(gy), @Const(gz),
-                                      @Const(cells), x0f, hf, x0t, iwt, npart)
-    i = @index(Global, Linear)
-    @inbounds if i <= npart
+                                      @Const(cells), x0f, hf, x0t, iwt, npart,
+                                      stride)
+    t = @index(Global, Linear)
+    # ⚠️ **Deliberately out of order.** The cloud is sorted by *fine* cell, so
+    # consecutive particles share a *coarse* cell — and this kernel's eight
+    # atomics then all land on the same handful of addresses at once. Measured
+    # at 8×10⁷ particles: **4874 ms** walking the sorted order against **193**
+    # walking it by a stride coprime with the count.
+    #
+    # The sorted order is what makes the fine deposition fast (one group per
+    # cell, one atomic each) and what makes this one slow. Reading by a stride
+    # costs locality on the load and buys back a factor of 25 on the atomics.
+    i = Int32((Int64(t - 1) * Int64(stride)) % Int64(npart)) + Int32(1)
+    @inbounds if t <= npart
         E = eltype(ρ)
-        px = x0f + E(knode[1, i] - Int32(1)) * hf + delta[1, i]
-        py = x0f + E(knode[2, i] - Int32(1)) * hf + delta[2, i]
-        pz = x0f + E(knode[3, i] - Int32(1)) * hf + delta[3, i]
+        q = parts[i]; knode = q.knode; delta = q.delta
+        px = x0f + E(knode[1] - Int32(1)) * hf + delta[1]
+        py = x0f + E(knode[2] - Int32(1)) * hf + delta[2]
+        pz = x0f + E(knode[3] - Int32(1)) * hf + delta[3]
         ix, ax = _locate_cell(gx, x0t, iwt, cells, px)
         iy, ay = _locate_cell(gy, x0t, iwt, cells, py)
         iz, az = _locate_cell(gz, x0t, iwt, cells, pz)
