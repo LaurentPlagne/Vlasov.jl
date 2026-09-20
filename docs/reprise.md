@@ -8,7 +8,9 @@ cités ; ce fichier dit seulement **où regarder** et **quoi faire ensuite**.
 Le code Fortran de la thèse (1996-1998) est porté en Julia, validé contre un
 oracle reconstruit, **les figures 5.2 et 5.3 de la thèse sont reproduites**, le
 pas de temps a été accéléré **×3,95** (307,9 → 77,9 ms à 800 000 particules), et
-le tout est documenté dans un site Documenter en anglais.
+le tout est documenté dans un site Documenter en anglais. À l'échelle de
+production — 8×10⁷ particules — le pas est passé de 4213 à **1090 ms** sur la
+branche `gpu-portable`, où le nuage vit désormais sur le device.
 
 ## Par où entrer
 
@@ -50,7 +52,7 @@ répertoire de travail xmgr.
 
 ## Comment exécuter
 
-    julia --project=.   -e 'include("test/runtests.jl")'   # 4750 tests, ~20 s
+    julia --project=.   -e 'include("test/runtests.jl")'   # 4824 tests, ~80 s
     julia --project=gpu -t auto scripts/profil_pas.jl      # profil d'un pas
     julia --project=gpu -t auto scripts/bench_gpu.jl       # CPU vs GPU
     julia --project=gpu -t auto scripts/figure52.jl        # figure 5.2, ~2 min 30
@@ -180,102 +182,127 @@ sont dans la section [Branche `gpu-portable`](#branche-gpu-portable) ci-dessous.
 
 ## Branche `gpu-portable`
 
-**29 commits, non fusionnée, suite verte (4777 tests) à chaque commit.**
+**39 commits, non fusionnée, suite verte (4824 tests) à chaque commit.**
 `git log --oneline master..gpu-portable`.
 
 Le portage est entièrement en `KernelAbstractions` : les mêmes noyaux servent
-`CPU()`, Metal, et — non validé, faute de matériel — CUDA/ROCm/oneAPI.
-L'extension Metal est passée de 414 à 56 lignes. Le pas de temps à **8×10⁷
-particules sur 258³** est passé de **4213 à 1398 ms, ×3,01**.
+`CPU()`, Metal, et — non validé, faute de matériel — CUDA/ROCm/oneAPI. **Le
+nuage vit sur le device**, et le pas à 8×10⁷ particules sur 222³ est passé de
+4213 ms à **1090**.
 
 ### Où passe le temps aujourd'hui
 
-| étage | ms | % | où |
-|---|---:|---:|:--|
-| forces + projectile | 447 | 32 % | device |
-| dépôt fin | 250 | 18 % | device |
-| packing + tri | 205 | 15 % | HÔTE |
-| dépôt grossier (CIC) | 180 | 13 % | device |
-| poisson! (2 niveaux) | 69 | 5 % | device |
-| Verlet | 54 | 4 % | HÔTE |
-| le reste | ~90 | 6 % | device |
+Profil mesuré en séquence, la somme fermant à 99,9 % :
 
-Deux étages sont **finis**, au sens où ils touchent un plafond mesuré de la
-machine : le dépôt grossier (87 % du débit d'atomiques) et le Verlet (95 % de la
-bande passante hôte).
+| étage | ms | % |
+|---|---:|---:|
+| **forces + projectile** | **458** | **41 %** |
+| **dépôt fin** | **199** | 18 % |
+| dépôt grossier (CIC) | 194 | 17 % |
+| `_pack!` + tri | 123 | 11 % |
+| poisson! (2 niveaux) | 58 | 5 % |
+| Verlet (device) | 40 | 4 % |
+| champ moyen | 24 | 2 % |
+| le reste | 27 | 2 % |
 
-### Ce qui reste, par ordre de certitude
+### Ce qui a changé, et qu'il faut savoir avant de toucher au code
 
-1. **Le budget énergétique**, encore particule par particule sur l'hôte. Pris un
-   pas sur dix, jamais profilé à 8×10⁷.
-2. **Disposition par composante** pour `ParticleCloud`, qui aiderait le packing
-   hôte (19 % de la bande passante).
+**Le nuage est un tableau de [`PackedParticle`](@ref)**, 48 octets `isbits` :
+`(k, δ)` courant *et* précédent dans un seul enregistrement. `positions` et
+`previous` sont **deux vues du même stockage**, d'où `prev` en champ et non en
+paramètre de type.
 
-~~Recouvrir les deux dépôts (~180 ms)~~ — **mesuré et écarté** cette session.
-L'hypothèse semblait ne dépendre d'aucun noyau : le dépôt fin et le CIC
-grossier écrivent deux grilles distinctes, rien ne les lie en sortie. Mais
-`global_queue` de Metal.jl est **task-local** — deux `Threads.@spawn` donnent
-bien deux `MTLCommandQueue` distinctes, confirmé par `Metal.@profile`
-(`[MTLDevice newCommandQueue]` ×2. Malgré ça, deux lancements du noyau de dépôt
-(80M particules, 122 636 cellules occupées) prennent 634 → 624 → 593 ms en
-A-B-A — aucun gain. Le profil dit pourquoi : les deux appels durent 306,89 ms
-± 8,82 **chacun**, et leur somme colle au temps GPU occupé total : ils
-s'exécutent bout à bout, pas ensemble. Deux files ne donnent pas deux noyaux
-concurrents sur ce GPU, et les deux dépôts sont de toute façon liés par
-atomiques — il n'y avait pas de débit de reste à prendre. Détail dans
-`docs/src/performance.md`, section « Dead ends, measured ».
+**Le tri déplace les particules**, il ne produit plus de permutation. Trois
+conséquences, dont deux ont coûté un bug :
 
-### Le noyau des forces : 447 ms, et je ne sais pas ce qui le borne
+* l'indice d'une particule **n'est plus stable** d'un pas à l'autre — sans
+  effet physique, les pseudo-particules étant indiscernables, mais tout code
+  qui suivrait une particule par son indice serait faux ;
+* **tout ce qui est tenu hors du nuage perd sa correspondance avec lui** au
+  premier tri. L'amorçage fait donc voyager `q(0)` dans la moitié `previous`
+  du même enregistrement ;
+* le dépôt **grossier** lit délibérément dans le désordre, par un pas premier
+  avec le nombre de particules : trier par maille fine met ses atomiques en
+  collision frontale, 4874 ms contre 193, facteur 25.
 
-Il fait **680 GFLOP/s** contre 8849 pour un GEMM carré sur la même machine, avec
-**16,2 % d'occupation**. Sept leviers testés, un seul a payé :
+**Le placement du tri est une seule passe**, dans l'ordre du tableau — le
+nuage étant déjà presque trié (dérive médiane : 2230 places sur 8×10⁷), un
+premier étage qui « fabrique » de la localité la détruit : 151 ms contre 35,5.
 
-| levier | effet |
-|---|---:|
-| stencil 10³ en mémoire de groupe | **×1,20** |
-| hisser `grad[:,cx]`/`ovl[:,cx]` en registres | ×1,00 |
-| quatre chaînes d'accumulation (ILP) | ×1,01 |
-| lectures `csol` par paires alignées | ×0,99 |
-| supprimer l'indirection `perm` | ×1,001 |
-| ranger physiquement les particules | ×1,02 |
-| taille de groupe, 32 → 320 | ×1,006 |
+### Le noyau des forces : la question est fermée, le remède reste à écrire
 
-Et les compteurs matériels **contredisent le code** : `Buffer Read Limiter` à
-99,6 % alors qu'après hissage par le compilateur il ne reste qu'une soixantaine
-de lectures buffer par particule contre mille en mémoire de groupe — laquelle
-est mesurée à 7 %. ALU à 12 %, DRAM à 0,8 GB/s. Soit `Buffer Read Limiter` ne
-compte pas ce que je crois, soit il reste un accès non identifié.
+Ce qui le borne est **les tables `ovl`/`grad`**, et non plus un mystère :
+retirer toute lecture de table le fait passer de **460 à 110 ms**. Les
+compteurs le disaient (Buffer Read 99 %, cache de dernier niveau 93 %, ALU
+14 %, DRAM 2,3 Go/s) ; il manquait de savoir quoi lire.
 
-**Ne pas repartir sur une hypothèse de plus sans instrument neuf** : sur sept
-hypothèses formulées avant mesure dans cette session, six étaient fausses.
+**Aucune réorganisation ne le récupère** : hisser les trois colonnes en
+registres, boucles déroulées, mesure 570 ms — pire que l'original, le fichier
+de registres débordant.
+
+La sortie est écrite et testée mais **pas branchée** :
+[`smoothing_columns`](@ref) donne les dix `overlap` et `gradient` en forme
+fermée, à 5,4e-11 et 4,9e-10 des tables — soit l'erreur *de la table*. Cinq
+`erf` et cinq `exp` par direction suffisent, **90 ms** contre les 350 que
+coûtent les lectures.
+
+**Ce qui bloque** : loger les soixante valeurs calculées. Les deux greffes
+essayées échouent — registres saturés (570 ms), et un `@localmem` de 15 Ko qui
+casse l'inférence du noyau. Il faut restructurer la contraction, probablement
+en **trois passes séparables** n'ayant chacune besoin que de vingt valeurs.
+C'est un autre noyau, pas une retouche. Gain visé : **−260 ms**, ~−24 % du pas.
+
+### Profiler un noyau : une minute, pas une heure
+
+La recette est dans `docs/src/performance.md`. En bref : boucler **le seul
+noyau visé** sur une fraction de ses cellules qui préserve le régime (20 000
+sur 109 054 → 93 %), attacher `xctrace` **100 ms**, parser en flux **par
+position**. Les compteurs sont stables à 1 % ; enregistrer plus ne donne rien
+et coûte des gigaoctets.
+
+⚠️ La boucle doit durer **bien plus** que l'enregistrement. Un premier essai a
+capturé un GPU au repos : les compteurs lisent alors zéro à la médiane avec des
+valeurs absurdes en queue.
 
 ### Impasses mesurées, à ne pas repayer
 
 Détail chiffré dans `docs/src/performance.md`, section « Dead ends, measured ».
-En bref : le tri sur device (×1,17), ranger physiquement le nuage (net −234 ms),
-et ne suivre que les particules changeant de cellule (**38,3 % le font à chaque
-pas** — déplacement moyen 0,356 a₀ pour une maille de 1,219).
 
-Le fait qui les explique toutes : **le parcours trié avait déjà pris toute la
-localité**, et les deux gros noyaux lisent 12 à 24 octets de donnée-particule
-pour 1500 à 4900 flops. Aucune disposition mémoire ne peut les toucher.
+| tentative | mesure |
+|---|---|
+| recouvrir les deux dépôts sur deux files Metal | aucun recouvrement, le GPU les exécute bout à bout |
+| permuter le nuage en deux tableaux séparés | 429,7 ms — deux lignes de cache par particule |
+| lire `cols` au lieu de le recalculer dans les forces | 0 ms, entièrement recouvert |
+| hisser les colonnes en registres | 570 ms, pire que l'original |
+| déséquilibre de charge entre groupes | les cellules peu peuplées portent 0,09 % du travail |
+| tri sur device **des clés** | ×1,17 — mais trier les *particules* gagne |
 
-### Discipline de mesure — quatre corrections imposées par l'auteur
+⚠️ **Deux de ces mesures étaient justes et sont devenues fausses** parce que
+leur prémisse avait bougé : le tri device « à ×1,17 » triait des clés, et le
+placement à deux étages était l'optimum pour un nuage en ordre aléatoire. Avant
+de rouvrir une impasse, vérifier ce qui a changé sous elle.
 
-Chacune a changé un résultat, et chacune est consignée en mémoire persistante.
+### Discipline de mesure
 
-1. **Mesurer sur le vrai nuage**, jamais synthétique : le nombre de particules
-   par cellule occupée (428 contre 28) a inversé deux conclusions.
-2. **Le profileur du pilote** (`Metal.@profile`), pas un découpage en étages
-   fait main : il a montré 61 % d'inactivité GPU et 49,6 ms de broadcasts que
-   mes étages ne comptaient nulle part.
-3. **BenchmarkTools**, avec `samples`/`seconds` bornés — mais sur des tailles
-   **réalistes** : à 128³ le lancement domine et masque l'effet cherché.
-4. **Le REPL persistant de kaimon** (`ex(e=…, ses="…")`), pas un processus
-   julia par mesure. Un protocole **A-B-A** dans un seul processus distingue un
-   vrai écart d'une dérive machine ; sans lui, j'ai pris un profil dégradé par
-   l'état thermique pour une régression de mon code.
+1. **Sur le vrai nuage**, jamais synthétique : les particules par cellule
+   occupée (670 contre 28) ont inversé deux conclusions.
+2. **Un accès mesuré isolément surestime ce que sa suppression rapporte** — le
+   gather de `delta` coûtait 132 ms seul, sa suppression n'en a rendu que 98
+   sur deux accès réunis, le reste étant recouvert par le calcul. Les coûts se
+   mesurent isolément, les gains non.
+3. **A-B-A entrelacé dans un seul processus.** Les comparaisons entre sessions
+   ne valent rien : poisson et champ moyen ont varié d'un facteur 2 et 4 d'une
+   session à l'autre sans qu'on y touche.
+4. **Le REPL persistant de kaimon**, et `run_tests` pour la suite.
 
-Reproduire le profil du pas :
+### Ce qui reste, par ordre de rendement
 
-    julia --project=<env avec Metal> -t auto scripts/profil_pas.jl
+1. **Brancher la forme fermée** (−260 ms), ce qui demande de restructurer la
+   contraction — voir ci-dessus.
+2. **Le dépôt fin**, 199 ms, jamais profilé aux compteurs. Il partage la
+   structure du noyau des forces (un groupe par cellule, stencil en mémoire de
+   groupe) et lit `nodes` : la forme fermée y est plus simple encore, `nodes`
+   étant une gaussienne et non une intégrale.
+3. La copie de retour du tri (~20 ms) et les 11,5 ms de `csolc`.
+4. Le budget énergétique, encore particule par particule sur l'hôte, jamais
+   profilé à 8×10⁷.
