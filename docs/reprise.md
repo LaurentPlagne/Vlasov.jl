@@ -55,6 +55,7 @@ répertoire de travail xmgr.
 
 ## Comment exécuter
 
+    julia --project=gpu -t auto scripts/xenon.jl           # premiere simulation, ~1 min 30
     julia --project=.   -e 'include("test/runtests.jl")'   # 4824 tests, ~80 s
     julia --project=gpu -t auto scripts/profil_pas.jl      # profil d'un pas
     julia --project=gpu -t auto scripts/bench_gpu.jl       # CPU vs GPU
