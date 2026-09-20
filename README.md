@@ -229,6 +229,7 @@ open docs/build/index.html
 |---|---|
 | `scripts/` | the thesis figures, the films, the profiles and the benchmarks |
 | `ref/` | the original Fortran, its data, and the thesis's published curves |
+| [`lpthese2.pdf`](lpthese2.pdf) | the thesis itself — the physics this code is the instrument of |
 | `test/` | 4824 tests — `julia --project=. -e 'include("test/runtests.jl")'` |
 
 ⚠️ The measurement log under `docs/*.md` — as opposed to `docs/src/` — is in
