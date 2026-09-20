@@ -82,6 +82,21 @@ Modules = [Vlasov]
 Pages   = ["gpu.jl"]
 ```
 
+## The device path
+
+The portable kernels, the accelerator that drives them, and the device-side
+mirror of a mesh. Narrated in [The device path](device.md); the kernels are listed
+here because the prose refers to them by name.
+
+`devicemesh.jl` is deliberately not auto-documented: most of what it holds are
+device methods of functions already listed above — `poisson!`, `deposit_cic!` —
+and listing the file again would document them twice.
+
+```@autodocs
+Modules = [Vlasov]
+Pages   = ["accelerator.jl", "kernels.jl"]
+```
+
 ## Poisson
 
 ```@autodocs

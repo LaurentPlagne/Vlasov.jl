@@ -187,20 +187,22 @@ enough that the host's final sum over the partials is free.
 """
 verlet_workitems(npart::Integer) = min(Int(npart), 1 << 20)
 
+"""Particles per bucket the device sort aims for — the floor of the measured
+curve in [`_place_coarse_kernel!`](@ref)."""
+const SORT_BUCKET_LOAD = 30_000
+
 """
     sort_shift(ncell, npart) -> Int32
 
 How many cells the device sort's first stage lumps into one bucket, as a power
 of two.
 
-Chosen so that a bucket holds roughly `SORT_BUCKET_LOAD` particles, which is
-where the measured curve of [`_place_coarse_kernel!`](@ref) bottoms out: fewer
-particles per bucket and the writes scatter, more and the atomics contend. At
-8×10⁷ particles on 111³ cells this returns 9 — 2 672 buckets — which is the
-measured optimum.
+Chosen so that a bucket holds roughly [`SORT_BUCKET_LOAD`](@ref) particles,
+which is where the measured curve of [`_place_coarse_kernel!`](@ref) bottoms
+out: fewer particles per bucket and the writes scatter, more and the atomics
+contend. At 8×10⁷ particles on 111³ cells this returns 9 — 2 672 buckets —
+which is the measured optimum.
 """
-const SORT_BUCKET_LOAD = 30_000
-
 function sort_shift(ncell::Integer, npart::Integer)
     npart <= 0 && return Int32(0)
     target = max(1.0, ncell * SORT_BUCKET_LOAD / npart)

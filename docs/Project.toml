@@ -3,5 +3,8 @@ CairoMakie = "13f3f980-e62b-5c42-98c6-ff1f3baf88f0"
 Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
 Vlasov = "2b4e4dc6-bb65-44a8-9970-a8d90b7ff1a4"
 
+[sources]
+Vlasov = {path = ".."}
+
 [compat]
 Documenter = "1"

@@ -394,6 +394,18 @@ function _boundary_from_coarse!(φ::AbstractArray{T,3}, csol_coarse, coarse_knot
     φ
 end
 
+"""
+    boundary_from_coarse!(φ, mesh, coarse, csol_coarse) -> φ
+
+Fills the fine grid's **faces** by evaluating the coarse level's spline there,
+and zeroes the interior.
+
+This is what nests the two levels: the coarse solve carries the far field, and
+the fine solve inherits it as a Dirichlet condition instead of recomputing a
+multipole expansion of its own. Only the faces are touched — `nface` of them
+against `n³` points — which is why the two-level solve costs barely more than
+the fine one.
+"""
 boundary_from_coarse!(φ::AbstractArray{T,3}, mesh::SplineMesh{3,T},
                       coarse::SplineMesh{3,T},
                       csol_coarse::AbstractArray{T,3}) where {T} =
