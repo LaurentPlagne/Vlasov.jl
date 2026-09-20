@@ -488,6 +488,60 @@ served by the last level cache.
     the limiter but not the line, and an ablation gives the gain but not the
     cause. What closed it was an A-B over *which* reads were staged.
 
+### And about the fine deposition: the ALU, and not the floating-point one
+
+Third kernel, third limiter. On `_deposit_sorted_kernel!`, alone, at 8×10⁷:
+
+| | |
+|---|---:|
+| **ALU Limiter** | **85.9 %** |
+| ALU Utilization | 75.3 % |
+| **F32 Utilization** | **12.8 %** |
+| Compute Occupancy | 37.5 % |
+| Threadgroup Load Limiter | 24.7 % |
+| GPU Last Level Cache Limiter | 5.5 % |
+| Buffer Read Limiter | 1.9 % |
+| MMU Limiter | 1.0 % |
+
+Memory idle, ALU saturated — and floating-point at 12.8 % of it. **Six
+instructions issued for every arithmetic one that matters**: loop control, and
+the address arithmetic of three threadgroup reads per stencil point.
+
+Giving each work-item a whole **column** of the stencil instead of one point
+removes most of both — `vy·vz` once for eight points, eight FMAs, one loop
+iteration where there were eight — and rewriting the staging loop to walk whole
+particles removes four integer divisions per staged value:
+
+| | ms |
+|---|---:|
+| one work-item per point (512 per group) | 196.6 |
+| the same, inner loop unrolled by four | 156.0 |
+| one work-item per column (64 per group) | 134.0 |
+| **and the staging by whole particles** | **58.9** |
+
+A-B-A, the witness read back at 196.5. On the whole step, interleaved: 844.9 →
+705.8 ms, the deposition's own stage 224.1 → 68.7, and the force stage still at
+222.4 against 223.0 — an internal control that nothing else moved. The density
+agrees with the old kernel to 5.2e-07 pointwise, which is atomic ordering.
+
+⚠️ The same pair had read 766.5 → 605.7 a quarter of an hour earlier, before a
+counter run warmed the machine. Absolute step times drift; the interleaved
+*difference* does not.
+
+Measured again after the change, nothing is saturated: ALU 56.3 %, threadgroup
+loads 35.7 %, last level cache 29.7 %, F32 16.6 % — and that is at 3.3× the
+work per unit of time, so the ALU is doing three times as much for two thirds
+of the pressure. A balanced kernel is what "no more easy gains here" looks like.
+
+!!! warning "A shared constant makes an A-B lie"
+    The witness kernel in the scratchpad called `Vlasov._group_of`, which
+    divides by `DEPOSIT_GROUPSIZE`. Porting the change to `src/` moved that
+    constant from 512 to 64, so the witness started addressing the wrong cells,
+    found them outside the grid, and **measured 28 ms** — seven times faster
+    than it really was, with no error anywhere. Then pinning the group but not
+    the stage showed 269. A witness must carry its own copy of every constant
+    it is being compared against.
+
 ### And about the coarse deposition: the MMU
 
 The same recipe on `_deposit_cic_kernel!`, which had never been measured this

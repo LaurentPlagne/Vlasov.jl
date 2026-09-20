@@ -10,10 +10,10 @@ oracle reconstruit, **les figures 5.2 et 5.3 de la thèse sont reproduites**, le
 pas de temps a été accéléré **×3,95** (307,9 → 77,9 ms à 800 000 particules), et
 le tout est documenté dans un site Documenter en anglais. À l'échelle de
 production — 8×10⁷ particules — le pas est passé de 4213 à **1090 ms** sur la
-branche `gpu-portable`, où le nuage vit désormais sur le device. Deux noyaux
-ont ensuite été **divisés par 2** chacun, en A-B-A le même jour : les forces
-502 → 209 ms, le dépôt grossier 198 → 93. Le pas mesuré en fin de journée fait
-**746 ms**.
+branche `gpu-portable`, où le nuage vit désormais sur le device. Les trois
+gros noyaux ont ensuite été repris le même jour, chacun mesuré en A-B-A : les
+forces 502 → 209 ms, le dépôt grossier 198 → 93, le dépôt fin 197 → 59. Le pas
+de fin de journée fait **606 ms**.
 
 ## Par où entrer
 
@@ -191,14 +191,14 @@ sont dans la section [Branche `gpu-portable`](#branche-gpu-portable) ci-dessous.
 Le portage est entièrement en `KernelAbstractions` : les mêmes noyaux servent
 `CPU()`, Metal, et — non validé, faute de matériel — CUDA/ROCm/oneAPI. **Le
 nuage vit sur le device**, et le pas à 8×10⁷ particules sur 222³ est passé de
-4213 ms à **1090**. Deux noyaux ont ensuite été divisés par deux — les forces
-502 → **209** ms, le dépôt grossier 198 → **93**, chacun mesuré en A-B-A — et
-le pas de fin de journée fait **746 ms**.
+4213 ms à **1090**. Les trois gros noyaux ont ensuite été repris — les forces
+502 → **209** ms, le dépôt grossier 198 → **93**, le dépôt fin 197 → **59**,
+chacun mesuré en A-B-A — et le pas de fin de journée fait **606 ms**.
 
-⚠️ Les trois chiffres du pas mesurés ce jour-là (1291, 842, 746) ne se
-déduisent pas les uns des autres par les deux gains : les étages **hôtes**
-dérivent de 50 % au cours de la journée. Ce sont les paires entrelacées qui
-valent, pas la soustraction.
+⚠️ Les chiffres du pas relevés ce jour-là (1291, 842, 746, 606) ne se déduisent
+pas les uns des autres par les gains : les étages **hôtes** dérivent de 50 % au
+cours de la journée. Ce sont les paires entrelacées qui valent, pas la
+soustraction.
 
 ### Où passe le temps aujourd'hui
 
@@ -206,18 +206,19 @@ Profil mesuré en séquence, la somme fermant à 99,9 % :
 
 | étage | ms | % |
 |---|---:|---:|
-| **dépôt fin** | **200** | **27 %** |
-| **forces + projectile** | **196** | **26 %** |
-| `_pack!` + tri (hôte) | 96 | 13 % |
-| dépôt grossier (CIC) | 93 | 12 % |
-| poisson! (2 niveaux) | 59 | 8 % |
-| Verlet (device) | 39 | 5 % |
-| champ moyen | 35 | 5 % |
-| copie de retour du tri | 14 | 2 % |
-| csolc | 13 | 2 % |
+| **forces + projectile** | **198** | **33 %** |
+| `_pack!` + tri (hôte) | 94 | 15 % |
+| dépôt grossier (CIC) | 92 | 15 % |
+| dépôt fin | 62 | 10 % |
+| poisson! (2 niveaux) | 58 | 10 % |
+| Verlet (device) | 41 | 7 % |
+| champ moyen | 34 | 6 % |
+| copie de retour du tri | 13 | 2 % |
+| csolc | 12 | 2 % |
 | le reste | 2 | 0 % |
 
-Pas = **746 ms**, contre 1291 le matin même avec les deux noyaux d'avant.
+Pas = **606 ms**, contre 1291 le matin même avec les trois noyaux d'avant.
+Les forces mènent de nouveau, et de loin.
 
 ⚠️ **Ne pas comparer ce tableau ligne à ligne avec le précédent** (forces 458,
 dépôt fin 199, grossier 194, tri 123, pas à 1090 ms) : il a été mesuré dans une
@@ -311,6 +312,43 @@ l'arithmétique seule et taisait ce qu'elle fait à la contraction autour d'elle
 La fonction reste : elle est exacte, c'est la référence contre laquelle les
 tables sont vérifiées.
 
+### Le dépôt fin : ×3,3 en donnant une colonne à chaque work-item
+
+Aux compteurs, le noyau était **borné par l'ALU à 85,9 %** avec seulement
+**12,8 % de F32** : six instructions émises pour une seule qui compte. La
+mémoire, elle, dormait (lectures 1,9 %, MMU 1 %).
+
+Un work-item possédait **un point** du stencil 8³ ; il possède désormais une
+**colonne** de huit points, et le groupe passe de 512 à 64 :
+
+    w = vy[jj] * vz[kk]                 # une fois pour huit points
+    aᵢ = fma(vx[i], w, aᵢ)   i = 1…8
+
+Neuf opérations flottantes au lieu de vingt-quatre, dix lectures en mémoire de
+groupe au lieu de vingt-quatre, une itération de boucle au lieu de huit.
+
+| | ms |
+|---|---:|
+| un work-item par point (512) | 196,6 |
+| le même, boucle interne déroulée par quatre | 156,0 |
+| un work-item par colonne (64) | 134,0 |
+| **et la mise en scène par particules entières** | **58,9** |
+
+⚠️ **La moitié du gain vient de la mise en scène, pas de la boucle interne.**
+Elle parcourait des *valeurs* et retrouvait la particule et l'axe par quatre
+divisions entières. Inoffensif quand 512 work-items en font six chacun ; ruineux
+quand 64 en font quarante-huit. **Une taille de groupe n'est pas une décision
+locale** : elle retarife tout ce qui se paie par work-item.
+
+⚠️ Et l'étage de mise en scène suit : 128 particules étaient l'optimum à 512
+work-items, **32** le sont à 64 (59,0 ms contre 84,4). Le tableau complet est
+dans la docstring de `DEPOSIT_STAGE`.
+
+Sur le pas entier, A-B entrelacé : **844,9 → 705,8 ms**, l'étage du dépôt
+224,1 → **68,7**, et celui des forces immobile à 222,4 contre 223,0 — témoin
+interne que rien d'autre n'a bougé. La densité s'accorde à 5,2e-07 en ponctuel,
+soit l'ordre des atomiques.
+
 ### Le dépôt grossier : ×2,1 en changeant un pas de 7919 à 509
 
 Le noyau lit le nuage **dans le désordre**, par un pas premier avec le nombre
@@ -387,24 +425,23 @@ de rouvrir une impasse, vérifier ce qui a changé sous elle.
 
 ### Ce qui reste, par ordre de rendement
 
-1. **Le dépôt fin**, 200 ms, **jamais profilé aux compteurs** — le seul gros
-   poste dans ce cas. Il partage la structure du noyau des forces (un groupe
-   par cellule, stencil en mémoire de groupe) et il **met déjà ses valeurs en
-   mémoire de groupe** : la leçon du jour y est appliquée depuis le début, donc
-   il faut chercher ailleurs. Aux compteurs avant toute hypothèse — la recette
-   tient en une minute maintenant, et elle a désigné la MMU là où personne ne
-   l'attendait.
-2. **`_pack!` + tri**, ~96 ms sur l'**hôte** (et c'est le poste le plus
-   instable de la mesure : 96 à 164 ms le même jour). Le tri est déjà sur le
+1. **Le noyau des forces**, 198 ms — un tiers du pas, et de nouveau le premier
+   poste. Il n'a **jamais été repassé aux compteurs depuis la mise en mémoire
+   de groupe** : ceux d'avant (Buffer Read 99 %) décrivent un noyau qui
+   n'existe plus. C'est la première chose à faire, et la leçon du dépôt fin
+   s'y applique peut-être telle quelle — sa contraction 10³ relit
+   `cols[·, cx]` dix fois par point, exactement le motif que le blocage par
+   colonne a supprimé ailleurs.
+2. **`_pack!` + tri**, ~94 ms sur l'**hôte** (et c'est le poste le plus
+   instable de la mesure : 94 à 164 ms le même jour). Le tri est déjà sur le
    device ; c'est l'empaquetage `(k, δ)` en `Float64` qui reste hôte, et il est
    là pour une raison — voir la docstring de `_pack_kd_kernel!`.
-3. Le dépôt grossier, revenu à 93 ms, est toujours borné par la MMU (61,5 %
-   après le changement de pas). Il reste peut-être un facteur là, mais plus
-   petit et plus dur : il faudrait changer la disposition du nuage, pas un
-   paramètre.
-4. Les 13 ms de `csolc`, puis le budget énergétique, encore particule par
+3. Le dépôt grossier, à 92 ms, est toujours borné par la MMU (61,5 % après le
+   changement de pas). Il reste peut-être un facteur là, mais plus petit et
+   plus dur : il faudrait changer la disposition du nuage, pas un paramètre.
+4. Les 12 ms de `csolc`, puis le budget énergétique, encore particule par
    particule sur l'hôte et jamais profilé à 8×10⁷.
 
-⚠️ Ce qui reste à prendre sur le noyau des forces est de l'ordre de 100 ms
-(110 ms sans aucune lecture de table, mesuré par ablation), et il faudrait le
-payer en fidélité. Le dépôt fin vaut mieux.
+⚠️ L'ablation qui donnait 110 ms « sans aucune lecture de table » date du noyau
+d'avant, et ne borne plus rien : le noyau actuel fait 198 ms avec ses lectures
+en mémoire de groupe. Re-mesurer avant de raisonner dessus.

@@ -68,28 +68,38 @@ staging in place — 32: 237.5, **64: 195.9**, 96: 261.1, 128: 211.9 ms.
 """
 const FIELD_GROUPSIZE = 64
 
-"""Work-items per group for [`_deposit_sorted_kernel!`](@ref): the 8³ stencil."""
-const DEPOSIT_GROUPSIZE = 512
+"""Work-items per group for [`_deposit_sorted_kernel!`](@ref): one per **column**
+of the 8³ stencil, each owning the eight points along `x`. It was 512 — one per
+point — until the counters said the kernel was issuing six ALU instructions per
+floating-point one; see the kernel."""
+const DEPOSIT_GROUPSIZE = 64
 
 """Particles staged through threadgroup memory at a time, in the deposition.
 
-128 and not 256, which measures 2 % faster here: the staging buffer holds 24
-values per particle, so 256 would ask 24 KB of threadgroup memory in `Float32`
-and **49 KB in `Float64`** — past what a CUDA block gets by default. 128 costs
-30 KB in `Float64` and keeps the kernel portable."""
-const DEPOSIT_STAGE = 128
+⚠️ **32, and it went down when the group did.** At 512 work-items a stage of
+128 was right: the staging cost was spread over eight times as many work-items,
+and the barriers it costs were amortised over 128 particles. At 64 work-items
+the balance moves the other way — the buffer is 24 values a particle, so 32
+particles cost 3 KB of threadgroup memory against 12, and the occupancy that
+buys outweighs the barriers. Measured at 8×10⁷ particles, the rest of the
+kernel unchanged:
+
+| stage | 8 | 16 | **32** | 48 | 64 | 96 | 128 | 256 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| ms | 93.1 | 65.1 | **59.0** | 59.6 | 67.1 | 74.2 | 84.4 | 151.9 |
+
+It also keeps the kernel portable in `Float64`, where the same buffer doubles:
+6 KB, where 128 particles would have asked 30."""
+const DEPOSIT_STAGE = 32
 
 """Group index of a work-item, from its global index — `@index(Group, Linear)`
 is unavailable in the scope where the deposition needs it."""
 @inline _group_of(gi) = (Int32(gi) - Int32(1)) ÷ Int32(DEPOSIT_GROUPSIZE) + Int32(1)
 
-"""The `(i,j,k)` offset, within the 8³ stencil, owned by work-item `t`."""
-@inline function _stencil_offset(t)
-    t0 = t - Int32(1)
-    ii = t0 % Int32(8) + Int32(1); t0 ÷= Int32(8)
-    jj = t0 % Int32(8) + Int32(1); t0 ÷= Int32(8)
-    (ii, jj, t0 + Int32(1))
-end
+"""The `(j,k)` column of the 8³ stencil owned by work-item `t` — it holds the
+eight points `(1…8, j, k)`."""
+@inline _column_offset(t) = ((t - Int32(1)) % Int32(8) + Int32(1),
+                             (t - Int32(1)) ÷ Int32(8) + Int32(1))
 
 """Corner of the stencil of linear cell `cell`, and whether it fits in an `n³`
 grid."""
@@ -236,9 +246,9 @@ accumulator's type has nothing to do with it: `eltype(ovl)` and a hard-wired
 `Float32` measure the same in every index regime.
 
 The same narrowing is *right* in [`_deposit_sorted_kernel!`](@ref), whose stencil
-offsets already come out of `_stencil_offset` as `Int32`: there everything is
-`Int32` and widening the offsets to `Int` costs 17 % (242.2 → 282.9 ms). So the
-rule is not "prefer one width" but "do not mix them".
+offsets come out of [`_column_offset`](@ref) as `Int32`: there everything is
+`Int32` and widening the offsets to `Int` cost 17 % (242.2 → 282.9 ms) when that
+was measured. So the rule is not "prefer one width" but "do not mix them".
 """
 @inline function contract_tile(tile, cols, ovl, grad, tid, gs, cx)
     T = eltype(ovl)
@@ -468,14 +478,78 @@ atomic per point per particle — is *three times slower than the CPU*: 410
 million contending atomics, which the hardware serialises.
 
 So the particles are ordered by cell first ([`CellSort`](@ref)), one group is
-given one cell, and each of its 512 work-items owns **one** of the 512 points of
-the stencil. Each sweeps every particle of the cell into a register and performs
-a single atomic at the end: one atomic per point per **cell**, a hundred times
-fewer.
+given one cell, and its work-items share out the 512 points of the stencil. Each
+sweeps every particle of the cell into a register and performs a single atomic
+at the end: one atomic per point per **cell**, a hundred times fewer.
 
 The particles of a cell are staged through threadgroup memory
-[`DEPOSIT_STAGE`](@ref) at a time, so that the 512 work-items read each one once
-from global memory rather than 512 times.
+[`DEPOSIT_STAGE`](@ref) at a time, so that the group reads each one once from
+global memory rather than once per work-item.
+
+## One work-item per **column**, not per point
+
+Each work-item owns the eight points `(1…8, j, k)` of one x-column, and the
+group is 64 work-items rather than 512. What that buys is arithmetic:
+
+    w = vy[jj] * vz[kk]                 # once, for eight points
+    aᵢ = fma(vx[i], w, aᵢ)   i = 1…8    # eight fused multiply-adds
+
+against eight work-items each computing `vx*vy*vz` — two multiplies, one add,
+and the loop overhead, eight times over. Nine floating-point operations where
+there were twenty-four, ten threadgroup reads where there were twenty-four, and
+one loop iteration where there were eight.
+
+That the arithmetic was worth attacking is not a guess. Apple's counters, on
+this kernel alone at 8×10⁷ particles:
+
+| | |
+|---|---:|
+| **ALU Limiter** | **85.9 %** |
+| ALU Utilization | 75.3 % |
+| **F32 Utilization** | **12.8 %** |
+| Compute Occupancy | 37.5 % |
+| Threadgroup Load Limiter | 24.7 % |
+| GPU Last Level Cache Limiter | 5.5 % |
+| Buffer Read Limiter | 1.9 % |
+| MMU Limiter | 1.0 % |
+
+Memory was idle and the ALU was saturated — **with six instructions issued for
+every floating-point one**. The work to remove was integer: loop control, and
+the address arithmetic of three reads per point.
+
+| | ms |
+|---|---:|
+| one work-item per point (512) | 196.2 |
+| the same, inner loop unrolled by four | 156.0 |
+| one work-item per column (64) | 134.0 |
+| **and the staging by whole particles** | **59.0** |
+
+A-B-A in one process, the baseline read back at 196.2, and the density agrees
+with the old kernel to 5.2e-07 pointwise and 2.0e-10 on the total — atomic
+ordering, as ever.
+
+⚠️ **Half of that came from the staging loop, not the inner one.** It used to
+walk *values* — `q = e ÷ 24`, `r = e % 24`, `d = r ÷ 8`, `a = r % 8` — four
+integer divisions to find which particle and which axis a value belonged to.
+Harmless when 512 work-items each did six of them; ruinous when 64 work-items
+each do forty-eight. Walking whole particles instead makes every offset a
+constant and costs 134.0 → 59.0 ms. **A group size is not a local decision**:
+it reprices every per-work-item cost in the kernel.
+
+Measured again afterwards, nothing is saturated any more:
+
+| | one point per work-item | **one column** |
+|---|---:|---:|
+| ALU Limiter | 85.9 % | **56.3 %** |
+| F32 Utilization | 12.8 % | 16.6 % |
+| Threadgroup Load Limiter | 24.7 % | 35.7 % |
+| GPU Last Level Cache Limiter | 5.5 % | 29.7 % |
+| Compute Occupancy | 37.5 % | 20.8 % |
+
+⚠️ Those are **rates over the same window**, and the right-hand column does 3.3×
+the work in it: the ALU is not "70 % as busy", it is doing three times the work
+for two thirds of the pressure. The next gain here would have to come from
+three places at once, which is what a balanced kernel looks like.
 
 ⚠️ **What is staged is the 24 tabulated values, not the 3 column indices.**
 
@@ -493,7 +567,7 @@ cycles per iteration** for a body worth three.
 Staging the values instead — `nodes[1:8, c]` for each of the three axes, 24
 floats per particle — leaves the inner loop three *independent* threadgroup
 reads. Measured on the real Thomas-Fermi cloud, 8×10⁷ particles on a 258³ grid,
-428 particles per occupied cell:
+428 particles per occupied cell, when the group was still 512 work-items:
 
 | | ms | cycles/iter |
 |---|---|---|
@@ -517,10 +591,12 @@ It also runs on `CPU()`, where it agrees with `deposit_smoothed!` to 9.3e-16 in
 
 ⚠️ **What crosses a barrier must live in threadgroup memory or be `@uniform`.**
 The CPU backend cuts a kernel into one work-item loop per `@synchronize`, and a
-plain local assigned before a barrier is simply undefined after it. So the
-per-item accumulator sits in `@localmem` rather than in a register, and the
-stencil offsets are **recomputed** on each side of a barrier — they are three
-integer divisions, cheaper than the machinery needed to carry them across.
+plain local assigned before a barrier is simply undefined after it. So the eight
+accumulators sit in `@localmem` rather than in registers, and the column offsets
+are **recomputed** on each side of a barrier — two integer divisions, cheaper
+than the machinery needed to carry them across. Within one chunk, where no
+barrier intervenes, the accumulators are ordinary registers and reach threadgroup
+memory once.
 """
 @kernel unsafe_indices = true function _deposit_sorted_kernel!(
         ρ, @Const(nodes), @Const(cols), @Const(cellids),
@@ -528,10 +604,10 @@ integer divisions, cheaper than the machinery needed to carry them across.
     @uniform E = eltype(ρ)
     t = @index(Local, Linear)
 
-    shared = @localmem Int32 (3 * DEPOSIT_STAGE,)
     "The 8 tabulated values of each axis, for each staged particle."
     vals = @localmem eltype(ρ) (24 * DEPOSIT_STAGE,)
-    accum = @localmem eltype(ρ) (DEPOSIT_GROUPSIZE,)
+    "Eight accumulators per work-item: the x-column it owns."
+    accum = @localmem eltype(ρ) (8 * DEPOSIT_GROUPSIZE,)
     # ⚠️ The cursor lives in threadgroup memory, not in a `@uniform`. The loop
     # below straddles barriers, so KernelAbstractions emits it in the group's
     # scope — where a plain local is out of reach, and where the CPU backend
@@ -545,7 +621,9 @@ integer divisions, cheaper than the machinery needed to carry them across.
     # a call that has no method.
     gi = @index(Global, Linear)
     @inbounds begin
-        accum[t] = zero(E)
+        for c in Int32(0):Int32(7)
+            accum[c*Int32(DEPOSIT_GROUPSIZE)+t] = zero(E)
+        end
         if t == Int32(1)
             g = _group_of(gi)
             state[1] = bounds[g]
@@ -555,64 +633,71 @@ integer divisions, cheaper than the machinery needed to carry them across.
     @synchronize
 
     while state[1] < state[2]
+        # One **whole particle** per work-item, its 24 values written at
+        # constant offsets. Walking individual values instead — and deriving
+        # the particle and the axis from the value's index — costs four integer
+        # divisions apiece, which is what the group of 64 cannot afford: see
+        # the docstring.
+        #
+        # The sort lives here, in the staging: one gather of 12 bytes per
+        # particle per cell, overlapped with the inner loop below. The cloud is
+        # sorted, so the slot *is* the particle and the three reads are
+        # contiguous instead of gathered through `perm`.
         @inbounds begin
             cursor = state[1]
             chunk = min(Int32(DEPOSIT_STAGE), state[2] - cursor)
-            if t <= chunk
-                # The sort lives here, in the staging: one gather of 12 bytes
-                # per particle per cell, overlapped with the inner loop below —
-                # rather than a pass of its own over every particle.
-                # Sorted cloud: the slot *is* the particle, so these three
-                # reads are contiguous instead of gathered through `perm`.
-                q = cursor + t
-                b = Int32(3) * (t - Int32(1))
-                shared[b+Int32(1)] = cols[1, q]
-                shared[b+Int32(2)] = cols[2, q]
-                shared[b+Int32(3)] = cols[3, q]
-            end
-        end
-        @synchronize
-
-        # The gather into `nodes` happens **here**, once per value, instead of
-        # inside the inner loop where it happened once per value per work-item.
-        # The 24·chunk values are spread over the whole group, each work-item
-        # taking every `DEPOSIT_GROUPSIZE`-th of them.
-        @inbounds begin
-            chunk = min(Int32(DEPOSIT_STAGE), state[2] - state[1])
-            nval = Int32(24) * chunk
-            e = t
-            while e <= nval
-                e0 = e - Int32(1)
-                q = e0 ÷ Int32(24)          # particle within the stage
-                r = e0 % Int32(24)
-                d = r ÷ Int32(8)            # axis, 0-based
-                a = r % Int32(8) + Int32(1) # which of the 8 stencil nodes
-                vals[e] = nodes[a, shared[Int32(3)*q+d+Int32(1)]]
-                e += Int32(DEPOSIT_GROUPSIZE)
+            p = t
+            while p <= chunk
+                q = cursor + p
+                c1 = cols[1, q]; c2 = cols[2, q]; c3 = cols[3, q]
+                b = Int32(24) * (p - Int32(1))
+                for a in Int32(1):Int32(8)
+                    vals[b+a] = nodes[a, c1]
+                    vals[b+Int32(8)+a] = nodes[a, c2]
+                    vals[b+Int32(16)+a] = nodes[a, c3]
+                end
+                p += Int32(DEPOSIT_GROUPSIZE)
             end
         end
         @synchronize
 
         # Recomputed on this side of the barrier rather than carried across it:
-        # three integer divisions are cheaper than the machinery that would be
+        # two integer divisions are cheaper than the machinery that would be
         # needed to make them survive.
         gj = @index(Global, Linear)
         @inbounds begin
             chunk = min(Int32(DEPOSIT_STAGE), state[2] - state[1])
-            ii, jj, kk = _stencil_offset(t)
+            jj, kk = _column_offset(t)
             g = _group_of(gj)
             _, _, _, inside = _cell_base(cellids[g], nk, Int32(size(ρ, 1)))
             if inside
-                s = zero(E)
-                # ⚠️ The offsets into `vals` are computed in `Int`, not `Int32`
-                # — see [`contract_tile`](@ref), where the same narrowing on the
-                # same kind of access cost a factor of 3.8. `ii`, `jj` and `kk`
-                # stay `Int32`: they index nothing here, they are added.
+                # ⚠️ Eight accumulators in **registers**, flushed to threadgroup
+                # memory once per chunk rather than once per particle: they may
+                # not cross the barrier below, but nothing says they have to.
+                a1 = zero(E); a2 = zero(E); a3 = zero(E); a4 = zero(E)
+                a5 = zero(E); a6 = zero(E); a7 = zero(E); a8 = zero(E)
+                bj = Int32(8) + jj; bk = Int32(16) + kk
                 for q in Int32(1):chunk
                     b = Int32(24) * (q - Int32(1))
-                    s += vals[b+ii] * vals[b+Int32(8)+jj] * vals[b+Int32(16)+kk]
+                    w = vals[b+bj] * vals[b+bk]     # once for the eight points
+                    a1 = fma(vals[b+Int32(1)], w, a1)
+                    a2 = fma(vals[b+Int32(2)], w, a2)
+                    a3 = fma(vals[b+Int32(3)], w, a3)
+                    a4 = fma(vals[b+Int32(4)], w, a4)
+                    a5 = fma(vals[b+Int32(5)], w, a5)
+                    a6 = fma(vals[b+Int32(6)], w, a6)
+                    a7 = fma(vals[b+Int32(7)], w, a7)
+                    a8 = fma(vals[b+Int32(8)], w, a8)
                 end
-                accum[t] += s
+                G = Int32(DEPOSIT_GROUPSIZE)
+                accum[t] += a1
+                accum[G+t] += a2
+                accum[Int32(2)*G+t] += a3
+                accum[Int32(3)*G+t] += a4
+                accum[Int32(4)*G+t] += a5
+                accum[Int32(5)*G+t] += a6
+                accum[Int32(6)*G+t] += a7
+                accum[Int32(7)*G+t] += a8
             end
         end
         @synchronize
@@ -625,11 +710,17 @@ integer divisions, cheaper than the machinery needed to carry them across.
 
     gk = @index(Global, Linear)
     @inbounds begin
-        ii, jj, kk = _stencil_offset(t)
+        jj, kk = _column_offset(t)
         g = _group_of(gk)
         bx, by, bz, inside = _cell_base(cellids[g], nk, Int32(size(ρ, 1)))
-        if inside && accum[t] != zero(E)
-            Atomix.@atomic ρ[bx+ii, by+jj, bz+kk] += accum[t]
+        if inside
+            # Eight atomics at consecutive addresses, where there were eight
+            # work-items with one each. Same count, one issuer.
+            for c in Int32(0):Int32(7)
+                v = accum[c*Int32(DEPOSIT_GROUPSIZE)+t]
+                v == zero(E) && continue
+                Atomix.@atomic ρ[bx+c+Int32(1), by+jj, bz+kk] += v
+            end
         end
     end
 end
