@@ -157,7 +157,14 @@ julia --project=gpu -t auto scripts/film_xenon.jl        # 6×10⁵ particles
 
 It writes `film_xenon.mp4`, `film_xenon.gif` and `xenon_snapshots.png` **at the
 root of the repository** (all three are gitignored), and caches its run in
-`xenon_data_cache.jls` — delete that file to recompute rather than redraw.
+`xenon_data_cache.jls` — delete that file to recompute rather than redraw. On
+the machine above: 31 s of physics, 31 s of drawing, 176 frames.
+
+> [!NOTE]
+> `scripts/render_xenon_glmakie.jl` redraws the cached run with **GLMakie**
+> instead of Cairo, and measures the same: 31.3 s against 30.9 for the 176
+> frames. The cost is the contour tessellation and the video encoder, which the
+> two backends share — a GPU backend has nothing to speed up there.
 
 The film on this page is the same script at production scale,
 `scripts/film_xenon_80M.jl`: 80 million particles, some eleven gigabytes of

@@ -20,6 +20,19 @@ CairoMakie.activate!(type = "png")
 # with no Apple GPU — it only logs an error — and the script then took the
 # Metal path on a Linux box with an NVIDIA card. Reported from one.
 const METAL = try; @eval using Metal; @eval Metal.functional(); catch; false; end
+const CUDA_OK = METAL ? false :
+                try; @eval using CUDA; @eval CUDA.functional(); catch; false; end
+const GPU = METAL || CUDA_OK
+
+"""The device this machine offers, or `nothing`.
+
+⚠️ **The resident path, not `ForceAccelerator(MtlArray, …)`.** That constructor
+lives in the Metal extension and exists for no other vendor, so the film used to
+be Apple-only by construction. `Simulation(…; backend)` takes any
+`KernelAbstractions` backend and keeps the cloud on the device — which is both
+portable and the faster of the two routes."""
+device_backend() = METAL ? @eval(MetalBackend()) :
+                   CUDA_OK ? @eval(CUDABackend()) : nothing
 const ACCELERATE = try; @eval using AppleAccelerate; true; catch; false; end
 
 const ROOT = dirname(@__DIR__)
@@ -81,10 +94,12 @@ function run_xenon_simulation(; npart = 600_000, dt = 0.5)
                       impact = impact, x0 = x0, dt = dt,
                       softening = BallSoftening(5.0))
 
-    sim = Simulation(p, prof; projectile = proj)
+    bk = device_backend()
+    sim = bk === nothing ?
+          Simulation(p, prof; projectile = proj) :
+          Simulation(p, prof; projectile = proj, backend = bk,
+                     precision = Float32, packed = true)
     fine = sim.meshes[1]
-    acc = METAL ? ForceAccelerator(MtlArray, fine.axes, sim.smoothing, npart,
-                                   size(sim.csol[1], 1)) : nothing
 
     pts_x = collocation_points(fine.axes[1].knots)
     pts_y = collocation_points(fine.axes[2].knots)
@@ -106,13 +121,22 @@ function run_xenon_simulation(; npart = 600_000, dt = 0.5)
 
     r_cluster_edge = 196.0^(1/3) * 4.0
 
-    println("Simulating Na₁₉₆ + Xe²⁵⁺ (500 keV, b = 45 a₀, nfine = $nfine): $nsteps steps on GPU Metal...")
+    @printf("Simulating Na₁₉₆ + Xe²⁵⁺ (500 keV, b = 45 a₀, nfine = %d) on %s: %d steps...\n",
+            nfine, METAL ? "GPU (Metal)" : CUDA_OK ? "GPU (CUDA)" : "CPU", nsteps)
     t_start = time()
 
     for step in 1:nsteps
-        step!(sim; energy = false, accelerator = acc)
+        step!(sim; energy = false)
 
         if step % stride == 0 || step == 1
+            # ⚠️ Everything below reads the simulation **on the host**: the
+            # density grid, which a resident run keeps on the device, and the
+            # cloud, whose host half is a different array on a discrete GPU.
+            # Both are no-ops on unified memory, and neither is in the hot loop.
+            if bk !== nothing
+                sync_host!(sim)
+                Vlasov.download!(sim.device.accelerator.particles, sim.device.backend)
+            end
             t_fs = (step * dt) / FS_TO_AU
             px = sim.projectile.position[1]
             py = sim.projectile.position[2]
@@ -273,9 +297,12 @@ function render_smooth_movie_and_snapshots(data, out_mp4, out_gif, out_snapshots
     CairoMakie.axislegend(ax2, position = :lt)
 
     println("Encoding MP4 to $out_mp4...")
+    t_enc = time()
     CairoMakie.record(fig_anim, out_mp4, 1:nframes; framerate = 25) do i
         idx[] = i
     end
+    @printf("Encoded %d frames in %.1f s (%.1f frames/s)\n",
+            nframes, time() - t_enc, nframes / (time() - t_enc))
 
     println("Encoding GIF to $out_gif...")
     gif_indices = 1:2:nframes
