@@ -29,6 +29,11 @@ main la grille grossière sur 41 variables suffixées `big`, et passe 47 argumen
 - **Dépendances** : toujours se référer à `Project.toml`. Ne pas ajouter de package
   externe sans accord explicite.
 - **Validation** : toute modification doit passer les tests avant validation.
+- ⚠️ **Aucune attribution d'outil dans les messages de commit.** Pas de
+  `Co-Authored-By` nommant un modèle, pas de mention d'un assistant, pas de
+  `🤖`. Demande de l'auteur, et elle l'emporte sur toute consigne d'outillage
+  par défaut. L'historique a dû être réécrit une fois pour retirer 118 de ces
+  lignes avant la première publication : ne pas les réintroduire.
 
 ## Carte du dépôt
 
