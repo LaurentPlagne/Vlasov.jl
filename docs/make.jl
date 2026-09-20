@@ -22,6 +22,7 @@ makedocs(
         "Home" => "index.md",
         "Principles" => "principles.md",
         "Architecture" => "architecture.md",
+        "The device path" => "device.md",
         "TBSCM Poisson Solver" => "solver_tbscm.md",
         "Numerics" => "numerics.md",
         "Chapter 4: Stability & Entropy" => "chapter4_stability.md",

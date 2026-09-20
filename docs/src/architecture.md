@@ -16,14 +16,20 @@ them in dependency order, and that order is the architecture.
   ┌─────────────────────────────────────────────────────────────┐
   │  simulation.jl      SimulationParameters, Simulation, run!   │  driver
   ├─────────────────────────────────────────────────────────────┤
+  │  accelerator.jl     DeviceAccelerator, the step's device half│
+  │  devicemesh.jl      DeviceMesh — the mesh's tables, mirrored │  device
+  │  kernels.jl         every portable kernel (KernelAbstractions)│
+  │  gpu.jl             ForceAccelerator — the interface alone   │
+  ├─────────────────────────────────────────────────────────────┤
   │  projectile.jl      Projectile, Softening, capture!          │
   │  energy.jl          EnergyBudget, interaction_energy         │  physics
+  │  entropy.jl         occupation numbers, phase-space entropy  │
   │  initial.jl         PhaseSpaceProfile, sample_thomas_fermi   │
   │  meanfield.jl       Jellium, xc_potential                    │
   ├─────────────────────────────────────────────────────────────┤
   │  fields.jl          GaussianSmoothing, forces!               │
-  │  particles.jl       ParticleCloud, step! (Verlet)            │  particles
-  │  sorting.jl         CellSort         gpu.jl  ForceAccelerator│
+  │  particles.jl       ParticleCloud, PackedPositions, Verlet   │  particles
+  │  sorting.jl         CellSort                                 │
   ├─────────────────────────────────────────────────────────────┤
   │  poisson.jl         Multipole, poisson!, boundary_from_coarse│
   │  deposition.jl      deposit!, spline_coefficients!           │  grid
@@ -37,23 +43,31 @@ them in dependency order, and that order is the architecture.
   └─────────────────────────────────────────────────────────────┘
 ```
 
+The device layer sits **above** the physics rather than beside it: it reuses
+every function below by supplying different arrays, and nothing below it knows
+it exists. [The device path](device.md) explains how that is arranged.
+
 | File | Lines | What lives there |
 |---|---:|---|
 | `splines.jl` | 384 | Hermite basis, axes, knot ↔ collocation conversions, `LocateTable` |
 | `collocation.jl` | 94 | `S`, `S′`, `S″` as banded matrices; the 1D operator |
 | `tensorsolver.jl` | 189 | Fast diagonalisation, mode-`d` products |
 | `mesh.jl` | 148 | Tensor meshes, nesting |
-| `deposition.jl` | 217 | Trilinear deposit, values ↔ coefficients, charge integral |
-| `poisson.jl` | 343 | Multipoles, boundary lifting, the two-level solve |
-| `particles.jl` | 142 | The cloud, Verlet, leapfrog priming |
-| `fields.jl` | 417 | Smoothing tables, field and potential evaluation, `forces!` |
-| `sorting.jl` | 135 | Parallel counting sort by cell |
+| `deposition.jl` | 252 | Trilinear deposit, values ↔ coefficients, charge integral |
+| `poisson.jl` | 424 | Multipoles, boundary lifting, the two-level solve |
+| `particles.jl` | 361 | The cloud, both position forms, Verlet, leapfrog priming |
+| `fields.jl` | 425 | Smoothing tables, field and potential evaluation, `forces!` |
+| `sorting.jl` | 172 | Parallel counting sort by cell |
+| `kernels.jl` | 946 | Every portable kernel, for any `KernelAbstractions` backend |
+| `accelerator.jl` | 632 | `DeviceAccelerator`, its buffers, the device sort |
+| `devicemesh.jl` | 178 | The mesh's tables, mirrored device-side |
 | `gpu.jl` | 62 | Accelerator interface (implementations live in extensions) |
-| `meanfield.jl` | 134 | Jellium, LDA exchange-correlation |
-| `initial.jl` | 253 | Thomas–Fermi sampling, both profile kinds |
+| `meanfield.jl` | 147 | Jellium, LDA exchange-correlation |
+| `initial.jl` | 257 | Thomas–Fermi sampling, both profile kinds |
 | `energy.jl` | 120 | The energy budget |
-| `projectile.jl` | 296 | The ion, its softening, capture |
-| `simulation.jl` | 293 | Parameters, state, the time loop |
+| `entropy.jl` | 196 | Occupation numbers and phase-space entropy |
+| `projectile.jl` | 304 | The ion, its softening, capture |
+| `simulation.jl` | 518 | Parameters, state, the time loop, both step paths |
 | `threading.jl` | 113 | Contiguous chunking, BLAS configuration |
 | `random.jl` | 90 | `ran2`, reproduced bit for bit |
 
@@ -135,11 +149,23 @@ carries `P = Nothing` or `P = Projectile{T,S}`. The isolated-cluster loop then
 compiles [`advance_projectile!`](@ref) down to nothing and pays zero for a
 feature it does not use.
 
-**Positions are `Vector{NTuple{3,T}}`.** That is exactly the memory layout of
-the Fortran's `(3, npartmax)` column-major arrays, which made the port a
-transliteration. It has a cost — the GPU path must repack into a `3×N` matrix at
-every call — and a component-wise layout would remove both that repacking and a
-vectorisation obstacle on the CPU. Noted, not done.
+**Positions have two forms, and the container is a type parameter.** The
+reference form is `Vector{NTuple{3,T}}` — exactly the memory layout of the
+Fortran's `(3, npartmax)` column-major arrays, which made the port a
+transliteration. The second is [`PackedPositions`](@ref): cell index and offset,
+the form the kernels consume, which reconstructs the absolute triple on access
+so that every reader of `cloud.positions` works either way.
+
+The cloud is therefore parameterised by its container, and the forces carry
+their own — they are a vector field, not positions. Which form a simulation uses
+is one keyword:
+
+```julia
+Simulation(p, profile; packed = true, backend = MetalBackend(), precision = Float32)
+```
+
+The reason for the second form is numerical before it is architectural, and it
+is set out in [The device path](device.md).
 
 **Out-of-domain particles are counted, not wrapped.** Every deposition returns
 how many particles it refused. A few hundred out of 800 000 is healthy; 98 %
@@ -165,9 +191,14 @@ Vlasov.configure_blas!()      # keep BLAS from fighting the particle loops
 
 ## The GPU path
 
-`gpu.jl` declares [`ForceAccelerator`](@ref) and nothing else. Implementations
-live in a **package extension**, `ext/VlasovMetalExt.jl`, loaded only when the
-user loads `Metal`:
+Summarised here; [The device path](device.md) is the full account.
+
+The kernels are written once, in `KernelAbstractions`, and run on `CPU()`, on
+Metal, and in principle on CUDA/ROCm/oneAPI — untested, for want of the
+hardware. `gpu.jl` declares [`ForceAccelerator`](@ref) and nothing else.
+Implementations live in a **package extension**, `ext/VlasovMetalExt.jl`, loaded
+only when the user loads `Metal`, and what remains in it is one thing: where the
+buffers live.
 
 ```
    Project.toml
