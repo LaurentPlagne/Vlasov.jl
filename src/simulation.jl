@@ -185,19 +185,31 @@ function Simulation(p::SimulationParameters{T}, profile::PhaseSpaceProfile{T};
     # A packed cloud on a device borrows the accelerator's own `(k, δ)` staging
     # rather than allocating a second copy of it: those buffers are exactly what
     # the kernels read, so the cloud writing into them is what makes the packing
-    # step disappear instead of merely moving.
+    # step disappear instead of merely moving. Its forces come from there too —
+    # see [`StagedForces`](@ref).
     cloud = if packed
         store = device === nothing ? nothing : device.accelerator.particles.host
-        packed_cloud(fine, positions, weight, precision; storage = store)
+        force = device === nothing ? nothing : device.accelerator.force.host
+        packed_cloud(fine, positions, weight, precision; storage = store,
+                     forces = force)
     else
         ParticleCloud(positions, weight)
     end
+    # ⚠️ **No host scatter buffers once there is a device.** They are one `n³`
+    # array *per thread and per level* — 1.6 GB at 222³ on ten threads, the
+    # second largest block in the whole run — and [`update_forces!`](@ref)
+    # takes the device path whenever `sim.device` exists, packed or not, so not
+    # one of them is ever written. Asking for zero slots is what says so; the
+    # host deposition then fails loudly rather than quietly allocating them
+    # again.
+    slots = device === nothing ? Threads.nthreads() : 0
     sim = Simulation(p, meshes, smoothing, Jellium(p.nions),
                      cloud, projectile,
                      (zeros(T, n, n, n), zeros(T, n, n, n)),
                      (zeros(T, n, n, n), zeros(T, n, n, n)),
                      (zeros(T, n, n, n), zeros(T, n, n, n)),
-                     (ScatterBuffers(meshes[1]), ScatterBuffers(meshes[2])),
+                     (ScatterBuffers(meshes[1]; nslots = slots),
+                      ScatterBuffers(meshes[2]; nslots = slots)),
                      device)
     prime_leapfrog!(sim, positions, momenta; consistent = consistent_startup)
 end
@@ -235,11 +247,10 @@ function prime_leapfrog!(sim::Simulation{T}, positions, momenta;
     copyto!(sim.cloud.positions, half)
     copyto!(sim.cloud.previous, positions)
     update_forces!(sim; advance = false)
-    # ⚠️ The priming reads the forces **on the host**, and a resident cloud is
-    # precisely the case where `forces!` no longer stages them there. This runs
-    # once, outside the time loop, so it costs what the loop stopped paying.
-    _stage_forces!(sim)
-
+    # ⚠️ The priming reads the forces **on the host**. A resident cloud reads
+    # them where the kernel left them — its `forces` is a view of the
+    # accelerator's buffer ([`StagedForces`](@ref)) — so there is nothing to
+    # stage here, and nothing to allocate for the staging.
     coef = consistent ? dt^2 / 4M : dt / M
     @inbounds for i in eachindex(sim.cloud.positions)
         q0 = sim.cloud.previous[i]      # q(0), carried through the sort
@@ -350,25 +361,6 @@ function step!(sim::Simulation{T}; energy::Bool = true,
     total = interaction_energy(sim.cloud, sim.meshes[1].axes, sim.φ[1],
                                sim.meshes[2].axes, sim.φ[2], sim.smoothing)
     energy_budget(sim.jellium, diag.kinetic, hartree, total, diag.escaped)
-end
-
-"""Copies the device forces into `cloud.forces` for the host code that still
-reads them there. A no-op unless the cloud is resident, since every other path
-already fills them."""
-_stage_forces!(sim::Simulation) = nothing
-
-function _stage_forces!(sim::Simulation{T,P,<:PackedPositions}) where {T<:AbstractFloat,P}
-    dev = sim.device
-    dev === nothing && return nothing
-    acc = dev.accelerator
-    _cloud_is_resident(sim.cloud, acc) || return nothing
-    f = acc.force.host
-    tforeach(length(sim.cloud)) do slice
-        @inbounds for i in slice
-            sim.cloud.forces[i] = (T(f[1, i]), T(f[2, i]), T(f[3, i]))
-        end
-    end
-    nothing
 end
 
 """

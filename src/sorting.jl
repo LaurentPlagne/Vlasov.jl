@@ -45,20 +45,52 @@ struct CellSort{T<:AbstractFloat}
 end
 
 function CellSort(axis::SplineAxis{T}, npart::Integer,
-                  nthreads::Integer = Threads.nthreads()) where {T}
+                  nthreads::Integer = Threads.nthreads();
+                  buffers::Bool = true) where {T}
     k = axis.knots
     h = (k[end] - k[1]) / (length(k) - 1)
     maximum(abs, diff(k) .- h) <= 1e-9 * abs(h) ||
         throw(ArgumentError("`CellSort` assumes a uniform grid"))
     nk = length(k)
     ncell = nk^3
+    # `buffers = false` keeps only what a *device* sort fills — `occupied` and
+    # `bounds`, its cell list. What it leaves out is what the host sort would
+    # need: two vectors of `npart` and two of `ncell` per thread, which at
+    # 8×10⁷ particles on 111³ cells is 720 MB nobody reads on that route.
+    # [`_ensure_buffers!`](@ref) gives them back if a host sort does turn up.
+    nt = buffers ? nthreads : 0
+    cells(n) = [Vector{Int32}(undef, ncell) for _ in 1:n]
     CellSort{T}(k[1], h, nk,
-                Vector{Int32}(undef, npart),
-                [Vector{Int32}(undef, ncell) for _ in 1:nthreads],
-                Vector{Int32}(undef, ncell),
-                [Vector{Int32}(undef, ncell) for _ in 1:nthreads],
-                Vector{Int32}(undef, npart),
+                Vector{Int32}(undef, buffers ? npart : 0),
+                cells(nt),
+                Vector{Int32}(undef, buffers ? ncell : 0),
+                cells(nt),
+                Vector{Int32}(undef, buffers ? npart : 0),
                 Int32[], Int32[], chunks(npart, nthreads))
+end
+
+"""
+    _ensure_buffers!(cs, npart) -> cs
+
+Gives back the buffers [`CellSort`](@ref) was built without, the first time a
+host sort actually asks for them.
+
+⚠️ **Not `buffers = false` as a promise, only as a default.** An accelerator
+built for a device-resident cloud can still be handed a host-held one — the
+suite does exactly that, to compare the two force paths on the same tables —
+and the host sort must then work rather than complain. Growing the vectors in
+place is enough: `CellSort` is immutable, its fields are not.
+"""
+function _ensure_buffers!(cs::CellSort, npart::Integer)
+    isempty(cs.perm) || return cs
+    ncell = cs.nknots^3
+    resize!(cs.keys, npart)
+    resize!(cs.perm, npart)
+    resize!(cs.total, ncell)
+    for v in (cs.partial, cs.offsets), _ in (length(v)+1):length(cs.chunks)
+        push!(v, Vector{Int32}(undef, ncell))
+    end
+    cs
 end
 
 """Linear cell index of a point — the nearest knot, as in deposition. Computed,
@@ -129,6 +161,7 @@ cells, ten times fewer than the rest — the cluster fills only a fraction of th
 box.
 """
 function cellsort!(cs::CellSort, positions)
+    _ensure_buffers!(cs, length(positions))
     length(positions) == length(cs.perm) ||
         throw(DimensionMismatch("sort sized for $(length(cs.perm)) particles"))
 

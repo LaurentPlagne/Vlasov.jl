@@ -71,6 +71,11 @@ function scatter!(kernel, ρ::Array{T,3}, mesh::SplineMesh{3,T},
         return nout
     end
 
+    isempty(buffers.slots) &&
+        throw(ArgumentError("these `ScatterBuffers` hold no slots: they belong " *
+                            "to a simulation that deposits on its device, and " *
+                            "were not allocated. Pass `buffers = nothing` to " *
+                            "deposit on the host."))
     parts = chunks(length(positions), min(length(buffers.slots), Threads.nthreads()))
     nouts = zeros(Int, length(parts))
     Threads.@threads for c in eachindex(parts)

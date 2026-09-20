@@ -299,12 +299,18 @@ function DeviceAccelerator(backend, ::Type{E}, fine::NTuple{3,SplineAxis{T}},
         # `Ref` in the hot path.
         dual_buffer(backend, Int32, length(fine[1].knots)^3),
         dual_buffer(backend, Int32, length(fine[1].knots)^3 + 1),
+        # ⚠️ `perm` stays allocated even for a packed accelerator, where the
+        # device sort *moves* the particles and produces no permutation. It is
+        # 4 bytes a particle that the resident path never reads — and the one
+        # buffer of the host route that cannot be grown on demand, being a
+        # device array rather than a `Vector`. The rest of that route's working
+        # set is allocated on first use; see [`CellSort`](@ref).
         dual_buffer(backend, Int32, npart),    # perm
         dual_buffer(backend, Int32, 1),        # nout
         dual_buffer(backend, Int32, npart),    # outlist
         dual_buffer(backend, Int32, 1),        # outcount
         dev(sm.overlap), dev(sm.gradient), dev(sm.nodes),
-        CellSort(fine[1], npart),
+        CellSort(fine[1], npart; buffers = !packed),
         T(fine[1].knots[1]), T(h), E(sm.spacing), Int32(sm.nbdt),
         Int32(size(sm.overlap, 2)), Int(npart))
 end

@@ -250,7 +250,48 @@ function step!(cloud::ParticleCloud{T}, dt::T; rcmax::Real = T(Inf)) where {T}
 end
 
 """
-    packed_cloud(axis, positions, weight, E; buffers = nothing) -> ParticleCloud
+    StagedForces{T}(data) <: AbstractVector{NTuple{3,T}}
+
+The accelerator's `3×N` force buffer, seen as the cloud's vector of triples.
+
+A cloud that lives on the accelerator has **no forces of its own**: the kernel
+writes them into `acc.force`, and the host reads them there. The separate
+`Vector{NTuple{3,T}}` a cloud otherwise carries was written once, by the
+priming, and read by nobody afterwards — 24 bytes a particle, 1.8 GB at 8×10⁷,
+for one loop outside the time loop.
+
+⚠️ It wraps the buffer's **host** half, which is where `forces!` leaves the
+values: the same bytes as the device's on unified memory, and a real copy
+filled by `download!` on a discrete GPU. Either way the reader is right.
+
+The conversion `E → T` happens per access, which is what a host loop over a
+resident cloud costs — and that loop is the priming, not the step.
+
+⚠️ It is a **view of a fixed buffer**, not a container: nothing that would
+change its length ([`capture!`](@ref) removing captured particles, say) can act
+on it. A resident cloud does not shrink.
+"""
+struct StagedForces{T,E,M<:AbstractMatrix{E}} <: AbstractVector{NTuple{3,T}}
+    data::M
+end
+
+StagedForces{T}(m::AbstractMatrix{E}) where {T,E} = StagedForces{T,E,typeof(m)}(m)
+
+Base.size(f::StagedForces) = (size(f.data, 2),)
+Base.IndexStyle(::Type{<:StagedForces}) = IndexLinear()
+
+@inline Base.getindex(f::StagedForces{T}, i::Int) where {T} =
+    @inbounds (T(f.data[1, i]), T(f.data[2, i]), T(f.data[3, i]))
+
+@inline function Base.setindex!(f::StagedForces{T,E}, v, i::Int) where {T,E}
+    @inbounds f.data[1, i] = E(v[1])
+    @inbounds f.data[2, i] = E(v[2])
+    @inbounds f.data[3, i] = E(v[3])
+    v
+end
+
+"""
+    packed_cloud(axis, positions, weight, E; storage = nothing, forces = nothing)
 
 A cloud whose positions are held as `(k, δ)` on `axis`, offsets in `E`.
 
@@ -261,10 +302,12 @@ origin — [`prime_leapfrog!`](@ref) is what fills it.
 `storage` hands in the [`PackedParticle`](@ref) array the cloud is to live in,
 which is how the accelerator's own buffer becomes the cloud's storage: the step
 then has nothing to pack and nothing to copy, and the kernels find the cloud
-where they run.
+where they run. `forces` does the same for the forces — see
+[`StagedForces`](@ref); without it the cloud allocates its own.
 """
 function packed_cloud(axis::SplineAxis{T}, positions, weight::T,
-                      ::Type{E} = Float32; storage = nothing) where {T,E}
+                      ::Type{E} = Float32; storage = nothing,
+                      forces = nothing) where {T,E}
     k = axis.knots
     h = (k[end] - k[1]) / (length(k) - 1)
     n = length(positions)
@@ -279,7 +322,14 @@ function packed_cloud(axis::SplineAxis{T}, positions, weight::T,
     O = PackedPositions(data, T(k[1]), T(h), true)
     copyto!(P, positions)
     fill!(O, ntuple(_ -> zero(T), 3))
-    ParticleCloud(P, O, fill(ntuple(_ -> zero(T), 3), n), weight)
+    f = if forces === nothing
+        fill(ntuple(_ -> zero(T), 3), n)
+    else
+        size(forces, 2) == n ||
+            throw(DimensionMismatch("force buffer sized for $(size(forces, 2)) particles"))
+        StagedForces{T}(forces)
+    end
+    ParticleCloud(P, O, f, weight)
 end
 
 """One component of the packed Verlet: the new cell, the new offset, and the

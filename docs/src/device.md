@@ -130,6 +130,84 @@ Before the cloud was held as `(k, δ)`, two more arrows crossed that boundary on
 `Float64` triples to produce `(k, δ)`, and the forces were converted back to
 host `Float64` for the integrator. Both are gone.
 
+## What it costs in memory
+
+Counted on the live objects — every array a `Simulation` can reach, each once,
+the `host` and `device` halves of a [`DualBuffer`](@ref) being the same bytes on
+unified memory:
+
+```
+M       ≈ 128·N + 249·n³ + 24·(n/2)³ + 25 MB      everything
+M_device ≈ 128·N +  91·n³ + 20 MB                 the device's share of it
+```
+
+| | model | measured |
+|---|---:|---:|
+| 8×10⁷ particles on 222³ | 12.13 GiB | **12.15 GiB** |
+| 4×10⁶ particles on 90³ | 688 MiB | **686 MiB** |
+| the device's share of the first | 10.44 GiB | 10.47 GiB — and Metal's own `currentAllocatedSize` says 10.49 |
+
+The per-particle term is **exactly 128 bytes at both sizes**, and it is the term
+that matters: the only one that grows with the physics one wants more of.
+
+| buffer | bytes | |
+|---|---:|---|
+| `particles` | 48 | `(k, δ)` now **and** previous, one record |
+| `sorted` | 48 | where the sort places them before they are copied back |
+| `force` | 12 | three `Float32` — and the cloud's `forces` is a view of it |
+| `cols` | 12 | the three table columns, for the deposition |
+| `perm` | 4 | the host route's permutation |
+| `outlist` | 4 | out-of-stencil particles, sized for the worst case |
+
+### What was there before, and was read by nobody
+
+Measuring this is what found it. The same run held **160 bytes a particle and
+1.6 GB of host scatter buffers** — 4.1 GiB out of 16.3, a quarter of the
+footprint — allocated for host routines the device path had replaced, and that
+nobody had thought to stop allocating:
+
+| | at 8×10⁷ | why it was dead |
+|---|---:|---|
+| `cloud.forces`, `Float64` triples | 1.79 GiB | written once by the priming, read by nobody afterwards |
+| `ScatterBuffers`, one `n³` array per thread and per level | 1.63 GiB | the host deposition's, and the deposit is on the device |
+| `CellSort.keys`, `.perm`, and its per-thread counters | 0.71 GiB | the host sort's, and the sort is on the device |
+
+⚠️ **None of them is deleted** — each is allocated where the path that reads it
+can still be taken. The scatter buffers go when there is a device at all; the
+cloud's forces become a view of `acc.force` ([`StagedForces`](@ref)) only when
+the cloud is resident; the sort's buffers come back on first use
+([`_ensure_buffers!`](@ref)), because an accelerator built for a resident cloud
+can still be handed a host-held one — the suite does exactly that, to compare
+the two force paths on one set of tables. `perm` alone stays allocated: it is a
+device array, and a device array cannot be grown on demand.
+
+### What fits on a machine
+
+Same formula, a gigabyte left to the runtime:
+
+| | at 222³ | bound by |
+|---|---:|---|
+| Apple Silicon, 64 GB unified | **≈ 340 M** | the **construction**, not the run |
+| the same, steady state alone | 465 M | |
+| a 16 GB card, `Float32` | 118 M | 128 B a particle on the card |
+| a 16 GB card with hardware `Float64` | 75 M | `PackedParticle{Float64}` is 72 bytes |
+| an 8 GB card, `Float32` | 55 M | |
+
+⚠️ **The peak is at construction, not in the loop.** `sample_thomas_fermi`
+builds positions *and* momenta as host `Float64` triples before the packed cloud
+exists — 48 bytes a particle on top of the 128 — so a run that would fit
+comfortably can fail to start. Sampling in slices would remove it, and nothing
+else in the step comes near that peak.
+
+⚠️ The card rows are **arithmetic, not measurement**: there is no such card
+here, and the portable kernels have never run on one. On a discrete card both
+halves of every [`DualBuffer`](@ref) are real allocations, so 118 M particles
+would also want some 19 GB of *host* memory beside the 16 on the card.
+
+⚠️ And refining the grid costs twice. At a fixed 64 GB, 444³ leaves about
+180 M particles — 220 per occupied cell against 730 today. The mesh gets finer
+while the density's sampling noise rises by 80 %.
+
 ## The cloud, and why it changed shape
 
 This is the part worth reading slowly, because the reason is numerical rather

@@ -227,6 +227,31 @@ a donné 95,7 et 164,3 ms le même jour sans qu'on y touche. Seules valent les
 comparaisons **entrelacées dans un seul processus** ; les deux qui comptent
 aujourd'hui sont plus bas (forces 502 → 209, dépôt grossier 198 → 93).
 
+### L'empreinte mémoire, et jusqu'où on peut monter
+
+Mesurée sur les objets vivants, à deux échelles : **128 octets par particule**,
+au byte près aux deux tailles, plus 249 par point de grille (les deux niveaux
+réunis).
+
+    M ≈ 128·N + 249·n³ + 24·(n/2)³ + 25 Mo        modèle
+    12,13 Gio prédits, 12,15 mesurés à 8×10⁷ sur 222³
+    688 Mio prédits, 686 mesurés à 4×10⁶ sur 90³
+
+Le détail, les plafonds par machine (≈340 M de particules sur un Mac 64 Go,
+118 M sur une carte 16 Go) et les trois réserves sont dans
+[`docs/src/device.md`](src/device.md), section « What it costs in memory ».
+
+⚠️ **Le pic est à la construction, pas dans la boucle** : `sample_thomas_fermi`
+alloue positions *et* impulsions en triplets `Float64` hôtes avant que le nuage
+empaqueté n'existe — 48 octets de plus par particule. C'est lui qui borne, pas
+le pas.
+
+⚠️ **Un quart de l'empreinte était morte** avant la mesure du 20/09 : 4,1 Gio
+sur 16,3, alloués pour des routines hôtes que le chemin device avait remplacées
+(les forces du nuage, les tampons de dépôt par fil, les tampons du tri hôte).
+Rien ne les avait suivies quand le travail a déménagé sur le device. **À
+vérifier après chaque déménagement de ce genre.**
+
 ### Ce qui a changé, et qu'il faut savoir avant de toucher au code
 
 **Le nuage est un tableau de [`PackedParticle`](@ref)**, 48 octets `isbits` :
