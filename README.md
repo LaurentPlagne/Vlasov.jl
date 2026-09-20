@@ -127,13 +127,27 @@ The script names the path it took on its first line, and that line is worth
 reading: a missing package is otherwise silent, and the same command then
 measures something else.
 
-On an NVIDIA card there is an environment ready, and a script that will pick it
-up on its own:
+On an NVIDIA card, the same script picks the backend up on its own — from the
+environment that carries CUDA instead of Metal:
 
 ```sh
 julia --project=cuda -e 'using Pkg; Pkg.instantiate()'
 julia --project=cuda -t auto scripts/xenon.jl
 ```
+
+### The environments, since there are four
+
+`gpu/` is **the Apple one** — the name predates the port being portable. Each
+carries what its path needs and nothing more, so that instantiating one does not
+drag in another's vendor stack:
+
+| | carries | for |
+|---|---|---|
+| `--project=.` | the package alone | the processor, anywhere |
+| `--project=gpu` | Metal, AppleAccelerate, CairoMakie, GLMakie | Apple Silicon |
+| `--project=cuda` | CUDA, CairoMakie, GLMakie | an NVIDIA card |
+| `--project=viz` | GLMakie | redrawing a cached run |
+| `--project=docs` | Documenter, CairoMakie | building the site |
 
 > [!WARNING]
 > **CUDA, ROCm and oneAPI have never been run here** — there is no such card on
@@ -152,8 +166,12 @@ The run above prints numbers; the film at the top of this page is a separate
 script, because rendering needs a plotting stack the simulation itself does not:
 
 ```sh
-julia --project=gpu -t auto scripts/film_xenon.jl        # 6×10⁵ particles
+julia --project=gpu  -t auto scripts/film_xenon.jl       # Apple Silicon
+julia --project=cuda -t auto scripts/film_xenon.jl       # an NVIDIA card
+julia --project=.    -t auto scripts/film_xenon.jl       # no GPU at all
 ```
+
+Six hundred thousand particles, whichever path answers.
 
 It writes `film_xenon.mp4`, `film_xenon.gif` and `xenon_snapshots.png` **at the
 root of the repository** (all three are gitignored), and caches its run in
