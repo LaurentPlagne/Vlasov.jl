@@ -328,6 +328,16 @@ arithmetic and silent about what it does to the contraction around it.
 The function stays, tested and exact: it is the reference the tables are
 checked against. It is simply not how this kernel should be fed.
 
+**Confining the coarse deposition's scatter to a window: 154.8 ms against
+89.7.** Once the counters had shown that kernel to be bound on address
+translation, the obvious cure was to bound the working set — scatter inside a
+window of consecutive particles and sweep the windows in order, so the pages in
+flight are `W·48` bytes whatever the cloud. It is worse at every window size
+tried: 154.8 ms for 4×10⁶ particles, 707 for 2.6×10⁵, 1009 for 6.5×10⁴, against
+89.7 for the plain stride. Inside a window the same coarse cells come round
+again and again, and the atomic collisions the scatter exists to break come
+back with them. The stride *is* the compromise, and its only knob is its length.
+
 **Overlapping the two depositions on separate Metal queues: no gain.** The fine
 and coarse depositions write disjoint grids and looked like the one item on the
 list that didn't depend on understanding a kernel — just stop draining the
@@ -404,8 +414,7 @@ nothing is bought by recording longer:
 xcrun xctrace record --template "Metal System Trace" \
      --instrument "Metal GPU Counters" --no-prompt \
      --output t.trace --attach <pid> --time-limit 100ms
-xcrun xctrace export --input t.trace \
-     --xpath '/trace-toc/run[@number="1"]/data/table[@schema="gpu-counter-value"]'
+scripts/compteurs_gpu.py t.trace
 ```
 
 **4. Parse by position, in a stream.** The table's columns are `timestamp,
@@ -413,7 +422,16 @@ counter-id, value, accelerator-id, sample-index, ring-buffer-index`, and the
 export **compresses by reference**: a value appears once as `id="N"` and every
 repetition is `ref="N"`. Resolve each row's elements in order, keeping a
 dictionary of definitions — matching on names instead gives plausible-looking
-nonsense, such as occupancies above 100 %.
+nonsense, such as occupancies above 100 %. And the counter is an integer id
+whose name lives in a second table, `gpu-counter-info`.
+
+`scripts/compteurs_gpu.py` does all of that, exports included — it was written
+twice from this paragraph before being kept.
+
+⚠️ Its medians are **rates over the recorded window**, not per unit of work.
+Two runs of the same kernel at different speeds do not compare line by line: a
+rate that holds while the kernel does twice the work means the absolute
+activity doubled.
 
 `--attach`, never `--launch`: recording from launch captures the 50 s of
 construction, which at 8×10⁷ particles is 50 million samples and a **7.6 GB**
@@ -469,6 +487,38 @@ served by the last level cache.
     Two lessons, both already on this page and both paid again: a counter names
     the limiter but not the line, and an ablation gives the gain but not the
     cause. What closed it was an A-B over *which* reads were staged.
+
+### And about the coarse deposition: the MMU
+
+The same recipe on `_deposit_cic_kernel!`, which had never been measured this
+way, named a limiter nobody had proposed:
+
+| | stride 7919 | **stride 509** |
+|---|---:|---:|
+| **MMU Limiter** | **70.7 %** | **61.5 %** |
+| GPU Last Level Cache Limiter | 55.9 % | 52.0 % |
+| Buffer Read Limiter | 40.7 % | 15.0 % |
+| MMU TLB Miss Rate | 15.1 % | 11.9 % |
+| Compute Occupancy | 26.7 % | 26.6 % |
+| ALU Limiter | 7.4 % | 14.4 % |
+| Buffer Write Limiter | 0.0 % | 0.0 % |
+| GPU Read Bandwidth | 42.3 GB/s | 35.8 GB/s |
+
+Not the atomics — the write limiter reads zero — but **address translation**.
+The kernel walks the cloud by a stride coprime with the particle count, to keep
+its eight atomics off the same coarse cell; at a stride of 7919 that is 380 KB
+between neighbouring work-items, so each one reads its 48-byte particle from a
+page of its own.
+
+Shortening the stride to 509 measures **195.0 → 89.7 ms** at 8×10⁷ particles,
+and the step 841.9 → 745.9 (A-B-A). The two columns above are the same window
+of wall clock, and the right-hand one does 2.2× the work in it: per particle it
+reads 2.6× fewer bytes. [`scatter_stride`](@ref) carries the whole curve, which
+is flat-bottomed between 251 and 1009 and steep on both sides — too near and
+the atomics collide, too far and the MMU does.
+
+The kernel is still MMU-bound at 61.5 %, so there may be more; it would take a
+different layout of the cloud, not another constant.
 
 Ablation — remove a piece, measure again — gives the *gain* but never the
 *cause*. It is what found that the projectile's tree reduction was worth 227 ms

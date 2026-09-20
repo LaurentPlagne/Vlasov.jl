@@ -194,12 +194,50 @@ A stride that walks all of `1:npart` while breaking the sorted order.
 
 For [`_deposit_cic_kernel!`](@ref), whose atomics collide when consecutive
 particles share a coarse cell — which is precisely what sorting by fine cell
-arranges. Any value coprime with `npart` visits every particle exactly once;
-this one is a prime large enough to scatter neighbours far apart, stepped until
-it is coprime.
+arranges. Any value coprime with `npart` visits every particle exactly once.
+
+⚠️ **It is a balance, not a maximum.** The first version took the biggest prime
+to hand, on the reasoning that the further apart the neighbours, the fewer the
+collisions. That is true and it is not the only cost: a work-item then reads
+its 48-byte particle from its own page, and the kernel becomes bound on address
+translation. Apple's counters on it, at 8×10⁷ particles:
+
+| | stride 7919 | **stride 509** |
+|---|---:|---:|
+| **MMU Limiter** | **70.7 %** | **61.5 %** |
+| GPU Last Level Cache Limiter | 55.9 % | 52.0 % |
+| Buffer Read Limiter | 40.7 % | 15.0 % |
+| MMU TLB Miss Rate | 15.1 % | 11.9 % |
+| ALU Limiter | 7.4 % | 14.4 % |
+| GPU Read Bandwidth | 42.3 GB/s | 35.8 GB/s |
+
+Same window of wall clock, and the right-hand column does **2.2× the work** in
+it: the kernel measures 195.0 ms against 89.7 (A-B-A at 8×10⁷, `ndrange` over
+the whole cloud). Per particle it reads 2.6× fewer bytes and walks the page
+tables less, because neighbouring work-items now share a cache line and a page.
+
+The curve is flat-bottomed, and the two ends of it are steep:
+
+| stride | 1 | 31 | 127 | 251 | **383** | **509** | 1009 | 2003 | 7919 | 65537 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| ms (2×10⁷ work-items) | 1148 | 132 | 42.7 | 24.2 | **22.9** | 23.4 | 26.5 | 34.5 | 48.9 | 57.9 |
+
+509 and not 383: on a tenth of the cloud — 8×10⁶ particles, the film's scale —
+the basin shifts a little and 509 is its floor (11.5 ms against 13.5), while at
+8×10⁷ it costs 2.6 % over 383. The basin sits where it does because of the
+*cloud*, not the array: a run of particles sharing a coarse cell is some
+thousand long here, and the stride has to be a fraction of that — far enough to
+spread a SIMD group over several cells, near enough to stay in a handful of
+pages.
+
+⚠️ Confining the scatter to a window of consecutive particles — the obvious way
+to bound the translation cost — is **much worse**: 154.8 ms for a window of
+4×10⁶ particles and 1009 ms for one of 65 536, against 89.7 for the plain
+stride. Inside a small window the same coarse cells come round again and again,
+and the collisions the stride exists to break come straight back.
 """
 function scatter_stride(npart::Integer)
-    s = 7919
+    s = 509
     while gcd(s, npart) != 1
         s += 2
     end

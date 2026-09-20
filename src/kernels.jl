@@ -1027,6 +1027,13 @@ sort it requires costs 356 ms on its own — see `_update_forces_resident!`.
     # The sorted order is what makes the fine deposition fast (one group per
     # cell, one atomic each) and what makes this one slow. Reading by a stride
     # costs locality on the load and buys back a factor of 25 on the atomics.
+    #
+    # ⚠️ **How far apart is a measured question, not "as far as possible".**
+    # The stride that ran 193 ms was the biggest prime to hand, and at that
+    # distance every work-item reads from its own page: the kernel is then
+    # bound on address translation, not on the atomics. The right distance is
+    # some hundreds — 89.7 ms — and [`scatter_stride`](@ref) carries the
+    # counters and the whole curve.
     i = Int32((Int64(t - 1) * Int64(stride)) % Int64(npart)) + Int32(1)
     @inbounds if t <= npart
         E = eltype(ρ)
