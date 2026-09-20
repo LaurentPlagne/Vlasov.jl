@@ -156,6 +156,26 @@ transliteration. The second is [`PackedPositions`](@ref): cell index and offset,
 the form the kernels consume, which reconstructs the absolute triple on access
 so that every reader of `cloud.positions` works either way.
 
+```mermaid
+flowchart TB
+    readers["every reader of cloud.positions<br/><i>interaction_energy, projectile_forces!,<br/>entropy, the diagnostics</i>"]
+    iface["AbstractVector{NTuple{3,T}}<br/><b>one interface, two storages</b>"]
+    plain["Vector{NTuple{3,T}}<br/><i>the Fortran's (3, npartmax) layout</i><br/>the reference path"]
+    packed["PackedPositions<br/><i>knode::Int32 · delta::E</i><br/>rebuilt on getindex"]
+    kern["the kernels<br/><i>they want (k, δ) and nothing else</i>"]
+
+    readers --> iface
+    iface --> plain
+    iface --> packed
+    packed -->|"already in the right form —<br/>no packing step at all"| kern
+    plain -.->|"packed each step, in Float64"| kern
+
+    classDef ref fill:#2f2a3d,stroke:#7a6b9a,color:#efe8f5
+    classDef dev fill:#1f3a4d,stroke:#4a90a4,color:#e8f1f5
+    class plain ref
+    class packed,kern dev
+```
+
 The cloud is therefore parameterised by its container, and the forces carry
 their own — they are a vector field, not positions. Which form a simulation uses
 is one keyword:

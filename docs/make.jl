@@ -1,5 +1,9 @@
 using Documenter, Vlasov
 
+# Renders ```mermaid blocks. The diagrams stay plain text in the sources, so
+# they diff like code rather than like an image.
+using DocumenterMermaid
+
 # The figures are generated at build time by the `@example` blocks; CairoMakie
 # is loaded there, not here. Loading it once up front only warms the cache.
 using CairoMakie

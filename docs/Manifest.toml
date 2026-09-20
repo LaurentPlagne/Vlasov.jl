@@ -2,7 +2,7 @@
 
 julia_version = "1.13.0"
 manifest_format = "2.1"
-project_hash = "388d127ee2372800ecb3f71d8668b2dab32c57ec"
+project_hash = "50606e08946fb33849d496cc483a8ee3d9a29677"
 
 [[deps.ANSIColoredPrinters]]
 git-tree-sha1 = "574baf8110975760d391c710b6341da1afa48d8c"
@@ -428,6 +428,13 @@ git-tree-sha1 = "191e6bef0cf32cac3a3913cd4787d851715254c2"
 registries = "General"
 uuid = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
 version = "1.19.0"
+
+[[deps.DocumenterMermaid]]
+deps = ["Documenter", "MarkdownAST"]
+git-tree-sha1 = "c0c408289a505a15496d914b19204e272a7e8b0f"
+registries = "General"
+uuid = "a078cd44-4d9c-4618-b545-3ab9d77f9177"
+version = "0.2.0"
 
 [[deps.Downloads]]
 deps = ["ArgTools", "FileWatching", "LibCURL", "NetworkOptions"]
