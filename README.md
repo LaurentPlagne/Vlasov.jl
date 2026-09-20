@@ -2,9 +2,9 @@
 
 The electron dynamics of a sodium cluster struck by a fast ion, by the
 pseudo-particle (Vlasov) method — a Julia port of the Fortran 77 code written
-for Laurent Plagne's PhD thesis, prepared at **CEA-Grenoble** under the
-supervision of **Claude Guet** (1996–1998). The original still compiles and
-runs, and serves as the oracle the port is kept honest against.
+for L. Plagne's PhD thesis, prepared at **CEA-Grenoble** under the supervision
+of **C. Guet** (1996–1998). The original still compiles and runs, and serves as
+the oracle the port is kept honest against.
 
 ![Na₁₉₆ + Xe²⁵⁺, 500 keV, b = 45 a₀](docs/src/assets/film_xenon_80M.gif)
 

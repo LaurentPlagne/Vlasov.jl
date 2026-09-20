@@ -4,8 +4,8 @@ CurrentModule = Vlasov
 
 # The original code
 
-Forty-three Fortran versions survive in the archive of the thesis — Laurent
-Plagne's, prepared at CEA-Grenoble under the supervision of Claude Guet — across
+Forty-three Fortran versions survive in the archive of the thesis —
+L. Plagne's, prepared at CEA-Grenoble under the supervision of C. Guet — across
 parallel directories, with no version control and, in places, no reliable
 timestamps.
 Knowing *which* of them the port targets is not archaeology for its own sake: the

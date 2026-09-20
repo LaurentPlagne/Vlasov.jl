@@ -34,10 +34,9 @@ main la grille grossière sur 41 variables suffixées `big`, et passe 47 argumen
   `🤖`. Demande de l'auteur, et elle l'emporte sur toute consigne d'outillage
   par défaut. L'historique a dû être réécrit une fois pour retirer 118 de ces
   lignes avant la première publication : ne pas les réintroduire.
-  - ⚠️ **« Claude Guet » est le directeur de thèse**, une personne, et son nom a
-    sa place dans le README et la doc. La règle ci-dessus vise l'attribution
-    d'outil, pas le prénom : un nettoyage qui grepperait « claude » effacerait
-    quelqu'un.
+  - Le directeur de thèse est crédité **« C. Guet »** dans le README et la doc,
+    à l'initiale comme « L. Plagne ». C'est la convention académique, et elle
+    évite au passage que son prénom croise la règle ci-dessus.
 
 ## Carte du dépôt
 
