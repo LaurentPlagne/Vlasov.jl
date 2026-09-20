@@ -10,7 +10,10 @@ using Vlasov
 using Printf
 using Serialization
 
-const METAL = try; @eval using Metal; true; catch; false; end
+# ⚠️ `functional()`, not merely `using`: `using Metal` SUCCEEDS on a machine
+# with no Apple GPU — it only logs an error — and the script then took the
+# Metal path on a Linux box with an NVIDIA card. Reported from one.
+const METAL = try; @eval using Metal; @eval Metal.functional(); catch; false; end
 const ACCELERATE = try; @eval using AppleAccelerate; true; catch; false; end
 const MAKIE = try; @eval using CairoMakie; CairoMakie.activate!(type = "png"); true; catch; false; end
 

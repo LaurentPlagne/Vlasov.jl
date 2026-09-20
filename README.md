@@ -146,6 +146,23 @@ julia --project=cuda -t auto scripts/xenon.jl
 > discrete card would have read a stale copy of the cloud. All three are fixed
 > above. Please report the next one.
 
+### Making the film
+
+The run above prints numbers; the film at the top of this page is a separate
+script, because rendering needs a plotting stack the simulation itself does not:
+
+```sh
+julia --project=gpu -t auto scripts/film_xenon.jl        # 6×10⁵ particles
+```
+
+It writes `film_xenon.mp4`, `film_xenon.gif` and `xenon_snapshots.png` **at the
+root of the repository** (all three are gitignored), and caches its run in
+`xenon_data_cache.jls` — delete that file to recompute rather than redraw.
+
+The film on this page is the same script at production scale,
+`scripts/film_xenon_80M.jl`: 80 million particles, some eleven gigabytes of
+device memory, and it copies its gif into `docs/src/assets/`.
+
 ---
 
 ## How long, and how big

@@ -48,7 +48,10 @@ using ProgressMeter
 # `AppleAccelerate` is enough — its `__init__` forwards BLAS and LAPACK
 # correctly, which `BLAS.lbt_forward` on its own does not.
 const ACCELERATE = try; @eval using AppleAccelerate; true; catch; false; end
-const METAL = try; @eval using Metal; true; catch; false; end
+# ⚠️ `functional()`, not merely `using`: `using Metal` SUCCEEDS on a machine
+# with no Apple GPU — it only logs an error — and the script then took the
+# Metal path on a Linux box with an NVIDIA card. Reported from one.
+const METAL = try; @eval using Metal; @eval Metal.functional(); catch; false; end
 
 const ROOT = dirname(@__DIR__)
 const KEV = 1000 / HARTREE_TO_EV

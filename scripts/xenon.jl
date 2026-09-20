@@ -47,11 +47,18 @@ using Printf
 # ⚠️ Each probe is wrapped in its own `@eval`: inside one, the `using` and the
 # call would be lowered together, against a world where the package's name is
 # not yet bound.
-const METAL = try; @eval using Metal; @eval Metal.functional(); catch; false; end
-const CUDA_OK = METAL ? false :
-                try; @eval using CUDA; @eval CUDA.functional(); catch; false; end
+const METAL_HERE = try; @eval using Metal; true; catch; false; end
+const METAL = METAL_HERE && try; @eval Metal.functional(); catch; false; end
+const CUDA_HERE = METAL ? false : try; @eval using CUDA; true; catch; false; end
+const CUDA_OK = CUDA_HERE && try; @eval CUDA.functional(); catch; false; end
 const GPU = METAL || CUDA_OK
-const ACCELERATE = try; @eval using AppleAccelerate; true; catch; false; end
+
+# ⚠️ `Sys.isapple()` first, for the same reason as `functional()` above:
+# `using AppleAccelerate` succeeds on Linux, and the path line then claimed a
+# framework that does not exist on that machine. It was only a label, but the
+# whole point of that line is to be believed.
+const ACCELERATE = Sys.isapple() &&
+                   try; @eval using AppleAccelerate; true; catch; false; end
 
 const ROOT = dirname(@__DIR__)
 const FS = 41.34137          # atomic units of time per femtosecond
@@ -94,6 +101,15 @@ function main(argv)
             Threads.nthreads())
     @printf("Na196 + Xe25+, 500 keV, b = 45 a0 | %.1e particles, grid %d^3\n",
             npart, 2nfine + 2)
+    # A GPU package that is installed but has nothing to talk to is the most
+    # confusing way to end up on the CPU — say so rather than let the wall
+    # clock be the only clue.
+    if !GPU && METAL_HERE
+        println("  (Metal is installed but finds no Apple GPU here; " *
+                "for an NVIDIA card, run with --project=cuda)")
+    elseif !GPU && CUDA_HERE
+        println("  (CUDA is installed but finds no device here)")
+    end
     flush(stdout)
 
     p = SimulationParameters(nfine = nfine, ninner = g.ninner, nouter = g.nouter,
