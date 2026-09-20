@@ -29,6 +29,13 @@ main la grille grossière sur 41 variables suffixées `big`, et passe 47 argumen
 - **Dépendances** : toujours se référer à `Project.toml`. Ne pas ajouter de package
   externe sans accord explicite.
 - **Validation** : toute modification doit passer les tests avant validation.
+- ⚠️ **Messages de commit en anglais.** Le dépôt est public et tout ce qui
+  s'adresse au lecteur extérieur — le code, ses commentaires, `docs/src/`, le
+  README — est en anglais ; l'historique l'est donc aussi. Demandé par l'auteur
+  le 21/09/2026. Restent en français le carnet de laboratoire (`docs/*.md`) et
+  ce fichier, qui s'adressent à celui qui travaille ici.
+  ⚠️ Les 122 commits antérieurs sont en français : **ne pas réécrire
+  l'historique pour cela**, la règle vaut pour la suite.
 - ⚠️ **Aucune attribution d'outil dans les messages de commit.** Pas de
   `Co-Authored-By` nommant un modèle, pas de mention d'un assistant, pas de
   `🤖`. Demande de l'auteur, et elle l'emporte sur toute consigne d'outillage
