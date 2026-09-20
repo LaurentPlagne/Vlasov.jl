@@ -204,18 +204,27 @@ soustraction.
 
 Profil mesuré en séquence, la somme fermant à 99,9 % :
 
-| étage | ms | % |
-|---|---:|---:|
-| **forces + projectile** | **198** | **33 %** |
-| `_pack!` + tri (hôte) | 94 | 15 % |
-| dépôt grossier (CIC) | 92 | 15 % |
-| dépôt fin | 62 | 10 % |
-| poisson! (2 niveaux) | 58 | 10 % |
-| Verlet (device) | 41 | 7 % |
-| champ moyen | 34 | 6 % |
-| copie de retour du tri | 13 | 2 % |
-| csolc | 12 | 2 % |
-| le reste | 2 | 0 % |
+| étage | ms | % | où |
+|---|---:|---:|---|
+| **forces + projectile** | **198** | **33 %** | device |
+| tri (histogramme + placement) | 94 | 15 % | device |
+| dépôt grossier (CIC) | 92 | 15 % | device |
+| dépôt fin | 62 | 10 % | device |
+| poisson! (2 niveaux) | 58 | 10 % | device |
+| Verlet | 41 | 7 % | device |
+| champ moyen | 34 | 6 % | device |
+| `_fill_columns!` | 13 | 2 % | device |
+| csolc | 12 | 2 % | device |
+| le reste | 2 | 0 % | |
+
+⚠️ **Les étiquettes de ce tableau ont été vérifiées le 20/09**, une à une : la
+ligne à 94 ms avait été notée « `_pack!` + tri (hôte) » et c'est faux. Sur le
+chemin résident `_pack!` ne fait **rien** — le nuage est déjà à sa place — et
+les 94 ms sont l'histogramme et le placement, deux noyaux. Ce qui reste
+vraiment sur l'hôte à chaque pas se compte en millisecondes : le balayage des
+mailles (0,9 ms sur 1,37 M de mailles), la relecture des coefficients
+grossiers (5,4 ms, 44 Mo) et l'avance du projectile (0,0). Le bilan
+énergétique, lui, est un pas sur dix.
 
 Pas = **606 ms**, contre 1291 le matin même avec les trois noyaux d'avant.
 Les forces mènent de nouveau, et de loin.
@@ -432,10 +441,11 @@ de rouvrir une impasse, vérifier ce qui a changé sous elle.
    s'y applique peut-être telle quelle — sa contraction 10³ relit
    `cols[·, cx]` dix fois par point, exactement le motif que le blocage par
    colonne a supprimé ailleurs.
-2. **`_pack!` + tri**, ~94 ms sur l'**hôte** (et c'est le poste le plus
-   instable de la mesure : 94 à 164 ms le même jour). Le tri est déjà sur le
-   device ; c'est l'empaquetage `(k, δ)` en `Float64` qui reste hôte, et il est
-   là pour une raison — voir la docstring de `_pack_kd_kernel!`.
+2. **Le tri**, ~94 ms, **sur le device** : l'histogramme puis le placement.
+   Le placement est le gros morceau, et `docs/src/device.md` explique pourquoi
+   il tient en une passe. L'empaquetage `(k, δ)` en `Float64`, lui, ne coûte
+   plus rien sur ce chemin — le nuage est déjà dans la forme que les noyaux
+   lisent.
 3. Le dépôt grossier, à 92 ms, est toujours borné par la MMU (61,5 % après le
    changement de pas). Il reste peut-être un facteur là, mais plus petit et
    plus dur : il faudrait changer la disposition du nuage, pas un paramètre.
