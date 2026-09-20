@@ -343,8 +343,19 @@ storage, nothing is copied either: `positions.data` **is**
 per particle to produce them, it now spends on nothing at all.
 """
 function _pack!(acc::DeviceAccelerator{E,T}, positions::PackedPositions) where {E,T}
-    positions.data === acc.particles.host || copyto!(acc.particles.host, positions.data)
-    upload!(acc.particles)
+    resident = positions.data === acc.particles.host
+    # ⚠️ **A resident cloud is not uploaded.** The device copy is the one the
+    # sort reorders and the integrator advances; the host half is a *view* of it
+    # on unified memory and a stale mirror everywhere else. Uploading here — as
+    # this did, every step — copies that mirror back over the device and undoes
+    # both, which on Apple is invisible (the two are the same bytes) and on a
+    # discrete GPU freezes the cloud at the state the priming left. Reported
+    # from a CUDA machine: capture flat at 0.000 for the whole crossing, and a
+    # step time that never varied because nothing ever moved.
+    #
+    # The host writes the cloud exactly once, in [`prime_leapfrog!`](@ref),
+    # which uploads it itself.
+    resident || (copyto!(acc.particles.host, positions.data); upload!(acc.particles))
     _sort_and_list!(acc, positions)
 end
 
@@ -642,6 +653,20 @@ function forces!(cloud::ParticleCloud{T}, acc::DeviceAccelerator{E,T},
     # device's own order. A resident cloud is in that order too; a host-held one
     # is not, and its particle is `perm[slot]`.
     n = Int(acc.outcount.host[1])
+    # ⚠️ The loop below reads the cloud **on the host**, at slots the device
+    # chose — and on a discrete GPU the host half is a stale mirror that the
+    # sort has since reordered. Refresh exactly those records rather than the
+    # whole cloud: `n` is a few hundred out of 8×10⁷, and downloading it all to
+    # fix them would cost gigabytes over PCIe. Free and skipped where the two
+    # halves are the same bytes.
+    #
+    # ⚠️ Reasoned, not measured: there is no discrete GPU here.
+    if resident && !acc.particles.shared
+        @inbounds for s in 1:n
+            slot = Int(acc.outlist.host[s])
+            copyto!(acc.particles.host, slot, acc.particles.device, slot, 1)
+        end
+    end
     @inbounds for s in 1:n
         slot = Int(acc.outlist.host[s])
         i = resident ? slot : Int(acc.perm.host[slot])

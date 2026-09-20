@@ -246,7 +246,17 @@ function prime_leapfrog!(sim::Simulation{T}, positions, momenta;
     # positions already reordered, and the trajectory started wrong.
     copyto!(sim.cloud.positions, half)
     copyto!(sim.cloud.previous, positions)
+    # The two writes above are on the host, and the device is about to be asked
+    # for the forces: this is where a resident cloud crosses, and the only
+    # place it does. See [`_pack!`](@ref), which no longer uploads per step.
+    _upload_cloud!(sim)
     update_forces!(sim; advance = false)
+    # ⚠️ And back, before the loop below reads it. `update_forces!` **sorted the
+    # cloud on the device**, and the forces it left are in that sorted order:
+    # a host half still holding the unsorted state would pair every particle
+    # with another one's force. Unified memory hides this completely — the two
+    # halves being one — which is why it took a discrete GPU to surface.
+    _download_cloud!(sim)
     # ⚠️ The priming reads the forces **on the host**. A resident cloud reads
     # them where the kernel left them — its `forces` is a view of the
     # accelerator's buffer ([`StagedForces`](@ref)) — so there is nothing to
@@ -260,8 +270,23 @@ function prime_leapfrog!(sim::Simulation{T}, positions, momenta;
         sim.cloud.positions[i] = q0
         sim.cloud.previous[i] = back
     end
+    # The loop rewrote both halves of every record, on the host.
+    _upload_cloud!(sim)
     sim
 end
+
+"""Sends a host-written cloud to the device it lives on, and its opposite.
+
+A no-op without a device, and free on unified memory — but the crossings that
+must happen, and they all happen in [`prime_leapfrog!`](@ref): the loop there is
+the only host code that writes a resident cloud, and it must read the order the
+device sort left."""
+_upload_cloud!(sim::Simulation) =
+    sim.device === nothing ? nothing : upload!(sim.device.accelerator.particles)
+
+_download_cloud!(sim::Simulation) =
+    sim.device === nothing ? nothing :
+    download!(sim.device.accelerator.particles, sim.device.backend)
 
 """
     update_forces!(sim) -> T
@@ -358,6 +383,12 @@ function step!(sim::Simulation{T}; energy::Bool = true,
     hartree = update_forces!(sim; energy, accelerator)
     diag = _advance_cloud!(sim)
     energy || return nothing
+    # ⚠️ The budget reads every particle **on the host**, and a resident cloud
+    # has spent the step on the device. On unified memory there is nothing to
+    # do; on a discrete GPU this is a real transfer of the whole cloud — which
+    # is why the budget is a diagnostic taken one step in ten, and why it is
+    # worth taking it even more rarely there.
+    _download_cloud!(sim)
     total = interaction_energy(sim.cloud, sim.meshes[1].axes, sim.φ[1],
                                sim.meshes[2].axes, sim.φ[2], sim.smoothing)
     energy_budget(sim.jellium, diag.kinetic, hartree, total, diag.escaped)
