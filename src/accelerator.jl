@@ -132,6 +132,27 @@ struct DeviceAccelerator{E,T,B,G,BC,BF,BR,BI,BU,BX,C} <: ForceAccelerator
     force::BF
     delta::BF
     knode::BI
+    """Previous step's `(k, δ)`, for a cloud held on this accelerator. The
+       integrator needs two positions, and both have to be where the kernel
+       is — see [`PackedPositions`](@ref). Unused when the cloud stays on the
+       host, which costs two buffers it would otherwise have allocated itself."""
+    pdelta::BF
+    pknode::BI
+    """Per-work-item partials of the integrator's three diagnostics. Empty
+       unless the cloud lives here — at 8×10⁷ particles the two `previous`
+       buffers alone are 1.9 GB, which a host-held cloud has no use for."""
+    vpartials::BF
+    """Counting sort on the device: per-cell counts, the running cursors of
+       both stages, and the intermediate order. Empty unless the cloud lives
+       here — `permtmp` alone is 320 MB at 8×10⁷ particles."""
+    counts::BU
+    cursor::BU
+    bcursor::BU
+    permtmp::BU
+    "Exclusive offsets, host side: the scan is `O(cells)` and stays here."
+    offsets::Vector{Int32}
+    boffsets::Vector{Int32}
+    shift::Int32
     cols::BI
     reduction::BR
     cells::BU
@@ -157,6 +178,35 @@ struct DeviceAccelerator{E,T,B,G,BC,BF,BR,BI,BU,BX,C} <: ForceAccelerator
     npart::Int
 end
 
+"""
+Work-items the packed Verlet splits the cloud over.
+
+Enough of them to fill the machine and keep each one's register accumulation
+short — a few dozen terms, so the diagnostics stay accurate in `E` — and few
+enough that the host's final sum over the partials is free.
+"""
+verlet_workitems(npart::Integer) = min(Int(npart), 1 << 20)
+
+"""
+    sort_shift(ncell, npart) -> Int32
+
+How many cells the device sort's first stage lumps into one bucket, as a power
+of two.
+
+Chosen so that a bucket holds roughly `SORT_BUCKET_LOAD` particles, which is
+where the measured curve of [`_place_coarse_kernel!`](@ref) bottoms out: fewer
+particles per bucket and the writes scatter, more and the atomics contend. At
+8×10⁷ particles on 111³ cells this returns 9 — 2 672 buckets — which is the
+measured optimum.
+"""
+const SORT_BUCKET_LOAD = 30_000
+
+function sort_shift(ncell::Integer, npart::Integer)
+    npart <= 0 && return Int32(0)
+    target = max(1.0, ncell * SORT_BUCKET_LOAD / npart)
+    Int32(clamp(round(Int, log2(target)), 0, 31))
+end
+
 """Checks that an axis really is uniform — the kernels depend on it."""
 function _uniform_step(ax::SplineAxis)
     k = ax.knots
@@ -179,7 +229,7 @@ on the day the cloud itself lives there, and not before.
 """
 function DeviceAccelerator(backend, ::Type{E}, fine::NTuple{3,SplineAxis{T}},
                            sm::GaussianSmoothing{T}, npart::Integer,
-                           n::Integer) where {E,T}
+                           n::Integer; packed::Bool = false) where {E,T}
     h = _uniform_step(fine[1])
     for d in 2:3
         isapprox(_uniform_step(fine[d]), h; rtol = 1e-12) ||
@@ -191,6 +241,9 @@ function DeviceAccelerator(backend, ::Type{E}, fine::NTuple{3,SplineAxis{T}},
         copyto!(a, E.(x))
         a
     end
+    ncell = length(fine[1].knots)^3
+    shift = sort_shift(ncell, npart)
+    nbucket = ((ncell - 1) >> shift) + 1
     DeviceAccelerator(
         backend,
         DeviceGrid(backend, E, fine, n),
@@ -199,6 +252,16 @@ function DeviceAccelerator(backend, ::Type{E}, fine::NTuple{3,SplineAxis{T}},
         dual_buffer(backend, E, 3, npart),     # force
         dual_buffer(backend, E, 3, npart),     # delta
         dual_buffer(backend, Int32, 3, npart), # knode
+        dual_buffer(backend, E, 3, packed ? npart : 0),     # pdelta
+        dual_buffer(backend, Int32, 3, packed ? npart : 0), # pknode
+        dual_buffer(backend, E, 5, packed ? verlet_workitems(npart) : 0),
+        dual_buffer(backend, Int32, packed ? ncell : 0),          # counts
+        dual_buffer(backend, Int32, packed ? ncell : 0),          # cursor
+        dual_buffer(backend, Int32, packed ? nbucket : 0),        # bcursor
+        dual_buffer(backend, Int32, packed ? npart : 0),          # permtmp
+        packed ? Vector{Int32}(undef, ncell) : Int32[],
+        packed ? Vector{Int32}(undef, nbucket) : Int32[],
+        shift,
         dual_buffer(backend, Int32, 3, npart), # cols
         dual_buffer(backend, E, 4),            # reduction
         # Sized for the worst case — one occupied cell per cell of the grid —
@@ -233,10 +296,104 @@ function _pack!(acc::DeviceAccelerator{E,T}, positions) where {E,T}
                           ndrange = length(positions))
     synchronize(cpu)
     upload!(acc.knode); upload!(acc.delta)
+    _sort_and_list!(acc, positions)
+end
 
-    cellsort!(acc.sorter, positions)
-    copyto!(acc.perm.host, 1, acc.sorter.perm, 1, acc.npart)
-    upload!(acc.perm)
+"""
+The same preparation for a cloud already held as `(k, δ)` — which is to say,
+without the packing.
+
+Nothing is computed here and, when the cloud was built on this accelerator's own
+buffers, nothing is copied either: `positions.knode` **is** `acc.knode.host`.
+What the host used to spend reading 24 bytes of `Float64` per particle to
+produce them, it now spends on nothing at all.
+"""
+function _pack!(acc::DeviceAccelerator{E,T}, positions::PackedPositions) where {E,T}
+    if positions.knode !== acc.knode.host
+        copyto!(acc.knode.host, positions.knode)
+        copyto!(acc.delta.host, positions.delta)
+    end
+    upload!(acc.knode); upload!(acc.delta)
+    _sort_and_list!(acc, positions)
+end
+
+"""
+Scan of the per-cell counts: exclusive offsets, the occupied-cell list and its
+bounds, and the same offsets lumped per bucket for the sort's first stage.
+
+`O(cells)` and sequential, which is why it stays on the host: at 111³ it is a
+couple of milliseconds against the hundred the placement costs, and a parallel
+scan would buy nothing measurable.
+"""
+function _scan_counts!(acc::DeviceAccelerator, counts)
+    cs = acc.sorter
+    offs, boffs, shift = acc.offsets, acc.boffsets, acc.shift
+    empty!(cs.occupied); empty!(cs.bounds); push!(cs.bounds, Int32(0))
+    a = Int32(0)
+    b = 0
+    @inbounds for c in eachindex(counts)
+        nb = ((c - 1) >> shift) + 1
+        while b < nb
+            b += 1
+            boffs[b] = a
+        end
+        offs[c] = a
+        n = counts[c]
+        n == 0 && continue
+        push!(cs.occupied, Int32(c))
+        a += n
+        push!(cs.bounds, a)
+    end
+    @inbounds while b < length(boffs)
+        b += 1
+        boffs[b] = a
+    end
+    a
+end
+
+"""
+The counting sort, on the device.
+
+Three kernels and one host scan, replacing the threaded host sort: the cell key
+is read from `knode` where it already sits, and the placement is split in two
+stages so that its writes stay local — see [`_place_coarse_kernel!`](@ref). The
+`perm` it produces is identical to the host sort's, cell for cell.
+"""
+function _device_sort!(acc::DeviceAccelerator{E,T}) where {E,T}
+    nk = Int32(acc.sorter.nknots)
+    np = Int32(acc.npart)
+    counts = acc.counts
+
+    fill!(counts.device, Int32(0))
+    _hist_cells_kernel!(acc.backend)(counts.device, acc.knode.device, nk, np;
+                                     ndrange = acc.npart)
+    download!(counts, acc.backend)
+    _scan_counts!(acc, counts.host)
+
+    copyto!(acc.bcursor.host, acc.boffsets); upload!(acc.bcursor)
+    _place_coarse_kernel!(acc.backend)(acc.permtmp.device, acc.bcursor.device,
+                                       acc.knode.device, nk, acc.shift, np;
+                                       ndrange = acc.npart)
+    copyto!(acc.cursor.host, acc.offsets); upload!(acc.cursor)
+    _place_fine_kernel!(acc.backend)(acc.perm.device, acc.cursor.device,
+                                     acc.permtmp.device, acc.knode.device, nk, np;
+                                     ndrange = acc.npart)
+    synchronize(acc.backend)
+    acc
+end
+
+"""Everything of [`_pack!`](@ref) that is not the packing: the sort, the cell
+list, and the out-of-stencil list."""
+function _sort_and_list!(acc::DeviceAccelerator{E,T}, positions) where {E,T}
+    # The device sort needs `knode` on the device, which is exactly what a
+    # packed cloud gives it; anything else is still ordered on the host.
+    if length(acc.counts) > 0 && positions isa PackedPositions
+        _device_sort!(acc)
+    else
+        cellsort!(acc.sorter, positions)
+        copyto!(acc.perm.host, 1, acc.sorter.perm, 1, acc.npart)
+        upload!(acc.perm)
+    end
 
     # The occupied-cell list travels with the sort that produced it. It used to
     # be uploaded inside `deposit_smoothed!`, which was harmless while the
@@ -321,6 +478,46 @@ function deposit_smoothed!(ρ::AbstractArray, acc::DeviceAccelerator{E,T},
     nout
 end
 
+"""
+    step!(cloud, dt, acc; rcmax = Inf) -> (; kinetic, escaped, angular)
+
+The position Verlet on the device — see [`_verlet_packed_kernel!`](@ref).
+
+The cloud must be held as `(k, δ)` on this accelerator's own buffers, which is
+what `packed_cloud(...; buffers)` arranges. Nothing is uploaded and nothing is
+downloaded but the partials: the positions are already where the kernel runs,
+and so are the forces, in `E`.
+
+The three diagnostics are summed on the host, in `T`, over the partials — a
+final `nw`-term sum against eighty million.
+"""
+function step!(cloud::ParticleCloud{T,<:PackedPositions}, dt::T,
+               acc::DeviceAccelerator{E,T}; rcmax::Real = T(Inf)) where {E,T}
+    q, o = cloud.positions, cloud.previous
+    q.knode === acc.knode.host ||
+        throw(ArgumentError("the cloud is not held on this accelerator"))
+    length(acc.vpartials) == 0 &&
+        throw(ArgumentError("accelerator built without `packed = true`"))
+
+    M = mass(cloud)
+    nw = verlet_workitems(acc.npart)
+    _verlet_packed_kernel!(acc.backend)(
+        acc.knode.device, acc.delta.device, acc.pknode.device, acc.pdelta.device,
+        acc.force.device, acc.vpartials.device,
+        E(dt^2 / M), E(acc.h), E(acc.x0), E(M / 2dt), E(T(rcmax)^2), E(1 / 2M),
+        Int32(acc.npart), Int32(nw); ndrange = nw)
+    download!(acc.vpartials, acc.backend)
+
+    p = acc.vpartials.host
+    ekin = zero(T); eout = zero(T)
+    lx = zero(T); ly = zero(T); lz = zero(T)
+    @inbounds for t in 1:nw
+        ekin += T(p[1, t]); eout += T(p[2, t])
+        lx += T(p[3, t]); ly += T(p[4, t]); lz += T(p[5, t])
+    end
+    (; kinetic = ekin, escaped = eout, angular = (lx, ly, lz))
+end
+
 function forces!(cloud::ParticleCloud{T}, acc::DeviceAccelerator{E,T},
                  fine::NTuple{3,SplineAxis{T}}, csol_fine::AbstractArray,
                  coarse::NTuple{3,SplineAxis{T}}, csol_coarse::AbstractArray,
@@ -375,9 +572,16 @@ function forces!(cloud::ParticleCloud{T}, acc::DeviceAccelerator{E,T},
     w = cloud.weight
     w2 = w * w
     f = acc.force.host
-    tforeach(npart) do slice
-        @inbounds for i in slice
-            cloud.forces[i] = (T(f[1, i]), T(f[2, i]), T(f[3, i]))
+    # A cloud held on this accelerator reads the forces where they already are,
+    # in `E`: the conversion below would be a pass over 8×10⁷ triples for
+    # nothing. ⚠️ The out-of-stencil corrections must then land in `acc.force`
+    # too, and not in `cloud.forces` which no kernel reads.
+    resident = _cloud_is_resident(cloud, acc)
+    if !resident
+        tforeach(npart) do slice
+            @inbounds for i in slice
+                cloud.forces[i] = (T(f[1, i]), T(f[2, i]), T(f[3, i]))
+            end
         end
     end
 
@@ -398,10 +602,22 @@ function forces!(cloud::ParticleCloud{T}, acc::DeviceAccelerator{E,T},
                 force_kernel(projectile.softening, sum(abs2, d))
             force = force .- m .* d
         end
-        cloud.forces[i] = force
+        if resident
+            f[1, i] = E(force[1]); f[2, i] = E(force[2]); f[3, i] = E(force[3])
+        else
+            cloud.forces[i] = force
+        end
     end
+    resident && n > 0 && upload!(acc.force)
     n
 end
+
+"""Whether this cloud's positions live in `acc`'s own buffers — in which case
+the kernels read the cloud where it is, and nothing is staged."""
+_cloud_is_resident(cloud::ParticleCloud, acc::DeviceAccelerator) = false
+_cloud_is_resident(cloud::ParticleCloud{T,<:PackedPositions},
+                   acc::DeviceAccelerator) where {T} =
+    cloud.positions.knode === acc.knode.host
 
 function projectile_forces!(cloud::ParticleCloud{T}, acc::DeviceAccelerator{E,T},
                             proj::Projectile{T}, jel::Jellium{T}) where {E,T}

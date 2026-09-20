@@ -709,6 +709,137 @@ there. The `NaN` is the visible trace should that guarantee ever be broken.
     end
 end
 
+"""Linear cell index from an unclamped `knode` — the clamp
+[`PackedPositions`](@ref) does not apply lives here, where a stencil is indexed."""
+@inline function _cell_key(knode, i, nk::Int32)
+    @inbounds begin
+        kx = clamp(knode[1, i], Int32(1), nk)
+        ky = clamp(knode[2, i], Int32(1), nk)
+        kz = clamp(knode[3, i], Int32(1), nk)
+    end
+    kx + nk * (ky - Int32(1) + nk * (kz - Int32(1)))
+end
+
+"""Counts the particles of each cell — one atomic per particle, into `nk³` bins."""
+@kernel function _hist_cells_kernel!(counts, @Const(knode), nk::Int32, npart::Int32)
+    i = @index(Global, Linear)
+    if i <= npart
+        @inbounds Atomix.@atomic counts[_cell_key(knode, i, nk)] += Int32(1)
+    end
+end
+
+"""
+First stage of the device sort: place each particle in its **bucket** of
+`2^shift` neighbouring cells.
+
+The point is the write pattern, not the ordering. A placement straight into
+`nk³` cells scatters eighty million 4-byte writes over 305 MB and costs 118 ms;
+with one bucket it degenerates into atomic contention and costs 122. Measured
+between those two, at 8×10⁷ particles on 111³ cells:
+
+| buckets | 1 | 334 | 1 336 | **2 672** | 10 685 | 1 367 631 |
+|---|---:|---:|---:|---:|---:|---:|
+| ms | 122.0 | 63.0 | 26.4 | **17.5** | 29.3 | 118.1 |
+
+The floor of that curve is a few tens of thousands of particles per bucket —
+see [`sort_shift`](@ref) — where each bucket's write front advances nearly
+sequentially and the contention is still spread thin.
+"""
+@kernel function _place_coarse_kernel!(perm, cursor, @Const(knode), nk::Int32,
+                                       shift::Int32, npart::Int32)
+    i = @index(Global, Linear)
+    if i <= npart
+        @inbounds begin
+            b = ((_cell_key(knode, i, nk) - Int32(1)) >> shift) + Int32(1)
+            p = Atomix.@atomic cursor[b] += Int32(1)
+            perm[p] = Int32(i)
+        end
+    end
+end
+
+"""
+Second stage: the exact sort, walking the particles in the order the first
+stage produced.
+
+Neighbouring work-items then carry particles of neighbouring cells, so their
+destinations fall in the same handful of pages — the very locality the one-pass
+placement lacks. 29.4 ms here against 118 for the same work unordered, and the
+two stages together produce a `perm` **identical** to the host sort's.
+"""
+@kernel function _place_fine_kernel!(perm, cursor, @Const(order), @Const(knode),
+                                     nk::Int32, npart::Int32)
+    s = @index(Global, Linear)
+    if s <= npart
+        @inbounds begin
+            i = order[s]
+            p = Atomix.@atomic cursor[_cell_key(knode, i, nk)] += Int32(1)
+            perm[p] = i
+        end
+    end
+end
+
+"""
+The position Verlet on a cloud held as `(k, δ)`, on the device.
+
+`k(t+dt) = 2k(t) − k(t−dt)` is exact and every rounding falls on `δ` — see
+[`PackedPositions`](@ref). The forces are read **where the field kernel left
+them**, in `E`, so the per-step conversion of 8×10⁷ triples to host `Float64`
+goes away with this kernel rather than being repeated for it.
+
+The three diagnostics are reductions, and they are done the way
+[`_total_charge_kernel!`](@ref) does them rather than with a tree: each
+work-item walks the particles by a grid stride — so the reads stay coalesced —
+accumulates in registers, and writes one partial. The host sums those in `T`.
+Splitting the sum this way is also what keeps it accurate: a few dozen terms per
+work-item in `E`, not eighty million.
+
+⚠️ Everything the kernel takes is in `E`. `x0` and `h` rebuild the absolute
+position, which only `rcmax` and the angular momentum need; the trajectory never
+passes through it, which is the whole point of the packed form.
+"""
+@kernel function _verlet_packed_kernel!(kq, dq, ok, od, @Const(force), partials,
+                                        a, h, x0, pfac, r2max, inv2M,
+                                        npart::Int32, stride::Int32)
+    t = @index(Global, Linear)
+    @uniform E = eltype(dq)
+    ek = zero(E); eo = zero(E)
+    lx = zero(E); ly = zero(E); lz = zero(E)
+
+    i = Int32(t)
+    @inbounds while i <= npart
+        k1 = kq[1, i]; k2 = kq[2, i]; k3 = kq[3, i]
+        o1 = ok[1, i]; o2 = ok[2, i]; o3 = ok[3, i]
+        d1 = dq[1, i]; d2 = dq[2, i]; d3 = dq[3, i]
+        e1 = od[1, i]; e2 = od[2, i]; e3 = od[3, i]
+
+        n1 = _verlet_packed(k1, d1, o1, e1, a, force[1, i], h)
+        n2 = _verlet_packed(k2, d2, o2, e2, a, force[2, i], h)
+        n3 = _verlet_packed(k3, d3, o3, e3, a, force[3, i], h)
+
+        px = n1[3] * pfac; py = n2[3] * pfac; pz = n3[3] * pfac
+        e = (px * px + py * py + pz * pz) * inv2M
+        ek += e
+        qx = x0 + E(k1 - Int32(1)) * h + d1
+        qy = x0 + E(k2 - Int32(1)) * h + d2
+        qz = x0 + E(k3 - Int32(1)) * h + d3
+        qx * qx + qy * qy + qz * qz > r2max && (eo += e)
+        lx += qy * pz - qz * py
+        ly += qz * px - qx * pz
+        lz += qx * py - qy * px
+
+        ok[1, i] = k1; ok[2, i] = k2; ok[3, i] = k3
+        od[1, i] = d1; od[2, i] = d2; od[3, i] = d3
+        kq[1, i] = n1[1]; kq[2, i] = n2[1]; kq[3, i] = n3[1]
+        dq[1, i] = n1[2]; dq[2, i] = n2[2]; dq[3, i] = n3[2]
+        i += stride
+    end
+
+    @inbounds begin
+        partials[1, t] = ek; partials[2, t] = eo
+        partials[3, t] = lx; partials[4, t] = ly; partials[5, t] = lz
+    end
+end
+
 """
 Compacts, into `outlist`, the indices of the particles whose 10³ stencil does
 not fit inside the fine grid.

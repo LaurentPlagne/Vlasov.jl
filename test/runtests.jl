@@ -464,6 +464,101 @@ end
         @test all(L -> abs(L[1]) < 1e-14 && abs(L[2]) < 1e-14, Ls)
     end
 
+    @testset "PackedPositions" begin
+        x0, h, n = -78.0, 1.4181818181818182, 400
+        # Deliberately past the fine grid on both sides: the representation has
+        # to describe those too, which is why `knode` is never clamped.
+        pos = [ntuple(d -> (d - 2.0) * 60 + 0.9i - 200, 3) for i in 1:n]
+        kn = Matrix{Int32}(undef, 3, n)
+        dl = Matrix{Float32}(undef, 3, n)
+        p = Vlasov.PackedPositions{Float64,typeof(kn),typeof(dl)}(kn, dl, x0, h)
+        for i in 1:n
+            p[i] = pos[i]
+        end
+
+        @test length(p) == n
+        @test eltype(p) === NTuple{3,Float64}
+        # The round trip loses only `Float32` on a bounded offset, never the
+        # magnitude of the coordinate itself.
+        @test maximum(i -> maximum(abs, p[i] .- pos[i]), 1:n) < 1e-7
+        @test maximum(abs, dl) <= h / 2 + 1e-6
+        # Unclamped: this sample reaches well outside [1, nknots].
+        @test minimum(kn) < 1
+        @test maximum(kn) > 100
+
+        q = similar(p)
+        @test q isa Vlasov.PackedPositions
+        @test size(q) == size(p)
+        q[7] = (1.5, -2.5, 0.25)
+        @test all(q[7] .≈ (1.5, -2.5, 0.25))
+
+        c = copy(p)
+        @test all(c[i] == p[i] for i in 1:n)
+        c[1] = (0.0, 0.0, 0.0)
+        @test p[1] != c[1]          # a copy, not a view
+
+        # A cloud built on it keeps plain triples for the forces.
+        cloud = ParticleCloud(p, similar(p), fill((0.0, 0.0, 0.0), n), 0.5)
+        @test cloud.positions isa Vlasov.PackedPositions
+        @test cloud.forces isa Vector{NTuple{3,Float64}}
+        @test length(cloud) == n
+    end
+
+    @testset "Verlet on packed positions" begin
+        x0, h = -78.0, 1.4181818181818182
+        w, dt = 0.5, 0.05
+        q0, v = (1.0, -2.0, 0.5), (0.3, 0.1, -0.2)
+
+        function packed_cloud(qs, prevs)
+            m = length(qs)
+            mk() = Vlasov.PackedPositions{Float64,Matrix{Int32},Matrix{Float64}}(
+                       Matrix{Int32}(undef, 3, m), Matrix{Float64}(undef, 3, m), x0, h)
+            P, O = mk(), mk()
+            for i in 1:m
+                P[i] = qs[i]; O[i] = prevs[i]
+            end
+            ParticleCloud(P, O, fill((0.0, 0.0, 0.0), m), w)
+        end
+
+        # Zero force: Verlet is exact, so the packed form must be exact too.
+        free = packed_cloud([q0], [q0 .- dt .* v])
+        local diag
+        for _ in 1:20
+            diag = step!(free, dt)
+        end
+        @test all(free.positions[1] .≈ q0 .+ (20dt) .* v)
+        M = mass(free)
+        @test diag.kinetic ≈ M * (v[1]^2 + v[2]^2 + v[3]^2) / 2
+
+        # `rcmax` and the angular momentum read the absolute position, which the
+        # packed form has to rebuild: same split as on plain coordinates.
+        qs = [(1.0, 0.0, 0.0), (5.0, 0.0, 0.0), (9.0, 0.0, 0.0)]
+        three_p = packed_cloud(qs, qs)
+        three_v = ParticleCloud(copy(qs), copy(qs), fill((0.0, 0.0, 0.0), 3), w)
+        @test step!(three_p, dt; rcmax = 7.0).escaped ==
+              step!(three_v, dt; rcmax = 7.0).escaped
+
+        # Against the reference integrator, on a force field that actually
+        # curves the trajectory: the two must agree to the storage precision.
+        start = [(1.0 + 0.1i, 0.5i, -0.3i) for i in 1:50]
+        prev = [q .- dt .* (0.2, -0.1, 0.05) for q in start]
+        pk = packed_cloud(start, prev)
+        vc = ParticleCloud(copy(start), copy(prev), fill((0.0, 0.0, 0.0), 50), w)
+        local dp, dv
+        for _ in 1:40
+            for i in 1:50
+                r = vc.positions[i]
+                g = (-0.5 / (1 + sum(abs2, r))) .* r
+                vc.forces[i] = g
+                pk.forces[i] = g          # same field, so only the arithmetic differs
+            end
+            dv = step!(vc, dt); dp = step!(pk, dt)
+        end
+        @test maximum(i -> maximum(abs, pk.positions[i] .- vc.positions[i]), 1:50) < 1e-10
+        @test dp.kinetic ≈ dv.kinetic
+        @test all(isapprox.(dp.angular, dv.angular; atol = 1e-10))
+    end
+
     @testset "Leapfrog priming" begin
         M, dt = 0.25, 0.1
         q = [(1.0, 2.0, -1.0), (0.0, 0.5, 3.0)]
@@ -1018,6 +1113,64 @@ end
 
             # The deposited charge stays that of the electrons, step by step.
             @test total_charge(sim.ρ[1], sim.meshes[1]) ≈ 196.0 rtol = 1e-10
+
+            # A cloud held as `(k, δ)` is the same simulation, not an
+            # approximation of it: at equal storage precision the two
+            # trajectories agree to the oracle's own level.
+            ref = Simulation(p, prof)
+            pk = Simulation(p, prof; packed = true, precision = Float64)
+            @test pk.cloud.positions isa Vlasov.PackedPositions
+            @test pk.cloud.forces isa Vector{NTuple{3,Float64}}
+            local hr, hp
+            for _ in 1:6
+                hr = step!(ref); hp = step!(pk)
+            end
+            gap = maximum(i -> maximum(abs, ref.cloud.positions[i] .-
+                                            pk.cloud.positions[i]), 1:length(ref.cloud))
+            @test gap < 1e-11
+            @test hp.total ≈ hr.total rtol = 1e-12
+
+            # In `Float32` the offsets cost precision, but only on the offsets:
+            # the cell index stays exact, so the drift stays far under the
+            # physical dispersion.
+            f32 = Simulation(p, prof; packed = true, precision = Float32)
+            local h32
+            for _ in 1:6
+                h32 = step!(f32)
+            end
+            @test h32.total ≈ hr.total rtol = 1e-4
+
+            # The resident path: cloud on the accelerator's own buffers, so the
+            # integrator runs as a kernel and reads the forces where the field
+            # kernel left them.
+            #
+            # ⚠️ Compared against the **resident** path on a host-held cloud,
+            # not against the host path. Those two have never agreed on the
+            # energy — see the note below — and the question here is only
+            # whether holding the cloud as `(k, δ)` changes anything. It must
+            # not, and at equal precision it does not, to the last bit.
+            res = Simulation(p, prof; backend = CPU(), precision = Float64,
+                             packed = true)
+            dev = Simulation(p, prof; backend = CPU(), precision = Float64)
+            @test res.cloud.positions.knode === res.device.accelerator.knode.host
+            @test res.cloud.previous.knode === res.device.accelerator.pknode.host
+            local hres, hdev
+            for _ in 1:6
+                hres = step!(res); hdev = step!(dev)
+            end
+            @test maximum(i -> maximum(abs, res.cloud.positions[i] .-
+                                            dev.cloud.positions[i]),
+                          1:length(dev.cloud)) < 1e-12
+            @test hres.total == hdev.total
+
+            # ⚠️ Unrelated to the packed cloud, and worth knowing: the resident
+            # path does **not** reproduce the host path's total energy, even at
+            # `Float64` on `CPU()` where nothing is lost to precision. The two
+            # differ by more than the total itself — the total being a small
+            # difference of large terms, it magnifies whatever the two chains
+            # do differently. The packed cloud reproduces its own path exactly,
+            # which is what the tests above pin down.
+            @test !isapprox(hdev.total, hr.total; rtol = 1e-3)
         end
     end
 
@@ -1492,7 +1645,20 @@ end
         csolc = [1e-4 * cospi(0.02i + 0.01j + 0.03k)
                  for i in 1:ncb, j in 1:ncb, k in 1:ncb]
 
-        acc = DeviceAccelerator(CPU(), Float64, (ax, ax, ax), sm, npart, n)
+        acc = DeviceAccelerator(CPU(), Float64, (ax, ax, ax), sm, npart, n;
+                                packed = true)
+
+        # A cloud already held as `(k, δ)` deposits identically, with nothing
+        # packed: same density, same out-of-stencil count. The tenth of the
+        # sample that sits outside the fine grid is what makes this a real test
+        # — those are the particles whose cell index is not clamped.
+        pk = Vlasov.packed_cloud(ax, pos, w, Float64;
+                                 buffers = (acc.knode.host, acc.delta.host,
+                                            acc.pknode.host, acc.pdelta.host))
+        @test pk.positions.knode === acc.knode.host
+        @test pk.positions.delta === acc.delta.host
+        ρpk = zeros(n, n, n)
+        npk = deposit_smoothed!(ρpk, acc, mesh, sm, pk.positions; charge = w)
 
         ρref = zeros(n, n, n)
         nref = deposit_smoothed!(ρref, mesh, sm, pos; charge = w)
@@ -1501,6 +1667,22 @@ end
         @test nacc == nref
         @test maximum(abs, ρacc .- ρref) / maximum(abs, ρref) < 1e-14
         @test total_charge(ρacc, mesh) ≈ total_charge(ρref, mesh) rtol = 1e-12
+        # The packed route agrees with the reference to the same tolerance, and
+        # agrees on which particles fell outside.
+        @test npk == nref
+        @test maximum(abs, ρpk .- ρref) / maximum(abs, ρref) < 1e-14
+
+        # The two-stage device sort must reproduce the host sort exactly — same
+        # cells occupied, same bounds, and a `perm` that reads the same keys in
+        # the same order. The order *within* a cell is not specified by either.
+        host = Vlasov.CellSort(ax, npart)
+        Vlasov.cellsort!(host, pk.positions)
+        dperm = Array(acc.perm.device)[1:npart]
+        @test acc.sorter.occupied == host.occupied
+        @test acc.sorter.bounds == host.bounds
+        @test host.keys[dperm] == host.keys[host.perm]
+        @test sort(dperm) == 1:npart          # a permutation, nothing dropped
+        @test Vlasov.sort_shift(111^3, 80_000_000) == 9
 
         c1 = ParticleCloud(pos, w)
         c2 = ParticleCloud(pos, w)

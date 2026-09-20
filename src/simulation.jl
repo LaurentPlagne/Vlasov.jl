@@ -101,11 +101,12 @@ struct DeviceState{E,B,DM,G,AC}
 end
 
 function DeviceState(backend, ::Type{E}, meshes::NestedMeshes{2,3,T},
-                     sm::GaussianSmoothing{T}, npart::Integer) where {E,T}
+                     sm::GaussianSmoothing{T}, npart::Integer;
+                     packed::Bool = false) where {E,T}
     dms = (DeviceMesh(backend, E, meshes[1]), DeviceMesh(backend, E, meshes[2]))
     dims = map(m -> size(m.scratch[1]), (meshes[1], meshes[2]))
     grid(l) = KernelAbstractions.zeros(backend, E, dims[l]...)
-    acc = DeviceAccelerator(backend, E, meshes[1].axes, sm, npart, dims[1][1])
+    acc = DeviceAccelerator(backend, E, meshes[1].axes, sm, npart, dims[1][1]; packed)
     DeviceState{E,typeof(backend),eltype(dms),typeof(grid(1)),typeof(acc)}(
         backend, dms,
         (grid(1), grid(2)), (grid(1), grid(2)), (grid(1), grid(2)),
@@ -123,7 +124,7 @@ Building a `Simulation` does the heavy work once: matrix assembly,
 diagonalisations, convolution tables. The steps that follow only ever reuse
 multiplications.
 """
-struct Simulation{T<:AbstractFloat,P,A,D}
+struct Simulation{T<:AbstractFloat,P,A,F,D}
     params::SimulationParameters{T}
     meshes::NestedMeshes{2,3,T,BandedMatrix{T,Matrix{T},Base.OneTo{Int}}}
     smoothing::GaussianSmoothing{T}
@@ -131,7 +132,7 @@ struct Simulation{T<:AbstractFloat,P,A,D}
     """⚠️ The container is a parameter, not `ParticleCloud{T}`: that spelling is
        a `UnionAll` since the cloud gained its array type, and an abstract field
        here would box the hottest object of the whole loop."""
-    cloud::ParticleCloud{T,A}
+    cloud::ParticleCloud{T,A,F}
     """Projectile, or `nothing` for an isolated cluster. The type carries it
        rather than a `Union` field: the loop stays specialised in both cases."""
     projectile::P
@@ -160,11 +161,16 @@ hardware offers it.
 
 The cloud stays on the host either way. Its positions are `T`, and the packing
 that reads them needs `T`; see `_pack_kd_kernel!`.
+
+`packed = true` holds the cloud as [`PackedPositions`](@ref) instead — cell
+index and offset on the fine axis, the very form the device kernels consume, so
+that the per-step packing has nothing left to do. `precision` then also fixes
+the type of the offsets.
 """
 function Simulation(p::SimulationParameters{T}, profile::PhaseSpaceProfile{T};
                     rng::Ran2 = Ran2(-1), consistent_startup::Bool = false,
                     projectile = nothing, backend = nothing,
-                    precision::Type = T) where {T}
+                    precision::Type = T, packed::Bool = false) where {T}
     fine = uniform_axis(-p.rcluster, p.rcluster, p.nfine)
     coarse = stretched_axis(p.rcluster, p.rbox, p.ninner ÷ 2, (p.nouter + 2) ÷ 2)
     meshes = NestedMeshes(SplineMesh(fine, fine, fine),
@@ -175,9 +181,21 @@ function Simulation(p::SimulationParameters{T}, profile::PhaseSpaceProfile{T};
     n = nbasis(fine)
     smoothing = GaussianSmoothing(fine)
     device = backend === nothing ? nothing :
-             DeviceState(backend, precision, meshes, smoothing, p.nparticles)
+             DeviceState(backend, precision, meshes, smoothing, p.nparticles; packed)
+    # A packed cloud on a device borrows the accelerator's own `(k, δ)` staging
+    # rather than allocating a second copy of it: those buffers are exactly what
+    # the kernels read, so the cloud writing into them is what makes the packing
+    # step disappear instead of merely moving.
+    cloud = if packed
+        bufs = device === nothing ? nothing :
+               (device.accelerator.knode.host, device.accelerator.delta.host,
+                device.accelerator.pknode.host, device.accelerator.pdelta.host)
+        packed_cloud(fine, positions, weight, precision; buffers = bufs)
+    else
+        ParticleCloud(positions, weight)
+    end
     sim = Simulation(p, meshes, smoothing, Jellium(p.nions),
-                     ParticleCloud(positions, weight), projectile,
+                     cloud, projectile,
                      (zeros(T, n, n, n), zeros(T, n, n, n)),
                      (zeros(T, n, n, n), zeros(T, n, n, n)),
                      (zeros(T, n, n, n), zeros(T, n, n, n)),
@@ -212,6 +230,10 @@ function prime_leapfrog!(sim::Simulation{T}, positions, momenta;
     # over, and advancing it here would have it enter the cluster one step early.
     copyto!(sim.cloud.positions, half)
     update_forces!(sim; advance = false)
+    # ⚠️ The priming reads the forces **on the host**, and a resident cloud is
+    # precisely the case where `forces!` no longer stages them there. This runs
+    # once, outside the time loop, so it costs what the loop stopped paying.
+    _stage_forces!(sim)
 
     copyto!(sim.cloud.previous,
             full_step_back(positions, half, sim.cloud.forces, M, dt; consistent))
@@ -312,11 +334,50 @@ observes.
 function step!(sim::Simulation{T}; energy::Bool = true,
                accelerator = nothing) where {T}
     hartree = update_forces!(sim; energy, accelerator)
-    diag = step!(sim.cloud, sim.params.dt; rcmax = sim.params.rcmax)
+    diag = _advance_cloud!(sim)
     energy || return nothing
     total = interaction_energy(sim.cloud, sim.meshes[1].axes, sim.φ[1],
                                sim.meshes[2].axes, sim.φ[2], sim.smoothing)
     energy_budget(sim.jellium, diag.kinetic, hartree, total, diag.escaped)
+end
+
+"""Copies the device forces into `cloud.forces` for the host code that still
+reads them there. A no-op unless the cloud is resident, since every other path
+already fills them."""
+_stage_forces!(sim::Simulation) = nothing
+
+function _stage_forces!(sim::Simulation{T,P,<:PackedPositions}) where {T<:AbstractFloat,P}
+    dev = sim.device
+    dev === nothing && return nothing
+    acc = dev.accelerator
+    _cloud_is_resident(sim.cloud, acc) || return nothing
+    f = acc.force.host
+    tforeach(length(sim.cloud)) do slice
+        @inbounds for i in slice
+            sim.cloud.forces[i] = (T(f[1, i]), T(f[2, i]), T(f[3, i]))
+        end
+    end
+    nothing
+end
+
+"""
+Advances the cloud — on the device when it lives there.
+
+A cloud held on the accelerator's own buffers is integrated by the kernel, which
+also spares the step the conversion of every force triple to host `Float64`.
+Every other cloud takes the host integrator.
+"""
+_advance_cloud!(sim::Simulation) =
+    step!(sim.cloud, sim.params.dt; rcmax = sim.params.rcmax)
+
+function _advance_cloud!(sim::Simulation{T,P,<:PackedPositions}) where {T<:AbstractFloat,P}
+    dev = sim.device
+    if dev !== nothing && sim.cloud.positions.knode === dev.accelerator.knode.host &&
+       length(dev.accelerator.vpartials) > 0
+        return step!(sim.cloud, sim.params.dt, dev.accelerator;
+                     rcmax = sim.params.rcmax)
+    end
+    step!(sim.cloud, sim.params.dt; rcmax = sim.params.rcmax)
 end
 
 """
@@ -444,7 +505,7 @@ A resident simulation keeps its grids on the device, where a script reading
 `sim.φ[1]` would not find them. Call this before looking. A no-op when there is
 no device state.
 """
-sync_host!(sim::Simulation{T,P,A,Nothing}) where {T,P,A} = sim
+sync_host!(sim::Simulation{T,P,A,F,Nothing}) where {T,P,A,F} = sim
 
 function sync_host!(sim::Simulation)
     dev = sim.device
