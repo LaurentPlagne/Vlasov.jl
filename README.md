@@ -25,19 +25,25 @@ different afternoon.
 
 ### 1. Install Julia
 
-This is a Julia package, so the language comes first. The official installer
-takes one line and needs no privileges:
+This is a Julia package, so the language comes first. The official installer is
+**juliaup**, which needs no privileges:
 
 ```sh
-curl -fsSL https://install.julialang.org | sh          # macOS, Linux
-winget install julia -s msstore                        # Windows
+curl -fsSL https://install.julialang.org | sh                      # macOS, Linux
+winget install --name Julia --id 9NJNWW8PVKMN -e -s msstore        # Windows
 ```
 
 Close the terminal, open a new one, and check it answers:
 
 ```sh
-julia --version        # developed and tested on 1.12 and 1.13
+julia --version        # 1.11 or newer; developed and tested on 1.12 and 1.13
 ```
+
+If Julia was already installed and answers something older, `juliaup self update
+&& juliaup update` moves it on. The environments here declare their path
+dependencies with `[sources]`, which 1.10 does not understand — and says so by
+claiming a package "does not seem to be installed", which sends you looking in
+the wrong place entirely.
 
 ### 2. Get the code, and let it look at your machine
 

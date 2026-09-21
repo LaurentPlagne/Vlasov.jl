@@ -115,6 +115,11 @@ Tous consignés dans les documents ci-dessus, mais voici ceux qui reviendraient 
   retraversé ce chemin ; l'auteur, lui, a lancé la commande documentée. **Quand
   une mesure contredit une prédiction, changer aussi ce que la prédiction avait
   réglé.**
+* ⚠️ **Julia 1.11 au minimum, et juliaup se fige.** Les environnements déclarent
+  leurs dépendances de chemin avec `[sources]`, que 1.10 ne comprend pas — et
+  il le dit en prétendant qu'un paquet « does not seem to be installed », ce
+  qui envoie chercher ailleurs. Sur la machine fixe, juliaup était resté en
+  1.10.1 : `juliaup self update && juliaup update`. Une heure perdue.
 * **Ne pas lisser pour rattraper du bruit.** Un flou d'une maille ne le divise
   que par 1,4 et fabrique de fausses structures cohérentes. Plus joli, moins
   vrai.
