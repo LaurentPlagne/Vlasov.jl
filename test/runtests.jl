@@ -1627,9 +1627,14 @@ end
     # keeps `foreach_face` in the file: it is the oracle for that arithmetic.
     @testset "Surface enumeration" begin
         for (nx, ny, nz) in ((3, 4, 5), (5, 6, 7), (8, 8, 8), (134, 134, 134))
+            # ⚠️ `foreach_face` calls back from several threads, so the set it
+            # fills needs the lock. Without it the test failed at random and
+            # blamed the enumeration: `length(ref) == n` read 52 against 54,
+            # which is two lost `push!`, not two unvisited points.
             ref = Set{NTuple{3,Int}}()
+            lk = ReentrantLock()
             Vlasov.foreach_face(nx, ny, nz) do i, j, k
-                push!(ref, (i, j, k))
+                @lock lk push!(ref, (i, j, k))
             end
             n = Vlasov.nface(nx, ny, nz)
             got = Set(Int.(Vlasov._face_point(Int32(t), Int32(nx), Int32(ny),
