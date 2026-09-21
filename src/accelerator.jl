@@ -170,6 +170,12 @@ struct DeviceAccelerator{E,T,B,G,BC,BF,BP,BR,BI,BU,BX,C} <: ForceAccelerator
     gradient::BX
     nodes::BX
     sorter::C
+    """Whether the device has ever been given the cloud. A resident cloud is not
+       uploaded per step — the device copy is the authoritative one — but it has
+       to cross **once**, and whoever built it on the host may not be
+       [`prime_leapfrog!`](@ref): the suite builds one by hand, and so does any
+       script that drives an accelerator directly."""
+    primed::Base.RefValue{Bool}
     x0::T
     h::T
     spacing::E
@@ -311,6 +317,7 @@ function DeviceAccelerator(backend, ::Type{E}, fine::NTuple{3,SplineAxis{T}},
         dual_buffer(backend, Int32, 1),        # outcount
         dev(sm.overlap), dev(sm.gradient), dev(sm.nodes),
         CellSort(fine[1], npart; buffers = !packed),
+        Ref(false),
         T(fine[1].knots[1]), T(h), E(sm.spacing), Int32(sm.nbdt),
         Int32(size(sm.overlap, 2)), Int(npart))
 end
@@ -355,7 +362,19 @@ function _pack!(acc::DeviceAccelerator{E,T}, positions::PackedPositions) where {
     #
     # The host writes the cloud exactly once, in [`prime_leapfrog!`](@ref),
     # which uploads it itself.
-    resident || (copyto!(acc.particles.host, positions.data); upload!(acc.particles))
+    if resident
+        # ⚠️ Once, and only once. The host is what *built* the cloud, so it has
+        # to cross before the first step — and after that the device copy is the
+        # one the sort reorders and the integrator advances, so uploading again
+        # would undo both. Without this flag a cloud built outside
+        # [`prime_leapfrog!`](@ref) never reached the device at all: on unified
+        # memory that is invisible, and on CUDA every particle read as being at
+        # the grid's origin, hence outside it.
+        acc.primed[] || (upload!(acc.particles); acc.primed[] = true)
+    else
+        copyto!(acc.particles.host, positions.data)
+        upload!(acc.particles)
+    end
     _sort_and_list!(acc, positions)
 end
 
