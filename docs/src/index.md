@@ -46,12 +46,13 @@ reproduces it — and, on one point, corrects it.
 
 ## Quick start
 
-The shortest path to a running collision needs no Julia at all — one command,
-and it prints the charge a xenon ion carries off a sodium cluster as it passes:
+The shortest path to a running collision is one command. It prints the charge a
+xenon ion carries off a sodium cluster as it passes, and writes the film of it:
 
 ```
-julia --project=.   -t auto scripts/xenon.jl        # 5×10⁵ particles, ~2 min
-julia --project=gpu -t auto scripts/xenon.jl        # 8×10⁶ on the GPU, ~1.5 min
+julia --project=gpu -t auto scripts/xenon.jl     # Apple Silicon, ~2 min
+julia --project=cuda -t auto scripts/xenon.jl    # an NVIDIA card
+julia --project=viz -t auto scripts/xenon.jl     # no GPU at all, ~3.5 min
 ```
 
 The README walks through it from installing Julia. From inside the language:

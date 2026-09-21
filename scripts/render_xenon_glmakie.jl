@@ -2,12 +2,18 @@
 """
 The xenon film, drawn by the GPU instead of by Cairo.
 
-    julia --project=gpu scripts/film_xenon.jl            # simulate, then draw with Cairo
-    julia --project=viz scripts/render_xenon_glmakie.jl  # redraw the same run with GLMakie
+    julia --project=gpu scripts/xenon.jl            # simulate, then draw
+    julia --project=viz scripts/render_xenon_glmakie.jl  # redraw, without recomputing
 
-It reads `xenon_data_cache.jls`, which `scripts/film_xenon.jl` leaves behind, so
-the physics is not recomputed: the two renderers draw **the same 176 frames**
-and can be compared.
+It reads `xenon_data_cache.jls`, which `scripts/xenon.jl` leaves behind, so
+the physics is not recomputed — which is what this script is *for* now: changing
+a colour or a limit without paying for the run again.
+
+⚠️ **It is no longer the fast path; `xenon.jl` is.** This script existed
+because that one drew with Cairo and `contourf`. It now chooses GLMakie and
+`heatmap` wherever a display allows, so the ×6.8 below is had without the
+detour — and the two still draw the same 176 frames, which is what made the
+comparison possible.
 
 ⚠️ **The primitive matters more than the backend.** Swapping CairoMakie for
 GLMakie while keeping `contourf` changes nothing — the contour tessellation is
@@ -28,7 +34,7 @@ script resamples to 350×350 first and draws bands. And the GPU sampler doing
 that bilinear pass removes the resampling code along with the time it took.
 
 What also made the film cheaper, on the other side of the ledger: moving
-`film_xenon.jl` to the resident device path took its simulation from 73.8 s to
+`xenon.jl` to the resident device path took its simulation from 73.8 s to
 31.3 s.
 
 ⚠️ `scripts/render_proton_glmakie.jl` calls itself "fast GLMakie rendering"
@@ -36,7 +42,7 @@ while drawing `contourf`. By the table above that name is unearned; it has not
 been re-measured.
 
 ⚠️ **GLMakie needs a display.** On a headless Linux box it wants an EGL-capable
-setup or a virtual framebuffer; the Cairo path in `film_xenon.jl` has no such
+setup or a virtual framebuffer; the Cairo path in `xenon.jl` has no such
 requirement and stays the fallback.
 """
 
@@ -50,7 +56,7 @@ const GREY = RGBf(0.80, 0.80, 0.80)
 function main()
     cache = joinpath(ROOT, "xenon_data_cache.jls")
     isfile(cache) ||
-        error("$cache not found — run `julia --project=gpu scripts/film_xenon.jl` first: " *
+        error("$cache not found — run `julia --project=gpu scripts/xenon.jl` first: " *
               "it computes the run and leaves the cache behind.")
     println("Loading the cached run from $cache...")
     data = deserialize(cache)

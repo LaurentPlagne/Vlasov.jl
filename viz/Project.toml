@@ -2,3 +2,6 @@
 GLMakie = "e9467ef8-e4e7-5192-8a1a-b1aee30e663a"
 ProgressMeter = "92933f4c-e287-5a05-a399-4b506db050ca"
 Vlasov = "2b4e4dc6-bb65-44a8-9970-a8d90b7ff1a4"
+
+[sources]
+Vlasov = {path = ".."}

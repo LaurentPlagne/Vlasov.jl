@@ -34,197 +34,189 @@ Close the terminal, open a new one, and check it answers:
 julia --version        # developed and tested on 1.12 and 1.13
 ```
 
-### 2. Get the code and its dependencies
+### 2. Get the code, and the environment for your machine
 
 ```sh
 git clone https://github.com/LaurentPlagne/Vlasov.jl.git
 cd Vlasov.jl
-julia --project=. -e 'using Pkg; Pkg.instantiate()'
 ```
 
-`instantiate` fetches the exact package versions this was tested with. A few
-minutes the first time, nothing afterwards.
-
-### 3. Run it on the processor
+Then **one** of these, whichever describes the machine:
 
 ```sh
-julia --project=. -t auto scripts/xenon.jl
+julia --project=gpu  -e 'using Pkg; Pkg.instantiate()'    # Apple Silicon
+julia --project=cuda -e 'using Pkg; Pkg.instantiate()'    # an NVIDIA card
+julia --project=viz  -e 'using Pkg; Pkg.instantiate()'    # no GPU at all
 ```
 
-`-t auto` hands Julia every core; without it the particle loops run on one. The
-whole output of that command, on a ten-core M1 Max:
+A few minutes the first time, nothing afterwards. There are three because each
+carries what its path needs and nothing more — `Metal` and `AppleAccelerate`,
+or `CUDA`, or neither — so instantiating one does not drag in another vendor's
+stack. The package itself (`--project=.`) carries no plotting stack at all: a
+simulation package has no business depending on Makie.
 
-```
-path: CPU, 10 threads
-Na196 + Xe25+, 500 keV, b = 45 a0 | 5.0e+05 particles, grid 90^3
-built in 3.3 s
+### 3. Run it
 
-   step     t (fs)    x_ion (a0)   q(<8 a0)    ms/step
-    100       1.21        -50.0      0.000      177.2
-    200       2.42        -30.0      0.089      176.7
-    300       3.63        -10.0      0.546      171.0
-    400       4.84         10.0      0.600      173.0
-    500       6.05         30.0      1.010      185.9
-    600       7.26         50.0      1.086      189.5
-    700       8.47         70.0      0.920      188.9
-
-700 steps in 126.2 s — 180.3 ms/step
-charge carried away by the ion: 0.920 electrons
-```
-
-`q(<8 a0)` is the charge sitting within 8 a₀ of the ion, in electrons. It starts
-at zero, rises as the ion passes the cluster, peaks above one, and settles at
-what the ion actually takes with it. **That curve is the physics** — everything
-else on this page is about computing it faster or more finely.
-
-Four options, and nothing else to learn:
-
-| | | default |
-|---|---|---|
-| `--particules=N` | pseudo-particles | 5×10⁵ on CPU, 8×10⁶ on GPU |
-| `--nfine=n` | intervals of the fine grid — **even** | 44 on CPU, 64 on GPU |
-| `--pas=N` | time steps; 700 is the whole crossing | 700 |
-| `--tous=N` | print one line every N steps | 50 |
+One command. It computes the collision, prints what is happening, and writes the
+film:
 
 ```sh
-julia --project=. -t auto scripts/xenon.jl --particules=200000 --nfine=28
-```
-
-is the quickest whole crossing — **43 seconds** on the ten cores above, and the
-capture still comes out at 1.0 electron. Coarser than the run before it, and it
-tells the same story.
-
-### 4. Run it on the GPU
-
-The device path is portable by construction — the kernels are written once, in
-`KernelAbstractions` — but only **Apple Metal** has hardware here to be tested
-on. On a Mac:
-
-```sh
-julia --project=gpu -e 'using Pkg; Pkg.instantiate()'
 julia --project=gpu -t auto scripts/xenon.jl
 ```
 
-Sixteen times the particles, and it finishes sooner:
+`-t auto` hands Julia every core; without it the host-side loops run on one.
 
 ```
-path: GPU (Metal) + AppleAccelerate, 10 threads
+path: GPU (Metal) + AppleAccelerate, 10 threads | renderer: GLMakie, heatmap
 Na196 + Xe25+, 500 keV, b = 45 a0 | 8.0e+06 particles, grid 130^3
-built in 13.3 s
+built in 18.5 s
+
+   step     t (fs)    x_ion (a0)   q(<8 a0)        out    ms/step
+     50       0.60        -60.0      0.000          0      100.1
+    100       1.21        -50.0      0.000          0       72.1
     ...
-    700       8.47         70.0      0.842      163.4
+    350       4.23         -0.0      0.635      74061       94.1
+    ...
+    700       8.47         70.0      0.840     216829      141.5
 
-700 steps in 86.4 s — 123.5 ms/step
-charge carried away by the ion: 0.842 electrons
+700 steps in 69.5 s — 99.3 ms/step, plus 6.8 s reading 176 frames back
+charge carried away by the ion: 0.840 electrons
+wrote /Users/you/Vlasov.jl/xenon_data_cache.jls
+wrote /Users/you/Vlasov.jl/xenon_snapshots.png
+wrote /Users/you/Vlasov.jl/film_xenon.mp4 — 176 frames in 3.9 s (44.8 frames/s)
+wrote /Users/you/Vlasov.jl/film_xenon.gif
 ```
 
-The `gpu/` environment carries `Metal` and `AppleAccelerate`. It has no
-manifest of its own, so that `instantiate` *resolves* the two packages rather
-than replaying pinned versions — unlike the main project, whose `Manifest.toml`
-is tracked.
+Two minutes and twelve seconds from nothing, on a ten-core M1 Max — and the
+last four lines say where the film is, which is the first thing one wants to
+know.
 
-The script names the path it took on its first line, and that line is worth
-reading: a missing package is otherwise silent, and the same command then
-measures something else.
+**`q(<8 a0)` is the physics**: the charge sitting within 8 a₀ of the ion, in
+electrons. It starts at zero, rises as the ion passes the cluster, peaks above
+one, and settles at what the ion actually carries off. `out` counts the
+particles that have left the fine grid — they are not lost, the coarse grid
+carries them, and watching it climb is watching the ion strip the cluster.
 
-On an NVIDIA card, the same script picks the backend up on its own — from the
-environment that carries CUDA instead of Metal:
+The first line is worth reading. A missing package is otherwise silent, and the
+same command then measures something else: it names the path taken **and** the
+renderer chosen.
 
-```sh
-julia --project=cuda -e 'using Pkg; Pkg.instantiate()'
-julia --project=cuda -t auto scripts/xenon.jl
-```
+### Three options, and nothing else to learn
 
-### The environments, since there are four
-
-`gpu/` is **the Apple one** — the name predates the port being portable. Each
-carries what its path needs and nothing more, so that instantiating one does not
-drag in another's vendor stack:
-
-| | carries | for |
+| | | default |
 |---|---|---|
-| `--project=.` | the package alone | the processor, anywhere |
-| `--project=gpu` | Metal, AppleAccelerate, CairoMakie, GLMakie | Apple Silicon |
-| `--project=cuda` | CUDA, CairoMakie | an NVIDIA card, headless included |
-| `--project=viz` | GLMakie | redrawing a cached run |
-| `--project=docs` | Documenter, CairoMakie | building the site |
+| `--particules=N` | pseudo-particles | 8×10⁶ with a GPU, 6×10⁵ without |
+| `--nfine=n` | intervals of the fine grid — **even** | 64, i.e. a 130³ grid |
+| `--cpu` / `--gpu` | force the path | take whatever is there |
 
-**CUDA now runs, and gives the same physics.** The same kernels, on an RTX 5060
-(Blackwell, 8 GB, CUDA 13.4) and on an M1 Max, over the whole crossing at
-8×10⁶ particles:
-
-| | M1 Max, 32-core GPU | RTX 5060, 8 GB |
-|---|---:|---:|
-| charge carried away | 0.843 e | **0.840 e** |
-| particles outside the fine grid, at the end | 216 793 | 216 976 |
-| ms/step, first → last | 112 → 158 | 111 → 209 |
-| 700 steps | 87.8 s | 98.6 s |
-
-Two independent vendors agreeing to the third digit is the strongest statement
-this port can make about itself.
-
-> [!WARNING]
-> **ROCm and oneAPI have still never been run**, and CUDA only on that one
-> card. Getting there took five bugs that Apple's unified memory had been
-> hiding — a data file read from a path that only exists after the Fortran is
-> built; a GPU probe that mistook *loading* Metal for *having* Metal; and three
-> places where the host half of a buffer was read, or written, as if it were the
-> device's. The worst of them silently froze the cloud: the capture curve read
-> 0.000 for an entire crossing. Please report the next one.
-
-### Making the film
-
-The run above prints numbers; the film at the top of this page is a separate
-script, because rendering needs a plotting stack the simulation itself does not:
+The vendor is found on its own — Metal, CUDA, or the processor. The defaults are
+chosen for the film: the same 130³ grid either way, so the picture is the same
+and only its noise differs.
 
 ```sh
-julia --project=gpu  -t auto scripts/film_xenon.jl       # Apple Silicon
-julia --project=cuda -t auto scripts/film_xenon.jl       # an NVIDIA card
-julia --project=.    -t auto scripts/film_xenon.jl       # no GPU at all
+julia --project=viz -t auto scripts/xenon.jl --particules=100000 --nfine=28
 ```
 
-Six hundred thousand particles, whichever path answers.
+is the quickest whole crossing — **a minute** on the ten cores above, film
+included, and the capture still comes out at 1.0 electron. Coarser than the run
+before it, and it tells the same story.
 
-It writes `film_xenon.mp4`, `film_xenon.gif` and `xenon_snapshots.png` **at the
-root of the repository** (all three are gitignored), and caches its run in
-`xenon_data_cache.jls` — delete that file to recompute rather than redraw.
+### What it writes
 
-Timed from nothing on the machine above — no cache, cold start: **2 min 12 s**,
-of which 30 s of physics, 31 s of drawing and the rest loading the plotting
-stack and encoding. 176 frames, 8.5 fs of collision.
-
-On a machine with a screen, the same run redraws **six times faster** from its
-cache:
+`film_xenon.mp4`, `film_xenon.gif` and `xenon_snapshots.png`, at the root of the
+repository and all gitignored, plus `xenon_data_cache.jls` — the run itself. To
+redraw it after changing a colour, without recomputing anything:
 
 ```sh
 julia --project=viz -t auto scripts/render_xenon_glmakie.jl
 ```
 
-> [!NOTE]
-> That one needs a display — GLMakie opens a window. On a headless box (a rented
-> GPU, a cluster node) it stops at `GLFW: X11: The DISPLAY environment variable
-> is missing`, which is why `cuda/` carries Cairo and not GLMakie: an
-> `instantiate` that prints GLFW errors looks like a broken setup when nothing
-> is broken. The Cairo command above needs no display and draws the same film —
-> measured on a rented RTX 5060: 22.5 s of physics, 61.5 s of drawing.
+Timed from nothing, no cache, cold start:
 
-The reason for the six is worth knowing: it is not the backend, it is the
-primitive.
+| | physics | film | whole command |
+|---|---:|---:|---:|
+| `--project=gpu`, M1 Max, 8×10⁶ | 69.5 s | **3.9 s** | **2 min 12** |
+| `--project=cuda`, RTX 4070, 8×10⁶, headless → Cairo | 53.5 s | 18.8 s | 2 min 15 |
+| `--project=viz`, 10 CPU cores, 6×10⁵ | 173.8 s | 3.9 s | 3 min 31 |
+| `--project=viz`, 10 CPU cores, 10⁵ on 58³ | 24.1 s | 3.8 s | 1 min 02 |
 
-| encoding 176 frames | CairoMakie | GLMakie |
+The capture comes out at 0.840, 0.842 and 0.826 electron on the first three —
+the last is a tenth of the particles, and its noise is the difference.
+
+### Why the film is quick
+
+Because of the **primitive**, not the backend — which is the opposite of what
+one expects. Encoding the same 176 frames:
+
+| | CairoMakie | GLMakie |
 |---|---:|---:|
 | `contourf`, 45 levels, on a 350×350 resample | 30.9 s | 31.3 s |
-| `heatmap`, `interpolate = true`, raw 130³ slice | *refused* | **4.6 s** |
+| `heatmap`, `interpolate = true`, raw 130³ slice | *refused* | **3.9 s** |
 
 Swapping the backend under `contourf` buys nothing — the tessellation is CPU
 work inside Makie either way. A `heatmap` is a texture, which is what a GPU can
-actually draw, and its sampler does the smoothing the 350×350 pre-pass was
-doing by hand. Cairo declines that combination outright: the collocation points
-are not equally spaced, and it does not interpolate non-regular grids.
+actually draw, and its sampler does the bilinear smoothing that the 350×350
+pre-pass was doing by hand. Cairo declines that combination outright: the
+collocation points are not equally spaced, and it does not interpolate
+non-regular grids.
 
-The film on this page is the same script at production scale,
-`scripts/film_xenon_80M.jl`: 80 million particles, some eleven gigabytes of
-device memory, and it copies its gif into `docs/src/assets/`.
+So the script draws with **GLMakie and `heatmap`** wherever it can, and falls
+back to Cairo where it cannot — `--rendu=cairo`, `--rendu=gl` and
+`--rendu=aucun` force the matter.
+
+> [!NOTE]
+> **GLMakie needs a display** — it opens a window. On a headless box (a rented
+> GPU, a cluster node over `ssh`) it would stop at `GLFW: X11: The DISPLAY
+> environment variable is missing`, so the script looks for one first and takes
+> Cairo when there is none. That is also why `cuda/` carries Cairo and not
+> GLMakie: an `instantiate` printing GLFW errors looks like a broken setup when
+> nothing is broken.
+
+### Two vendors, the same physics
+
+The same kernels on an M1 Max and on an RTX 4070, over the whole crossing at
+8×10⁶ particles, both measured the same afternoon:
+
+| | M1 Max, 32-core GPU | RTX 4070, 12 GB |
+|---|---:|---:|
+| charge carried away | 0.840 e | **0.842 e** |
+| ms/step, averaged over the crossing | 99.3 | **76.4** |
+| 700 steps | 69.5 s | **53.5 s** |
+| reading 176 frames back for the film | 6.8 s | 15.2 s |
+| the whole command | 2 min 12 | 2 min 15 |
+
+Two independent vendors agreeing to the third digit is the strongest statement
+this port can make about itself — and the third digit is where agreement stops
+being meaningful anyway: two runs on the *same* card differ by as much, the
+`Float32` atomics not committing in the same order twice, which moves the count
+of particles outside the fine grid by 0.09 % from one run to the next. It was
+first established on a rented RTX 5060 (Blackwell, 8 GB), which read 0.840 e.
+
+The one line where the two machines genuinely differ is the **readback**: the
+film needs 176 density slices and 176 looks at the cloud, which on unified
+memory is not a copy at all and over PCIe is 15 seconds. The step itself, where
+nothing crosses, is where the discrete card wins.
+
+> [!WARNING]
+> **ROCm and oneAPI have still never been run**, and CUDA only on two cards.
+> Getting there took five bugs that Apple's unified memory had been hiding — a
+> data file read from a path that only exists after the Fortran is built; a GPU
+> probe that mistook *loading* Metal for *having* Metal; and three places where
+> the host half of a buffer was read, or written, as if it were the device's.
+> The worst of them silently froze the cloud: the capture curve read 0.000 for
+> an entire crossing. Please report the next one.
+
+### The other environments
+
+| | carries | for |
+|---|---|---|
+| `--project=gpu` | Metal, AppleAccelerate, CairoMakie, GLMakie | Apple Silicon |
+| `--project=cuda` | CUDA, CairoMakie | an NVIDIA card, headless included |
+| `--project=viz` | GLMakie | no GPU, and redrawing |
+| `--project=.` | the package alone | the test suite, and using it as a library |
+| `--project=docs` | Documenter, CairoMakie | building the site |
+
+`gpu/` is **the Apple one** — the name predates the port being portable.
 
 ---
 
@@ -236,15 +228,17 @@ numbers:
 
 | path | particles | grid | ms/step | whole crossing |
 |---|---:|---|---:|---:|
-| CPU, 10 threads | 5×10⁵ | 90³ | 180 | **126 s** |
-| GPU | 2×10⁶ | 90³ | 51 | ≈ 36 s |
-| **GPU** | **8×10⁶** | **130³** | **124** | **86 s** |
-| GPU | 3.2×10⁷ | 130³ | 466 | ≈ 5 min |
-| GPU | 8×10⁷ | 222³ | 824 | ≈ 10 min |
+| CPU, 10 threads | 5×10⁵ | 90³ | 160 | **112 s** |
+| GPU | 2×10⁶ | 90³ | 37 | ≈ 30 s |
+| **GPU** | **8×10⁶** | **130³** | **99** | **70 s** |
+| GPU | 3.2×10⁷ | 130³ | 240 | ≈ 3 min |
+| GPU | 8×10⁷ | 222³ | 588 | ≈ 8 min |
 
 The two bold rows are complete 700-step runs; the others are 200-step
-measurements, and the crossing takes a little more than the multiplication
-suggests — the step gets slower as the cloud spreads over more cells.
+measurements, and the crossing takes more than the multiplication suggests —
+the step gets slower as the cloud spreads over more cells, 100 ms at the start
+against 141 at the end of the bold row. None of these includes the film, which
+is a fixed four seconds.
 
 **What fits in a given graphics memory** follows from two numbers measured on
 the live objects, one per pseudo-particle and one per grid point:
@@ -273,10 +267,11 @@ by the run, which peaks 48 bytes a particle higher — that, and the rest of the
 accounting, is in [the device path](docs/src/device.md).
 
 > [!NOTE]
-> Times on other cards are **not measured** — there is no such hardware here.
-> The step is close to linear in the particle count, and the kernels are bound
-> by memory bandwidth and by address translation rather than by arithmetic, so
-> a card's bandwidth is the first thing to scale by.
+> Times on cards other than these two are **not measured**. The step is close to
+> linear in the particle count, and the kernels are bound by memory bandwidth
+> and by atomics rather than by arithmetic, so a card's bandwidth is the first
+> thing to scale by — and not its FLOP rating, which the RTX 4070 shows: it
+> beats an M1 Max by ×4.9 on the Poisson solve and loses to it on the sort.
 
 ### Choosing a grid
 
