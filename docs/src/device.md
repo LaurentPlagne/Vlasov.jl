@@ -336,16 +336,34 @@ step after it walks a cloud it sorted itself.
     premise, and the same measurement now says the opposite. Neither figure was
     wrong; what they described stopped being the situation.
 
-### The cost the sort passes on
+### The cost the sort passes on, and what it was really offering
 
 Sorting by *fine* cell puts consecutive particles in the same *coarse* cell, and
-the coarse deposition's eight atomics per particle then all land on the same few
-addresses at once. Measured: **4874 ms** walking the sorted order against
-**193** walking it by a stride coprime with the particle count — a factor of 25.
+a coarse deposition that spends eight atomics per particle then lands them all
+on the same few addresses at once. Measured: **4874 ms** walking the sorted
+order against **193** walking it by a stride coprime with the particle count — a
+factor of 25.
 
-[`_deposit_cic_kernel!`](@ref) therefore reads deliberately out of order. The
-sorted order is what makes the fine deposition fast and what makes this one
-slow; the same property, read by two kernels that want opposite things.
+The kernel therefore read deliberately out of order, and for two years that was
+the end of it: the sorted order was what made the fine deposition fast and what
+made this one slow, the same property read by two kernels that wanted opposite
+things.
+
+It is the same property, and they want the same thing. Counted rather than
+feared, 64 consecutive sorted particles fall in **five coarse cells** and touch
+23.5 grid points: their 512 atomics are 512 additions onto 23.5 addresses. That
+is an argument for adding them up before touching the grid, and once a work-item
+owns a private tile of threadgroup memory there is nothing left to contend —
+[`_deposit_cic_tiled_kernel!`](@ref) emits 0.37 atomics per particle instead of
+eight, and runs **4.4 ms against 37.7 on an RTX 4070, 5.2 against 29.1 on an M1
+Max** — the whole step on that card going 57.3 to 38.0 ms.
+
+!!! note "A collision is a coincidence you have not used yet"
+    Every measurement behind the strided version was sound, and its conclusion —
+    *put the colliding particles as far apart as possible* — followed from the
+    kernel it was written for rather than from the physics. Two particles
+    hitting the same address at the same time are two numbers that need adding
+    to the same accumulator, which is a reason to keep them together.
 
 !!! warning "Two traps in the counting sort, both paid for"
     The counters **must be reset** — a repeated call otherwise accumulates them

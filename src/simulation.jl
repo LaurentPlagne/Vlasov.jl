@@ -83,8 +83,9 @@ in `Float32`, about 0.2 ms over PCIe.
 
 ⚠️ There used to be a second one, `ρc_host`: the coarse deposition was a host
 scatter, `CellSort` assuming a uniform grid where the coarse axis is *stretched*.
-It no longer is — [`_deposit_cic_kernel!`](@ref) deposits on the device without
-any sort at all — and the buffer went with it.
+It no longer is — [`_deposit_cic_tiled_kernel!`](@ref) deposits on the device,
+reusing the *fine* sort the cloud already carries rather than asking for a
+coarse one of its own — and the buffer went with it.
 """
 struct DeviceState{E,B,DM,G,AC}
     backend::B
@@ -478,16 +479,15 @@ function _update_forces_resident!(sim::Simulation{T}, dev::DeviceState{E},
     deposit_smoothed!(dev.ρ[1], accelerator, fine, sim.smoothing,
                       sim.cloud.positions; charge = w)
 
-    # The coarse deposition, on the device — cloud-in-cell, eight atomics per
-    # particle. 203 ms against 396 for the threaded host scatter it replaces,
-    # at 8×10⁷ particles on a 258³ coarse grid.
+    # The coarse deposition, on the device — cloud-in-cell into a private tile
+    # per work-item, some 0.4 atomics per particle instead of eight.
     #
-    # ⚠️ A *sorted* version was written too, on the model of the fine
-    # deposition: one group per occupied coarse cell, eight work-items for its
-    # corners, one atomic each. It is not needed. The coarse grid is coarse
-    # enough that eight atomics per particle do not contend the way an 8³
-    # stencil does, and the coarse sort such a version requires costs 356 ms on
-    # its own — more than the whole deposition.
+    # ⚠️ A version sorted *by coarse cell* was written too, on the model of the
+    # fine deposition: one group per occupied coarse cell, eight work-items for
+    # its corners, one atomic each. It is not needed and never was — the coarse
+    # sort it requires costs 356 ms on its own, more than the whole deposition.
+    # The locality it was buying was already there for free in the *fine* sort,
+    # which is what the tiled kernel reads.
     fine_ax = fine.axes[1]
     hf = (fine_ax.knots[end] - fine_ax.knots[1]) / (length(fine_ax.knots) - 1)
     deposit_cic!(dev.ρ[2], dmc, accelerator, length(sim.cloud.positions), w,

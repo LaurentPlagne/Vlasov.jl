@@ -336,6 +336,19 @@ résoudre (`‖A·X − B‖`), jamais sur sa seule absence d'erreur.
    seulement décrite.
 7. **Tester avant de proposer** : toute commande ou snippet recommandé à l'utilisateur est
    d'abord exécuté, pour garantir qu'il tourne sans erreur.
+8. **Une collision est une coïncidence dont on ne s'est pas encore servi.** Face à de la
+   contention, le réflexe est de séparer les fautifs ; l'autre issue est de les *additionner
+   avant* de toucher la mémoire partagée. Le dépôt grossier a passé deux ans à fuir les
+   particules voisines par un pas premier ; comptées plutôt que redoutées, 64 particules
+   consécutives visaient 23 adresses. Les accumuler dans une tuile privée vaut **×8,5**.
+   Deux nombres qui arrivent au même endroit au même moment sont deux nombres à ajouter.
+9. ⚠️ **Quand un noyau change, remesurer les constantes dont il hérite.** Le pas de
+   dispersion du dépôt grossier valait 509 pour l'ancien noyau et **7** pour le nouveau —
+   le garder aurait coûté un facteur 2,2 sur Apple à un noyau qu'on venait d'accélérer six
+   fois. L'optimum n'avait pas bougé (450 particules d'écart dans les deux cas) : c'est
+   l'unité qui avait changé. Une constante est une réponse à une question ; changer la
+   question sans rouvrir la réponse est le moyen le plus discret de perdre la moitié d'un
+   gain.
 
 ## Communication
 

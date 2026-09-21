@@ -13,7 +13,10 @@ production — 8×10⁷ particules — le pas est passé de 4213 à **1090 ms** 
 branche `gpu-portable`, où le nuage vit désormais sur le device. Les trois
 gros noyaux ont ensuite été repris le même jour, chacun mesuré en A-B-A : les
 forces 502 → 209 ms, le dépôt grossier 198 → 93, le dépôt fin 197 → 59. Le pas
-de fin de journée fait **606 ms**.
+de fin de journée fait **606 ms**. Le dépôt grossier a été **réécrit** depuis —
+une tuile privée par work-item au lieu de huit atomiques par particule — et fait
+48,0 ms contre 187,8, ×3,9 à l'échelle de production et **×8,5** à celle du film
+sur une RTX 4070, où le pas entier passe de 57,3 à **38,0 ms**.
 
 ## Par où entrer
 
@@ -230,6 +233,13 @@ grossiers (5,4 ms, 44 Mo) et l'avance du projectile (0,0). Le bilan
 Pas = **606 ms**, contre 1291 le matin même avec les trois noyaux d'avant.
 Les forces mènent de nouveau, et de loin.
 
+⚠️ **Ce tableau précède le dépôt grossier tuilé** (21/09). Cette ligne-là vaut
+maintenant **48,0 ms contre 187,8** pour le noyau qu'elle mesurait, A-B
+entrelacé à 8×10⁷ sur 258³ — le dépôt grossier n'est donc plus le troisième
+poste mais l'avant-dernier. Le reste du tableau n'a pas été repris : le refaire
+demande de remesurer *toute* la séquence dans un seul processus, une ligne
+corrigée dans un profil pris ailleurs ne voulant rien dire.
+
 ⚠️ **Ne pas comparer ce tableau ligne à ligne avec le précédent** (forces 458,
 dépôt fin 199, grossier 194, tri 123, pas à 1090 ms) : il a été mesuré dans une
 autre session, sur un nuage plus jeune. Les postes qui tournent sur l'**hôte**
@@ -279,9 +289,12 @@ conséquences, dont deux ont coûté un bug :
 * **tout ce qui est tenu hors du nuage perd sa correspondance avec lui** au
   premier tri. L'amorçage fait donc voyager `q(0)` dans la moitié `previous`
   du même enregistrement ;
-* le dépôt **grossier** lit délibérément dans le désordre, par un pas premier
-  avec le nombre de particules : trier par maille fine met ses atomiques en
-  collision frontale, 4874 ms contre 193, facteur 25.
+* le dépôt **grossier** lit dans l'ordre trié, par paquets de 64 particules
+  qu'un work-item accumule dans une tuile privée avant de toucher la grille.
+  Il lisait auparavant dans le désordre, par un pas premier avec le nombre de
+  particules, parce que trier par maille fine met huit atomiques par particule
+  en collision frontale — 4874 ms contre 193. La collision était réelle ; ce
+  sont des additions à faire au même endroit, pas des voisines à séparer.
 
 **Le placement du tri est une seule passe**, dans l'ordre du tableau — le
 nuage étant déjà presque trié (dérive médiane : 2230 places sur 8×10⁷), un
@@ -447,11 +460,20 @@ de rouvrir une impasse, vérifier ce qui a changé sous elle.
    il tient en une passe. L'empaquetage `(k, δ)` en `Float64`, lui, ne coûte
    plus rien sur ce chemin — le nuage est déjà dans la forme que les noyaux
    lisent.
-3. Le dépôt grossier, à 92 ms, est toujours borné par la MMU (61,5 % après le
-   changement de pas). Il reste peut-être un facteur là, mais plus petit et
-   plus dur : il faudrait changer la disposition du nuage, pas un paramètre.
+3. ~~Le dépôt grossier, à 92 ms, est toujours borné par la MMU~~ — **fait le
+   21/09**, et pas par le chemin annoncé. « Il faudrait changer la disposition
+   du nuage, pas un paramètre » était faux des deux côtés : le nuage est
+   disposé exactement comme avant, c'est le *noyau* qui a changé. Une tuile
+   privée par work-item, 0,37 atomique par particule au lieu de huit :
+   **48,0 ms contre 187,8** à 8×10⁷, **×8,5** à 8×10⁶ sur une RTX 4070. Les
+   compteurs avaient nommé la MMU parce que c'est ce que le noyau qu'on leur
+   montrait dépensait ; l'ablation, elle, a dit que les atomiques valaient
+   84 à 89 % — même cause sur les deux fondeurs, donc un noyau et non deux.
 4. Les 12 ms de `csolc`, puis le budget énergétique, encore particule par
    particule sur l'hôte et jamais profilé à 8×10⁷.
+5. Sur la 4070, les **12,2 ms de recopies device→hôte** (16 % du pas d'alors)
+   n'ont jamais été examinées — elles n'existent pas sur Apple, la mémoire
+   étant unifiée.
 
 ⚠️ L'ablation qui donnait 110 ms « sans aucune lecture de table » date du noyau
 d'avant, et ne borne plus rien : le noyau actuel fait 198 ms avec ses lectures

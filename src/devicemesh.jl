@@ -84,18 +84,22 @@ end
     deposit_cic!(ρ, dm, acc, npart, charge) -> ρ
 
 Cloud-in-cell deposition of the packed particles onto this mesh — see
-[`_deposit_cic_kernel!`](@ref). `acc` supplies `(knode, delta)`, so the cloud
-itself need not be on the device.
+[`_deposit_cic_tiled_kernel!`](@ref). `acc` supplies `(knode, delta)`, so the
+cloud itself need not be on the device.
+
+The `ndrange` counts **blocks**, not particles: a work-item owns
+[`CIC_BLOCK`](@ref) consecutive particles and the private tile they share.
 """
 function deposit_cic!(ρ::AbstractArray{E,3}, dm::DeviceMesh{E}, acc, npart,
                       charge, x0f, hf) where {E}
     gx, gy, gz = dm.colloc
     wx, wy, wz = dm.duals_len
     fill!(ρ, zero(E))
-    _deposit_cic_kernel!(acc.backend)(
+    nblock = cld(Int32(npart), CIC_BLOCK)
+    _deposit_cic_tiled_kernel!(acc.backend, CIC_GROUPSIZE)(
         ρ, acc.particles.device, gx, gy, gz, dm.loc_cells,
-        E(x0f), E(hf), dm.loc_x0, dm.loc_invwidth, Int32(npart),
-        scatter_stride(npart); ndrange = npart)
+        E(x0f), E(hf), dm.loc_x0, dm.loc_invwidth, Int32(npart), nblock,
+        scatter_stride(nblock); ndrange = Int(nblock))
     synchronize(acc.backend)
     ρ .*= E(charge) ./ (wx .* wy' .* reshape(wz, 1, 1, :))
     ρ

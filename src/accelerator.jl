@@ -194,71 +194,65 @@ enough that the host's final sum over the partials is free.
 verlet_workitems(npart::Integer) = min(Int(npart), 1 << 20)
 
 """
-    scatter_stride(npart) -> Int32
+    scatter_stride(nblock) -> Int32
 
-A stride that walks all of `1:npart` while breaking the sorted order.
+A stride that walks all of `1:nblock` while breaking the sorted order.
 
-For [`_deposit_cic_kernel!`](@ref), whose atomics collide when consecutive
-particles share a coarse cell — which is precisely what sorting by fine cell
-arranges. Any value coprime with `npart` visits every particle exactly once.
+For [`_deposit_cic_tiled_kernel!`](@ref), whose work-items each own a *block* of
+[`CIC_BLOCK`](@ref) consecutive particles. Neighbouring blocks hold neighbouring
+particles, so their private tiles cover nearly the same points and their flushes
+would collide; walking the blocks by a stride coprime with their count spreads
+them. Any coprime value visits every block exactly once.
 
-⚠️ **It is a balance, not a maximum.** The first version took the biggest prime
-to hand, on the reasoning that the further apart the neighbours, the fewer the
-collisions. That is true and it is not the only cost: a work-item then reads
-its 48-byte particle from its own page, and the kernel becomes bound on address
-translation. Apple's counters on it, at 8×10⁷ particles:
+⚠️ **It is a balance, not a maximum, and the balance is in particles.** Pushing
+the neighbours apart costs what it buys: at some distance every work-item reads
+from its own page and the kernel becomes bound on address translation rather
+than on the collisions. The floor sits at a **separation of some four hundred
+particles** — which is `7` blocks of 64, and was `509` particles when a
+work-item carried one particle each. Same distance, different unit.
 
-| | stride 7919 | **stride 509** |
+Measured on the real cloud at 8×10⁶ particles, the kernel alone:
+
+| stride (blocks) | 1 | 3 | **7** | 9 | 13 | 31 | 127 | 509 | 7919 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| M1 Max, ms | 6.8 | 5.8 | **5.2** | 5.4 | 6.1 | 8.6 | 11.3 | 11.4 | 11.2 |
+| RTX 4070, ms | 7.1 | 5.7 | **4.8** | | | 4.6 | 4.4 | 4.5 | 4.6 |
+
+⚠️ **The two cards disagree, and 7 is still the answer for both.** NVIDIA is
+flat from 7 to 65 537 — 4.4 to 4.8 ms — and its own floor is 127. Apple's basin
+is narrow and steep, and everything from 127 up costs it a factor of 2.2. So 7
+is Apple's optimum and 8 % off NVIDIA's, where 127 would be NVIDIA's optimum and
+115 % off Apple's. One number, and it is the one that costs the least to be
+wrong about.
+
+⚠️ **A sweep alone would have said something else.** On the RTX 4070 six
+alternating measurements of two candidates put them 2.2 % apart where the sweep
+had read 5 %: a sweep reads the card's clocks ramping as if it were the effect.
+Every number above that decides anything was taken interleaved.
+
+What the *old* kernel measured is what taught this one where to look. It read
+one particle per work-item, and Apple's counters on it at 8×10⁷ particles:
+
+| | stride 7919 | stride 509 |
 |---|---:|---:|
 | **MMU Limiter** | **70.7 %** | **61.5 %** |
-| GPU Last Level Cache Limiter | 55.9 % | 52.0 % |
 | Buffer Read Limiter | 40.7 % | 15.0 % |
 | MMU TLB Miss Rate | 15.1 % | 11.9 % |
-| ALU Limiter | 7.4 % | 14.4 % |
 | GPU Read Bandwidth | 42.3 GB/s | 35.8 GB/s |
 
-Same window of wall clock, and the right-hand column does **2.2× the work** in
-it: the kernel measures 195.0 ms against 89.7 (A-B-A at 8×10⁷, `ndrange` over
-the whole cloud). Per particle it reads 2.6× fewer bytes and walks the page
-tables less, because neighbouring work-items now share a cache line and a page.
+Same window of wall clock, 2.2× the work in it — 195.0 ms against 89.7. The
+limiter that punishes distance is address translation, and it is still the one
+that punishes distance here.
 
-The curve is flat-bottomed, and the two ends of it are steep:
-
-| stride | 1 | 31 | 127 | 251 | **383** | **509** | 1009 | 2003 | 7919 | 65537 |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| ms (2×10⁷ work-items) | 1148 | 132 | 42.7 | 24.2 | **22.9** | 23.4 | 26.5 | 34.5 | 48.9 | 57.9 |
-
-509 and not 383: on a tenth of the cloud — 8×10⁶ particles, the film's scale —
-the basin shifts a little and 509 is its floor (11.5 ms against 13.5), while at
-8×10⁷ it costs 2.6 % over 383. The basin sits where it does because of the
-*cloud*, not the array: a run of particles sharing a coarse cell is some
-thousand long here, and the stride has to be a fraction of that — far enough to
-spread a SIMD group over several cells, near enough to stay in a handful of
-pages.
-
-⚠️ Confining the scatter to a window of consecutive particles — the obvious way
-to bound the translation cost — is **much worse**: 154.8 ms for a window of
-4×10⁶ particles and 1009 ms for one of 65 536, against 89.7 for the plain
-stride. Inside a small window the same coarse cells come round again and again,
+⚠️ Confining the scatter to a window of consecutive blocks — the obvious way to
+bound the translation cost — was **much worse** on that kernel: 154.8 ms for a
+window of 4×10⁶ particles and 1009 ms for one of 65 536, against 89.7 for the
+plain stride. Inside a small window the same cells come round again and again,
 and the collisions the stride exists to break come straight back.
-
-⚠️ **On NVIDIA the balance is flatter, and 509 costs little.** An RTX 4070, at
-8×10⁶ particles, kernel alone: a sweep says 33.5 ms at 509 against 27.8 at 7919
-— and an **interleaved** A-B says 32.2 against 30.9, four per cent. The sweep
-had been reading the card's clocks ramping as if it were the stride; six
-alternating measurements of each cancel it, and the effect shrinks by five. So
-the Apple value stays for every backend: what it costs elsewhere is smaller than
-the reason to have one number rather than a table of them.
-
-⚠️ What that measurement also says is where the NVIDIA work actually is. On that
-card this kernel is **45 % of the step** at any stride — 27 to 33 ms, against
-2.6 for the *fine* deposit, whose stencil is eight times larger. Eight scattered
-atomics per particle into a 44 MB grid run at some 2 G/s there. The tuning is
-not what is wrong; the kernel is.
 """
-function scatter_stride(npart::Integer)
-    s = 509
-    while gcd(s, npart) != 1
+function scatter_stride(nblock::Integer)
+    s = 7
+    while gcd(s, nblock) != 1
         s += 2
     end
     Int32(s)

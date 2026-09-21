@@ -544,7 +544,7 @@ of the pressure. A balanced kernel is what "no more easy gains here" looks like.
 
 ### And about the coarse deposition: the MMU
 
-The same recipe on `_deposit_cic_kernel!`, which had never been measured this
+The same recipe on the coarse deposition, which had never been measured this
 way, named a limiter nobody had proposed:
 
 | | stride 7919 | **stride 509** |
@@ -567,12 +567,63 @@ page of its own.
 Shortening the stride to 509 measures **195.0 → 89.7 ms** at 8×10⁷ particles,
 and the step 841.9 → 745.9 (A-B-A). The two columns above are the same window
 of wall clock, and the right-hand one does 2.2× the work in it: per particle it
-reads 2.6× fewer bytes. [`scatter_stride`](@ref) carries the whole curve, which
-is flat-bottomed between 251 and 1009 and steep on both sides — too near and
-the atomics collide, too far and the MMU does.
+reads 2.6× fewer bytes. That curve was flat-bottomed between 251 and 1009 and
+steep on both sides — too near and the atomics collide, too far and the MMU
+does. [`scatter_stride`](@ref) still carries it, alongside the one that replaced
+it: the shape is the same and only the unit moved.
 
 The kernel is still MMU-bound at 61.5 %, so there may be more; it would take a
 different layout of the cloud, not another constant.
+
+!!! note "There was more, and the prediction was half right"
+    Another constant was indeed not going to do it. A different *layout* was not
+    what it took either — the cloud is laid out exactly as before. What it took
+    was a different kernel, one that reads the same sorted order the stride was
+    running away from and adds the colliding contributions up in a private tile
+    before touching the grid. The counters had named address translation because
+    that is what the kernel they were pointed at was spending itself on; they
+    could not name the kernel that was not written yet.
+
+    Which is the standing limit of counters, stated once more: they say what
+    *this* code is bound on. **Ablation asked the other question.** Replacing
+    the atomics with plain additions — wrong answer, right shape — left 3.1 ms
+    of 29.2 on an RTX 4070 and 4.7 of 29.0 on an M1 Max. The atomics were 89 %
+    and 84 % of the kernel on the two vendors, which is one cause and therefore
+    one kernel to write, not two. The same ablation on the tiled kernel leaves
+    its flush atomics at 0.72 ms of 11.6 — six per cent.
+
+### The coarse deposition, tiled
+
+| the deposition alone | one per work-item | **private tile** | |
+|---|---:|---:|---:|
+| RTX 4070, 8×10⁶ on 130³ | 37.7 ms | **4.4** | **×8.5** |
+| M1 Max, 8×10⁶ on 130³ | 29.1 ms | **5.2** | **×5.6** |
+| M1 Max, 8×10⁷ on 258³ | 187.8 ms | **48.0** | **×3.9** |
+
+The whole step on the RTX 4070 at 8×10⁶ particles goes **57.3 → 38.0 ms**: one
+kernel, a third of the step. The gain shrinks with the cloud because the two
+kernels are not bound on the same thing at the two scales — what the tile
+removes is a constant per particle, and what remains grows.
+
+A work-item takes [`CIC_BLOCK`](@ref) = 64 consecutive particles of the sorted
+cloud, accumulates their eight corners into a `4³` window of threadgroup memory
+it owns alone, and flushes the window with one atomic per point it touched.
+Nothing in the accumulation is atomic: the contention does not move to
+threadgroup memory, it stops existing — and the kernel needs no atomic support
+there, which Metal does not offer.
+
+The 4³ is a cliff, not a slope: a block of 64 fits a 3³ window 75.8 % of the
+time and a 4³ one 99.7 %, and the quarter that escapes takes the eight-atomic
+path — 19.3 ms against 4.5 on the 4070. The same three numbers are best on both
+vendors, so they are three constants and not a table indexed by backend.
+
+!!! warning "The stride inverted, and a sweep would have missed it"
+    The stride survives, one level up: blocks are walked coprime to their count,
+    because neighbouring blocks cover nearly the same points and their flushes
+    would collide. But its optimum moved from 509 to **7** — and 7 blocks of 64
+    is 448 particles, the same separation as before. The unit changed, not the
+    distance. Keeping the inherited 509 would have cost Apple a factor of 2.2
+    (11.4 ms against 5.2) on a kernel that had just been made six times faster.
 
 Ablation — remove a piece, measure again — gives the *gain* but never the
 *cause*. It is what found that the projectile's tree reduction was worth 227 ms

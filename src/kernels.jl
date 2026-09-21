@@ -579,7 +579,7 @@ reads. Measured on the real Thomas-Fermi cloud, 8×10⁷ particles on a 258³ gr
 ⚠️ On a **synthetic** cloud the same A/B reads ×2.81 rather than ×3.45, because
 it spreads the particles over 28 per cell instead of 428 — and the staging cost
 is amortised over exactly that number. The coarse deposition was rejected twice
-on that mistake; see [`_deposit_cic_kernel!`](@ref).
+on that mistake; see [`_deposit_cic_tiled_kernel!`](@ref).
 
 The density agrees with the previous version to 4.2e-07 and the charge to the
 last printed digit — the residue is atomic ordering, not the change.
@@ -1080,71 +1080,194 @@ branch without a union.
     end
 end
 
+"""Consecutive particles handled by one work-item in [`_deposit_cic_tiled_kernel!`](@ref).
+
+Sets how many particles share one private tile, so it sets the atomic count:
+the tile is flushed once whatever `CIC_BLOCK` is, so doubling it halves the
+atomics per particle — until the block outgrows the tile and the escapes eat
+the gain. Measured at 8×10⁶ particles on the Thomas-Fermi cloud, the number of
+grid points a block of `K` consecutive *sorted* particles touches:
+
+| K | 8 | 16 | 32 | **64** | 128 |
+|---|---:|---:|---:|---:|---:|
+| points touched | 16.4 | 19.0 | 21.3 | **23.5** | 25.3 |
+| atomics/particle | 2.05 | 1.19 | 0.66 | **0.37** | 0.20 |
+
+The points saturate because the particles do not move on — they shuttle between
+a handful of cells. 128 still looks better on this table, and is not: the table
+counts touched points, not the ones a 4³ tile can hold, and the kernel bears it
+out — 4.9 ms against 4.5 on an RTX 4070, 10.8 against 10.8 on an M1 Max."""
+const CIC_BLOCK = Int32(64)
+
+"""Points per axis of the private tile in [`_deposit_cic_tiled_kernel!`](@ref).
+
+⚠️ **4, and the choice is a cliff, not a slope.** A block of 64 consecutive
+sorted particles fits in a tile of 3³ 75.8 % of the time, of 4³ 99.7 %, of 5³
+99.8 % — and the quarter that escapes a 3³ tile takes the eight-atomic path,
+which is the whole cost of the old kernel brought back for a quarter of the
+cloud. The kernel at 8×10⁶ particles, best block and group of each column:
+
+| tile | 3³ | **4³** | 5³ |
+|---|---:|---:|---:|
+| RTX 4070 | 19.3 ms | **4.5** | 5.4 |
+| M1 Max | 13.9 ms | **10.7** | 12.3 |
+
+So 3³ saves 63 % of the threadgroup memory and costs a factor of four on one
+card, and 5³ costs twice the memory for a tenth of a per cent of fit. **The two
+vendors agree**, which is why these are three numbers and not a table indexed
+by backend."""
+const CIC_TILE = Int32(4)
+
+"""Work-items per group for [`_deposit_cic_tiled_kernel!`](@ref) — each owns a
+whole `CIC_TILE³` tile, so the group costs `64·group` words of threadgroup
+memory and is bought against occupancy. At the 4³ tile, 8 KB a group:
+
+| group | **32** | 64 | 128 |
+|---|---:|---:|---:|
+| RTX 4070 | **4.5 ms** | 5.2 | 5.2 |
+| M1 Max | **10.8 ms** | 11.0 | 11.5 |
+
+⚠️ Smaller than the 64 both neighbouring kernels want, and for the opposite
+reason: they stage *shared* data, so a bigger group spreads the staging cost,
+while here every work-item carries its own tile and a bigger group only buys
+more threadgroup memory per unit of work."""
+const CIC_GROUPSIZE = 32
+
+@inline _cic_slot(p, t) = (p - Int32(1)) * Int32(CIC_GROUPSIZE) + t
+
 """
-Coarse-grid deposition — cloud-in-cell, on the device.
+    _deposit_cic_tiled_kernel!(ρ, parts, gx, gy, gz, cells, x0f, hf, x0t, iwt,
+                               npart, nblock, stride)
 
-One work-item per particle, eight atomics each: the *naive* scheme, and here it
-is the right one. The fine deposition had to abandon it — 410 million contending
-atomics onto an 8³ stencil — but this grid is coarser and each particle touches
-only its 8 corners, so the contention is an order of magnitude milder.
+Cloud-in-cell deposition onto the coarse grid, **one private tile per
+work-item**: a work-item walks [`CIC_BLOCK`](@ref) consecutive particles of the
+sorted cloud, accumulates their eight corners into a `CIC_TILE³` window of
+threadgroup memory it owns alone, and flushes the window at the end with one
+atomic per point it actually touched.
 
-Measured against the threaded host scatter it replaces, 8×10⁷ particles on a
-258³ coarse grid: **203 ms against 396, ×1.95**, with the density agreeing to
-5.0e-06 and the charge to 2e-08. A *sorted* version was tried too, on the model
-of the fine deposition; it fixes nothing that needs fixing here and the coarse
-sort it requires costs 356 ms on its own — see `_update_forces_resident!`.
+It replaces a kernel that put **one particle on one work-item and eight atomics
+on each**, and read the cloud deliberately out of order *because* consecutive
+particles collide on the same addresses — 4874 ms walking the sorted order
+against 193 strided, at 8×10⁷ particles. The collision is real; the conclusion
+was half of one. Measured on the Thomas-Fermi cloud at 8×10⁶ particles, 64
+consecutive sorted particles fall in **five distinct cells** and touch 23.5
+grid points. Their 512 atomics are 512 additions onto 23.5 addresses — which is
+a reason to *add them up first*, not a reason to run away.
 
-⚠️ Two traps, both paid for:
+That kernel was not badly tuned, it was the wrong kernel, and only an ablation
+says which: replacing its atomics with plain additions — wrong answer, right
+shape — left **3.1 ms of 29.2 on an RTX 4070 and 4.7 of 29.0 on an M1 Max**,
+so the atomics were 89 % and 84 % of it. Both vendors, one cause, one kernel.
+The same ablation on this one leaves the flush atomics at **0.72 ms of 11.6**,
+six per cent: what remains is the particle reads and the three
+[`_locate_cell`](@ref) calls.
 
-  * the naive form looks catastrophic — 1450 ms — when measured on a synthetic
-    cloud more concentrated than the real one. **Contention depends on the
-    distribution**, so this has to be measured on a Thomas-Fermi sample;
-  * the position is rebuilt from the fine grid's packed form, so `_pack!` must
-    have run **on the current positions**. Compare against a host deposition
-    after a Verlet step and the densities differ by 4.5 % — not a numerical
-    error, simply two different sets of particles.
+A-B interleaved in one process, both kernels carrying their own constants:
+
+| the deposition alone | one per work-item | **private tile** | |
+|---|---:|---:|---:|
+| RTX 4070, 8×10⁶ on 130³ | 37.7 ms | **4.4** | **×8.5** |
+| M1 Max, 8×10⁶ on 130³ | 29.1 ms | **5.2** | **×5.6** |
+| M1 Max, 8×10⁷ on 258³ | 187.8 ms | **48.0** | **×3.9** |
+
+and the whole step on the RTX 4070, 8×10⁶ particles: **57.3 → 38.0 ms**.
+
+⚠️ **The gain shrinks with the cloud**, ×8.5 at the film's scale and ×3.9 at
+the production one, because the two kernels are not bound on the same thing at
+the two scales: the old one is slower per particle when the grid is bigger —
+more pages to translate — while this one starts paying for the 3.8 GB of cloud
+it reads. What it removes is a constant per particle; what remains grows.
+
+Adding them up first is what makes the tile private rather than shared: nothing
+in the accumulation is atomic at all, because no other work-item can see the
+window. The contention does not move to threadgroup memory, it stops existing,
+and the kernel needs no atomic support there — which Metal does not offer.
+
+The escapes are the price. A particle outside its block's window takes the old
+eight-atomic path; a 4³ window holds 99.7 % of blocks, see [`CIC_TILE`](@ref).
+
+⚠️ **Everything above is a property of the cloud, so measure it on one.** The
+locality this kernel lives on — five cells per block of 64 — is what a
+Thomas-Fermi sample does, not what any cloud does. The kernel it replaces was
+once measured at 1450 ms on a synthetic cloud more concentrated than the real
+one, and the number meant nothing.
+
+⚠️ **The position is rebuilt from the fine grid's packed form**, so `_pack!`
+must have run on the *current* positions. Compare against a host deposition
+after a Verlet step and the densities differ by 4.5 % — not a numerical error,
+simply two different sets of particles.
+
+⚠️ **The strided read survives, one level up.** Blocks are still walked by a
+stride coprime with their count, not in order: neighbouring blocks hold
+neighbouring particles, so their flushes would land on the same points and put
+back the contention that was just removed — one work-item at a time instead of
+one particle at a time, but back. Inside a block the read is consecutive, so
+the kernel also stops wasting seven eighths of every cache line it pulls.
 """
-@kernel function _deposit_cic_kernel!(ρ, @Const(parts),
-                                      @Const(gx), @Const(gy), @Const(gz),
-                                      @Const(cells), x0f, hf, x0t, iwt, npart,
-                                      stride)
-    t = @index(Global, Linear)
-    # ⚠️ **Deliberately out of order.** The cloud is sorted by *fine* cell, so
-    # consecutive particles share a *coarse* cell — and this kernel's eight
-    # atomics then all land on the same handful of addresses at once. Measured
-    # at 8×10⁷ particles: **4874 ms** walking the sorted order against **193**
-    # walking it by a stride coprime with the count.
-    #
-    # The sorted order is what makes the fine deposition fast (one group per
-    # cell, one atomic each) and what makes this one slow. Reading by a stride
-    # costs locality on the load and buys back a factor of 25 on the atomics.
-    #
-    # ⚠️ **How far apart is a measured question, not "as far as possible".**
-    # The stride that ran 193 ms was the biggest prime to hand, and at that
-    # distance every work-item reads from its own page: the kernel is then
-    # bound on address translation, not on the atomics. The right distance is
-    # some hundreds — 89.7 ms — and [`scatter_stride`](@ref) carries the
-    # counters and the whole curve.
-    i = Int32((Int64(t - 1) * Int64(stride)) % Int64(npart)) + Int32(1)
-    @inbounds if t <= npart
-        E = eltype(ρ)
-        q = parts[i]; knode = q.knode; delta = q.delta
-        px = x0f + E(knode[1] - Int32(1)) * hf + delta[1]
-        py = x0f + E(knode[2] - Int32(1)) * hf + delta[2]
-        pz = x0f + E(knode[3] - Int32(1)) * hf + delta[3]
-        ix, ax = _locate_cell(gx, x0t, iwt, cells, px)
-        iy, ay = _locate_cell(gy, x0t, iwt, cells, py)
-        iz, az = _locate_cell(gz, x0t, iwt, cells, pz)
-        if ix > Int32(0) && iy > Int32(0) && iz > Int32(0)
+@kernel function _deposit_cic_tiled_kernel!(ρ, @Const(parts),
+                                            @Const(gx), @Const(gy), @Const(gz),
+                                            @Const(cells), x0f, hf, x0t, iwt,
+                                            npart, nblock, stride)
+    gi = @index(Global, Linear)
+    t  = @index(Local, Linear)
+    E  = eltype(ρ)
+    T  = Int32(CIC_TILE)
+    tile = @localmem eltype(ρ) (Int(CIC_TILE)^3 * CIC_GROUPSIZE,)
+    @inbounds begin
+        for p in Int32(1):(T*T*T)
+            tile[_cic_slot(p, t)] = zero(E)
+        end
+        blk = Int32((Int64(gi - Int32(1)) * Int64(stride)) % Int64(nblock)) + Int32(1)
+        lo = (blk - Int32(1)) * CIC_BLOCK + Int32(1)
+        hi = min(lo + CIC_BLOCK - Int32(1), npart)
+        # The window is anchored on the first particle that lands in the grid,
+        # one cell back of it so that it reaches both ways.
+        ox = oy = oz = Int32(0); anchored = false
+        for i in lo:hi
+            q = parts[i]; knode = q.knode; delta = q.delta
+            px = x0f + E(knode[1] - Int32(1)) * hf + delta[1]
+            py = x0f + E(knode[2] - Int32(1)) * hf + delta[2]
+            pz = x0f + E(knode[3] - Int32(1)) * hf + delta[3]
+            ix, ax = _locate_cell(gx, x0t, iwt, cells, px)
+            iy, ay = _locate_cell(gy, x0t, iwt, cells, py)
+            iz, az = _locate_cell(gz, x0t, iwt, cells, pz)
+            (ix > Int32(0) && iy > Int32(0) && iz > Int32(0)) || continue
+            if !anchored
+                ox = ix - Int32(2); oy = iy - Int32(2); oz = iz - Int32(2)
+                anchored = true
+            end
             bx = one(E) - ax; by = one(E) - ay; bz = one(E) - az
-            Atomix.@atomic ρ[ix, iy, iz]         += ax * ay * az
-            Atomix.@atomic ρ[ix, iy, iz+1]       += ax * ay * bz
-            Atomix.@atomic ρ[ix, iy+1, iz]       += ax * by * az
-            Atomix.@atomic ρ[ix, iy+1, iz+1]     += ax * by * bz
-            Atomix.@atomic ρ[ix+1, iy, iz]       += bx * ay * az
-            Atomix.@atomic ρ[ix+1, iy, iz+1]     += bx * ay * bz
-            Atomix.@atomic ρ[ix+1, iy+1, iz]     += bx * by * az
-            Atomix.@atomic ρ[ix+1, iy+1, iz+1]   += bx * by * bz
+            dx = ix - ox; dy = iy - oy; dz = iz - oz
+            if Int32(1) <= dx <= T - Int32(1) && Int32(1) <= dy <= T - Int32(1) &&
+               Int32(1) <= dz <= T - Int32(1)
+                base = (dz - Int32(1)) * T * T + (dy - Int32(1)) * T + dx
+                tile[_cic_slot(base,                     t)] += ax * ay * az
+                tile[_cic_slot(base + T * T,             t)] += ax * ay * bz
+                tile[_cic_slot(base + T,                 t)] += ax * by * az
+                tile[_cic_slot(base + T + T * T,         t)] += ax * by * bz
+                tile[_cic_slot(base + Int32(1),          t)] += bx * ay * az
+                tile[_cic_slot(base + Int32(1) + T * T,  t)] += bx * ay * bz
+                tile[_cic_slot(base + Int32(1) + T,      t)] += bx * by * az
+                tile[_cic_slot(base + Int32(1) + T + T * T, t)] += bx * by * bz
+            else
+                Atomix.@atomic ρ[ix, iy, iz]         += ax * ay * az
+                Atomix.@atomic ρ[ix, iy, iz+1]       += ax * ay * bz
+                Atomix.@atomic ρ[ix, iy+1, iz]       += ax * by * az
+                Atomix.@atomic ρ[ix, iy+1, iz+1]     += ax * by * bz
+                Atomix.@atomic ρ[ix+1, iy, iz]       += bx * ay * az
+                Atomix.@atomic ρ[ix+1, iy, iz+1]     += bx * ay * bz
+                Atomix.@atomic ρ[ix+1, iy+1, iz]     += bx * by * az
+                Atomix.@atomic ρ[ix+1, iy+1, iz+1]   += bx * by * bz
+            end
+        end
+        if anchored
+            for dz in Int32(1):T, dy in Int32(1):T, dx in Int32(1):T
+                p = (dz - Int32(1)) * T * T + (dy - Int32(1)) * T + dx
+                v = tile[_cic_slot(p, t)]
+                if v != zero(E)
+                    Atomix.@atomic ρ[ox+dx, oy+dy, oz+dz] += v
+                end
+            end
         end
     end
 end
