@@ -261,6 +261,11 @@ device memory ≈ 128 bytes × particles  +  91 bytes × (2·nfine + 2)³
 | 24 GB | 178 M | 172 M |
 | 64 GB unified (Apple) | ≈ 350 M | ≈ 340 M |
 
+Checked on a real discrete card, which until then the table had only reasoned
+about: 3×10⁷ particles on 130³ asks 3.78 GiB by the formula and **took 3.91** on
+an RTX 5060 — 3.4 % over, the CUDA allocator rounding and its context — leaving
+3.5 GiB of the 8 free, and a step ran.
+
 A gigabyte is left to the driver and the runtime. **8 million is the safe first
 number**: one gigabyte of device memory, a minute and a half of wall clock, and
 it fits everywhere. The Apple row is bounded by the *construction* rather than
