@@ -129,17 +129,11 @@ Besides the film, the run leaves `xenon_snapshots.png` and
 `xenon_data_cache.jls`, which `scripts/render_xenon_glmakie.jl` redraws without
 recomputing anything. All of it at the root of the repository, all gitignored.
 
-| from nothing, no cache | physics | film | whole command |
-|---|---:|---:|---:|
-| M1 Max, 8×10⁶ particles | 69.5 s | **3.9 s** | **2 min 12** |
-| RTX 4070, 8×10⁶ | 53.5 s | 18.8 s | 2 min 15 |
-| 10 CPU cores, 6×10⁵ | 173.8 s | 3.9 s | 3 min 31 |
-
-The film is quick because of the **primitive**, not the backend: a `heatmap` is
-one texture upload, where `contourf` is a tessellation Makie computes on the CPU
-whatever draws it — 3.9 s against 31.0 for the same 176 frames. The script picks
-GLMakie and `heatmap` where a display allows and falls back to Cairo where it
-does not; its docstring has the measurements.
+| from nothing, no cache | whole command |
+|---|---:|
+| M1 Max, 8×10⁶ particles | **2 min 12** |
+| RTX 4070, 8×10⁶ | 2 min 15 |
+| 10 CPU cores, 6×10⁵ | 3 min 31 |
 
 ### Two vendors, the same physics
 
@@ -151,17 +145,11 @@ The same kernels on an M1 Max and on an RTX 4070, over the whole crossing at
 | charge carried away | 0.840 e | **0.842 e** |
 | ms/step, averaged over the crossing | 99.3 | **76.4** |
 | 700 steps | 69.5 s | **53.5 s** |
-| reading 176 frames back for the film | 6.8 s | 15.2 s |
 
 Two independent vendors agreeing to the third digit is the strongest statement
 this port can make about itself — and the third digit is where agreement stops
 meaning much: two runs on the *same* card differ by as much, `Float32` atomics
 not committing in the same order twice.
-
-The one line where the machines genuinely differ is the **readback**: 176 density
-slices and 176 looks at the cloud, which on unified memory is not a copy at all
-and over PCIe is fifteen seconds. The step itself, where nothing crosses, is
-where the discrete card wins.
 
 > [!WARNING]
 > **ROCm and oneAPI have never been run**, and CUDA only on two cards. Getting
