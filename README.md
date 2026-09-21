@@ -145,20 +145,32 @@ drag in another's vendor stack:
 |---|---|---|
 | `--project=.` | the package alone | the processor, anywhere |
 | `--project=gpu` | Metal, AppleAccelerate, CairoMakie, GLMakie | Apple Silicon |
-| `--project=cuda` | CUDA, CairoMakie, GLMakie | an NVIDIA card |
+| `--project=cuda` | CUDA, CairoMakie | an NVIDIA card, headless included |
 | `--project=viz` | GLMakie | redrawing a cached run |
 | `--project=docs` | Documenter, CairoMakie | building the site |
 
+**CUDA now runs, and gives the same physics.** The same kernels, on an RTX 5060
+(Blackwell, 8 GB, CUDA 13.4) and on an M1 Max, over the whole crossing at
+8×10⁶ particles:
+
+| | M1 Max, 32-core GPU | RTX 5060, 8 GB |
+|---|---:|---:|
+| charge carried away | 0.843 e | **0.840 e** |
+| particles outside the fine grid, at the end | 216 793 | 216 976 |
+| ms/step, first → last | 112 → 158 | 111 → 209 |
+| 700 steps | 87.8 s | 98.6 s |
+
+Two independent vendors agreeing to the third digit is the strongest statement
+this port can make about itself.
+
 > [!WARNING]
-> **CUDA, ROCm and oneAPI have never been run here** — there is no such card on
-> the machine this was written on. Nothing in the kernels is Apple-specific and
-> the accelerator takes any `KernelAbstractions` backend, so it is *expected* to
-> work; expected is not measured. The first attempt on a Linux box with an
-> NVIDIA card found three real bugs in ten seconds — a data file read from a
-> path that only exists after the Fortran is built, a GPU probe that mistook
-> *loading* Metal for *having* Metal, and a host-side diagnostic that on a
-> discrete card would have read a stale copy of the cloud. All three are fixed
-> above. Please report the next one.
+> **ROCm and oneAPI have still never been run**, and CUDA only on that one
+> card. Getting there took five bugs that Apple's unified memory had been
+> hiding — a data file read from a path that only exists after the Fortran is
+> built; a GPU probe that mistook *loading* Metal for *having* Metal; and three
+> places where the host half of a buffer was read, or written, as if it were the
+> device's. The worst of them silently froze the cloud: the capture curve read
+> 0.000 for an entire crossing. Please report the next one.
 
 ### Making the film
 
@@ -180,6 +192,14 @@ root of the repository** (all three are gitignored), and caches its run in
 Timed from nothing on the machine above — no cache, cold start: **2 min 12 s**,
 of which 30 s of physics, 31 s of drawing and the rest loading the plotting
 stack and encoding. 176 frames, 8.5 fs of collision.
+
+> [!WARNING]
+> **On a machine with no display, use the Cairo path** — the one above. GLMakie
+> needs a window: on a rented Linux box it stops at `GLFW: X11: The DISPLAY
+> environment variable is missing`, during `instantiate` as well as at run time,
+> which is why `cuda/` does not carry it. Measured there, the film costs 22.5 s
+> of physics and 61.5 s of Cairo drawing (2.9 frames/s against 5.7 on the M1
+> Max, which is the CPU talking, not the GPU).
 
 `scripts/render_xenon_glmakie.jl` redraws the cached run **six times faster**,
 and the reason is worth knowing: it is not the backend, it is the primitive.
