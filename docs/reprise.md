@@ -16,7 +16,9 @@ forces 502 → 209 ms, le dépôt grossier 198 → 93, le dépôt fin 197 → 59
 de fin de journée fait **606 ms**. Le dépôt grossier a été **réécrit** depuis —
 une tuile privée par work-item au lieu de huit atomiques par particule — et fait
 48,0 ms contre 187,8, ×3,9 à l'échelle de production et **×8,5** à celle du film
-sur une RTX 4070, où le pas entier passe de 57,3 à **38,0 ms**.
+sur une RTX 4070, où le pas entier passe de 57,3 à **38,0 ms**. Le chemin CUDA
+est validé sur deux cartes, et **une seule commande** fait désormais la
+simulation et son film.
 
 ## Par où entrer
 
@@ -60,7 +62,9 @@ répertoire de travail xmgr.
 
     julia --project=gpu -t auto scripts/xenon.jl           # premiere simulation + film, ~2 min 10
     julia --project=.   -e 'include("test/runtests.jl")'   # 4824 tests, ~80 s
-    julia --project=gpu -t auto scripts/profil_pas.jl      # profil d'un pas
+    julia --project=gpu -t auto scripts/profil_pas.jl      # profil d'un pas, chemin hote
+    julia --project=gpu -t auto scripts/profil_device.jl   # profil d'un pas, chemin device
+    julia --project=cuda -t auto scripts/profil_device.jl  # le meme, sur NVIDIA
     julia --project=gpu -t auto scripts/bench_gpu.jl       # CPU vs GPU
     julia --project=gpu -t auto scripts/figure52.jl        # figure 5.2, ~2 min 30
     julia --project=gpu -t auto scripts/figure53.jl        # figure 5.3, ~8 min
@@ -189,13 +193,15 @@ sont dans la section [Branche `gpu-portable`](#branche-gpu-portable) ci-dessous.
 
 ## Branche `gpu-portable`
 
-**39 commits, non fusionnée, suite verte (4824 tests) à chaque commit.**
-`git log --oneline master..gpu-portable`.
+**69 commits, non fusionnée, suite verte (4824 tests) à chaque commit.**
+`git log --oneline master..gpu-portable`. ⚠️ **Non poussée** au 21/09 au soir :
+les quatre derniers commits sont locaux.
 
 Le portage est entièrement en `KernelAbstractions` : les mêmes noyaux servent
-`CPU()`, Metal, et — non validé, faute de matériel — CUDA/ROCm/oneAPI. **Le
-nuage vit sur le device**, et le pas à 8×10⁷ particules sur 222³ est passé de
-4213 ms à **1090**. Les trois gros noyaux ont ensuite été repris — les forces
+`CPU()`, Metal et **CUDA — validé sur deux cartes**, une RTX 5060 louée et une
+RTX 4070 locale ; ROCm et oneAPI restent non essayés. **Le nuage vit sur le
+device**, et le pas à 8×10⁷ particules sur 222³ est passé de 4213 ms à
+**1090**. Les trois gros noyaux ont ensuite été repris — les forces
 502 → **209** ms, le dépôt grossier 198 → **93**, le dépôt fin 197 → **59**,
 chacun mesuré en A-B-A — et le pas de fin de journée fait **606 ms**.
 
@@ -372,7 +378,54 @@ Sur le pas entier, A-B entrelacé : **844,9 → 705,8 ms**, l'étage du dépôt
 interne que rien d'autre n'a bougé. La densité s'accorde à 5,2e-07 en ponctuel,
 soit l'ordre des atomiques.
 
-### Le dépôt grossier : ×2,1 en changeant un pas de 7919 à 509
+### Le dépôt grossier : ×8,5 en cessant de fuir les collisions
+
+**Fait le 21/09.** Le noyau fuyait les particules voisines depuis deux ans
+parce que leurs huit atomiques se percutaient — trier par maille fine met des
+particules consécutives dans la même maille grossière, 4874 ms contre 193. La
+collision était réelle ; la conclusion ne l'était qu'à moitié.
+
+Comptées plutôt que redoutées : **64 particules consécutives tombent dans cinq
+mailles grossières et touchent 23,5 points de grille**. Leurs 512 atomiques sont
+512 additions sur 23,5 adresses — une raison de les additionner avant de toucher
+la grille, pas de les séparer. Un work-item prend donc 64 particules d'affilée,
+les accumule dans une fenêtre 4³ de mémoire de groupe **qu'il possède seul**, et
+la vide avec une atomique par point touché : 0,37 atomique par particule au lieu
+de huit. Rien n'est atomique dans l'accumulation — la contention ne déménage pas
+en mémoire de groupe, elle cesse d'exister, et le noyau n'a besoin d'aucun
+support atomique là-bas, que Metal n'offre pas.
+
+A-B entrelacé, chaque noyau portant ses propres constantes :
+
+| dépôt grossier seul | une particule / work-item | tuile privée | |
+|---|---:|---:|---:|
+| RTX 4070, 8×10⁶ sur 130³ | 37,7 ms | **4,4** | **×8,5** |
+| M1 Max, 8×10⁶ sur 130³ | 29,1 ms | **5,2** | **×5,6** |
+| M1 Max, 8×10⁷ sur 258³ | 187,8 ms | **48,0** | **×3,9** |
+
+et le pas entier sur la 4070, **57,3 → 38,0 ms**.
+
+⚠️ **Ce sont les ablations qui ont tranché, pas les compteurs.** Remplacer les
+atomiques par des additions simples — faux résultat, bonne forme — laissait
+3,1 ms sur 29,2 sur la 4070 et 4,7 sur 29,0 sur le M1 Max : 89 % et 84 %, même
+cause sur les deux fondeurs, donc **un noyau et non deux**. Les compteurs
+nommaient la MMU parce que c'est ce que dépensait le noyau qu'on leur montrait ;
+ils ne pouvaient pas nommer celui qui n'était pas écrit.
+
+⚠️ **Le pas de dispersion s'est inversé, et j'ai failli livrer l'ancien.** Il
+survit un étage plus haut — les *blocs* sont parcourus par un pas premier avec
+leur nombre, sans quoi les vidanges voisines se percutent — mais son optimum
+passe de 509 à **7**. Sept blocs de 64, c'est 448 particules : la même distance,
+une autre unité. Garder le 509 hérité coûtait un facteur 2,2 sur Apple, sur un
+noyau qu'on venait d'accélérer six fois. **Quand un noyau change, remesurer les
+constantes dont il hérite.**
+
+Les trois constantes (tuile 4³, bloc 64, groupe 32) sont les mêmes sur les deux
+fondeurs. La tuile est une falaise et non une pente : un bloc de 64 tient dans
+3³ dans 75,8 % des cas et dans 4³ dans 99,7 %, et le quart qui s'échappe coûte
+19,3 ms contre 4,5 sur la 4070.
+
+### L'histoire d'avant : ×2,1 en changeant un pas de 7919 à 509
 
 Le noyau lit le nuage **dans le désordre**, par un pas premier avec le nombre
 de particules, pour que ses huit atomiques ne tombent pas toutes sur la même
@@ -446,20 +499,94 @@ de rouvrir une impasse, vérifier ce qui a changé sous elle.
    session à l'autre sans qu'on y touche.
 4. **Le REPL persistant de kaimon**, et `run_tests` pour la suite.
 
+### Où passe le temps sur chaque carte, mesuré le 21/09
+
+`scripts/profil_device.jl` — écrit ce jour-là, il manquait — rejoue le corps de
+`_update_forces_resident!` et de `step!` appel par appel, avec un `synchronize`
+entre les étages, et imprime un `step!` non synchronisé à côté de la somme pour
+qu'on voie ce que la sérialisation coûte : 1 % sur Metal, −1 % sur CUDA, donc
+les tables ferment.
+
+Même nuage, même instant, 8×10⁶ particules sur 130³ :
+
+| étage | RTX 4070 | % | M1 Max | % |
+|---|---:|---:|---:|---:|
+| empaquetage + tri | **14,2** | 29,8 | 13,2 | 18,2 |
+| forces + projectile | 14,0 | 29,4 | **20,0** | 27,7 |
+| Verlet | **6,9** | 14,4 | 3,8 | 5,2 |
+| dépôt grossier (CIC) | 4,6 | 9,5 | 6,1 | 8,5 |
+| dépôt fin | 2,8 | 5,9 | 8,0 | 11,0 |
+| poisson! | 2,0 | 4,2 | 9,9 | 13,7 |
+| champ moyen | 0,8 | 1,6 | 4,8 | 6,6 |
+| csolf + csolc | 0,6 | 1,2 | 3,1 | 4,3 |
+| csolc → hôte (PCIe) | 0,7 | 1,5 | 1,2 | 1,6 |
+| **pas complet** | **48,1** | | **71,6** | |
+
+**Le travail de grille est écrasé par la 4070** — `poisson!` ×4,9, le champ
+moyen ×6,4, le dépôt fin ×2,8 : du FP32 dense, ce que cette carte fait de mieux.
+**Le travail particulaire ne l'est pas** : le tri est *plus lent* sur la 4070 que
+sur un M1 Max, et le Verlet 1,8× plus lent. Deux étages qui ne sont ni du calcul
+ni de la grille, mais du déplacement de mémoire et des atomiques — exactement là
+où la mémoire unifiée ne perd rien et où une carte discrète ne gagne rien.
+
+### Le script d'entrée : un seul, trois options
+
+**Fait le 21/09.** Le README proposait deux commandes qui se recouvraient —
+`xenon.jl` qui simulait et imprimait une table, et `film_xenon.jl` qui simulait
+de nouveau et dessinait. C'est un seul script : il fait la collision, imprime ce
+qui se passe, et écrit le film. Options : `--particules`, `--nfine`,
+`--cpu`/`--gpu`. Le fondeur est trouvé seul.
+
+**Il dessine en GLMakie + `heatmap`** dès qu'un écran et le paquet le
+permettent, ce que le script du film ne faisait pas : il dessinait en Cairo +
+`contourf` sur un rééchantillonnage 350×350, et le chemin rapide n'existait que
+dans un second script qui redessinait depuis un cache. **3,9 s contre 31,0**
+pour les mêmes 176 images. C'est la primitive qui compte, pas le moteur : un
+heatmap est un envoi de texture, une tessellation de contours est du travail
+processeur dans Makie quel que soit le moteur — et Cairo ne sait pas dessiner
+celui-ci, les points de collocation n'étant pas équidistants.
+
+Trois défauts corrigés au passage :
+
+* la commande « sans GPU » du README **ne pouvait pas marcher** (`--project=.`
+  ne porte aucun Makie, volontairement) ; c'est `--project=viz`, dont le
+  manifeste n'avait jamais reçu le paquet ;
+* le cache était **relu dès que le fichier existait**, ce qui ignorait en
+  silence `--particules` et redessinait le nuage de quelqu'un d'autre ;
+* tous les temps du README **précédaient le dépôt tuilé**.
+
+Remesuré machine au repos, la traversée complète à 8×10⁶ sur 130³ : **69,5 s**
+sur M1 Max contre les 86,4 documentés, **53,5 s** sur la 4070. La commande
+entière, film compris, fait 2 min 12 sur Apple et 3 min 31 sur dix cœurs.
+
+⚠️ **La relecture des images est la seule ligne où les deux machines diffèrent
+vraiment** : 176 coupes de densité et 176 lectures du nuage coûtent 6,8 s en
+mémoire unifiée et **15,2 s** sur PCIe. Le pas lui-même, où rien ne traverse,
+reste à l'avantage de la carte discrète.
+
 ### Ce qui reste, par ordre de rendement
 
-1. **Le noyau des forces**, 198 ms — un tiers du pas, et de nouveau le premier
-   poste. Il n'a **jamais été repassé aux compteurs depuis la mise en mémoire
-   de groupe** : ceux d'avant (Buffer Read 99 %) décrivent un noyau qui
-   n'existe plus. C'est la première chose à faire, et la leçon du dépôt fin
-   s'y applique peut-être telle quelle — sa contraction 10³ relit
-   `cols[·, cx]` dix fois par point, exactement le motif que le blocage par
-   colonne a supprimé ailleurs.
-2. **Le tri**, ~94 ms, **sur le device** : l'histogramme puis le placement.
-   Le placement est le gros morceau, et `docs/src/device.md` explique pourquoi
-   il tient en une passe. L'empaquetage `(k, δ)` en `Float64`, lui, ne coûte
-   plus rien sur ce chemin — le nuage est déjà dans la forme que les noyaux
-   lisent.
+1. **Le tri** — 30 % du pas sur la 4070, 18 % sur le M1 Max, et le premier
+   poste de la carte NVIDIA. Il y est *plus lent en absolu* que sur un M1 Max
+   (14,2 contre 13,2 ms) alors que la carte écrase l'Apple partout ailleurs :
+   c'est du déplacement de mémoire, pas du calcul. L'histogramme puis le
+   placement ; `docs/src/device.md` explique pourquoi le placement tient en une
+   passe. L'empaquetage `(k, δ)` en `Float64` ne coûte plus rien sur ce chemin.
+2. **Le noyau des forces**, 14,0 ms sur la 4070 et 20,0 sur le M1 Max — un bon
+   quart du pas des deux côtés. Il n'a **jamais été repassé aux compteurs depuis
+   la mise en mémoire de groupe** : ceux d'avant (Buffer Read 99 %) décrivent un
+   noyau qui n'existe plus. La leçon du dépôt fin s'y applique peut-être telle
+   quelle — sa contraction 10³ relit `cols[·, cx]` dix fois par point, exactement
+   le motif que le blocage par colonne a supprimé ailleurs.
+3. **Le Verlet, et c'est une anomalie** : 6,9 ms sur la 4070 contre 3,8 sur un
+   M1 Max, soit 1,8× *plus lent* sur la carte deux fois plus rapide partout
+   ailleurs. Une carte n'a pas de raison d'être deux fois plus lente sur une
+   boucle aussi simple ; quelque chose n'y est pas mesuré. Peu de lignes à lire,
+   donc bon rapport.
+4. Sur la 4070, **la relecture des images du film coûte 15,2 s contre 6,8** en
+   mémoire unifiée. Hors du pas, mais c'est un cinquième de la commande que le
+   README propose, et personne n'a regardé si les 176 transferts peuvent être
+   groupés.
 3. ~~Le dépôt grossier, à 92 ms, est toujours borné par la MMU~~ — **fait le
    21/09**, et pas par le chemin annoncé. « Il faudrait changer la disposition
    du nuage, pas un paramètre » était faux des deux côtés : le nuage est
@@ -469,12 +596,14 @@ de rouvrir une impasse, vérifier ce qui a changé sous elle.
    compteurs avaient nommé la MMU parce que c'est ce que le noyau qu'on leur
    montrait dépensait ; l'ablation, elle, a dit que les atomiques valaient
    84 à 89 % — même cause sur les deux fondeurs, donc un noyau et non deux.
-4. Les 12 ms de `csolc`, puis le budget énergétique, encore particule par
-   particule sur l'hôte et jamais profilé à 8×10⁷.
-5. Sur la 4070, les **12,2 ms de recopies device→hôte** (16 % du pas d'alors)
-   n'ont jamais été examinées — elles n'existent pas sur Apple, la mémoire
-   étant unifiée.
+5. Le budget énergétique, encore particule par particule sur l'hôte et jamais
+   profilé à 8×10⁷.
 
 ⚠️ L'ablation qui donnait 110 ms « sans aucune lecture de table » date du noyau
 d'avant, et ne borne plus rien : le noyau actuel fait 198 ms avec ses lectures
 en mémoire de groupe. Re-mesurer avant de raisonner dessus.
+
+⚠️ Les rangs ci-dessus viennent du profil à **8×10⁶** particules, l'échelle du
+film. À 8×10⁷ les proportions bougent — c'est là que le dépôt grossier ne rend
+plus que ×3,9 au lieu de ×8,5 — donc reprendre `scripts/profil_device.jl` à la
+taille visée avant de choisir.
