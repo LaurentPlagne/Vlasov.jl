@@ -39,34 +39,46 @@ Close the terminal, open a new one, and check it answers:
 julia --version        # developed and tested on 1.12 and 1.13
 ```
 
-### 2. Get the code, and the environment for your machine
+### 2. Get the code, and let it look at your machine
 
 ```sh
 git clone https://github.com/LaurentPlagne/Vlasov.jl.git
 cd Vlasov.jl
+julia scripts/setup.jl
 ```
 
-Then **one** of these, whichever describes the machine:
+A few minutes the first time, nothing afterwards. It looks for an Apple GPU, an
+NVIDIA card and a display, and builds `run/` — the one environment *this*
+machine needs:
 
-```sh
-julia --project=gpu  -e 'using Pkg; Pkg.instantiate()'    # Apple Silicon
-julia --project=cuda -e 'using Pkg; Pkg.instantiate()'    # an NVIDIA card
-julia --project=viz  -e 'using Pkg; Pkg.instantiate()'    # no GPU at all
+```
+Looking at this machine:
+  operating system   Darwin, aarch64
+  Apple Silicon      yes
+  nvidia-smi         not found
+  display            yes
+
+Building /Users/you/Vlasov.jl/run:
+  Vlasov ... ok
+  Metal ... ok
+  AppleAccelerate ... ok
+  GLMakie ... ok
 ```
 
-A few minutes the first time, nothing afterwards. There are three because each
-carries what its path needs and nothing more — `Metal` and `AppleAccelerate`,
-or `CUDA`, or neither — so instantiating one does not drag in another vendor's
-stack. The package itself (`--project=.`) carries no plotting stack at all: a
-simulation package has no business depending on Makie.
+`Metal` and `CUDA` cannot share a `Project.toml` — each installs artifacts the
+other platform has no build for, so an environment carrying both instantiates
+nowhere. The choice has to be made somewhere; it is made here, by looking,
+rather than by asking you to know. Nothing in it is fatal: a vendor package that
+refuses to install leaves an environment that still runs, on the processor,
+saying so.
 
 ### 3. Run it
 
-One command. It computes the collision, prints what is happening, and writes the
-film:
+One command, the same on every machine. It computes the collision, prints what
+is happening, and writes the film:
 
 ```sh
-julia --project=gpu -t auto scripts/xenon.jl
+julia --project=run -t auto scripts/xenon.jl
 ```
 
 `-t auto` hands Julia every core; without it the host-side loops run on one.
@@ -119,7 +131,7 @@ chosen for the film: the same 130³ grid either way, so the picture is the same
 and only its noise differs.
 
 ```sh
-julia --project=viz -t auto scripts/xenon.jl --particules=100000 --nfine=28
+julia --project=run -t auto scripts/xenon.jl --particules=100000 --nfine=28
 ```
 
 is the quickest whole crossing — **a minute** on the ten cores above, film
@@ -133,17 +145,17 @@ repository and all gitignored, plus `xenon_data_cache.jls` — the run itself. T
 redraw it after changing a colour, without recomputing anything:
 
 ```sh
-julia --project=viz -t auto scripts/render_xenon_glmakie.jl
+julia --project=run -t auto scripts/render_xenon_glmakie.jl
 ```
 
 Timed from nothing, no cache, cold start:
 
 | | physics | film | whole command |
 |---|---:|---:|---:|
-| `--project=gpu`, M1 Max, 8×10⁶ | 69.5 s | **3.9 s** | **2 min 12** |
-| `--project=cuda`, RTX 4070, 8×10⁶, headless → Cairo | 53.5 s | 18.8 s | 2 min 15 |
-| `--project=viz`, 10 CPU cores, 6×10⁵ | 173.8 s | 3.9 s | 3 min 31 |
-| `--project=viz`, 10 CPU cores, 10⁵ on 58³ | 24.1 s | 3.8 s | 1 min 02 |
+| M1 Max, 8×10⁶ particles, GLMakie | 69.5 s | **3.9 s** | **2 min 12** |
+| RTX 4070, 8×10⁶, headless so Cairo | 53.5 s | 18.8 s | 2 min 15 |
+| 10 CPU cores, 6×10⁵, GLMakie | 173.8 s | 3.9 s | 3 min 31 |
+| 10 CPU cores, 10⁵ on 58³, GLMakie | 24.1 s | 3.8 s | 1 min 02 |
 
 The capture comes out at 0.840, 0.842 and 0.826 electron on the first three —
 the last is a tenth of the particles, and its noise is the difference.
@@ -213,12 +225,20 @@ nothing crosses, is where the discrete card wins.
 
 ### The other environments
 
+`run/` is generated and gitignored, and so is every `Manifest.toml` in the
+repository: one resolved on a Mac pins versions and artifacts another machine
+cannot replay, and the failure that follows names nothing. Run `setup.jl` again
+whenever the machine changes.
+
+The environments below are the ones the repository's **own** scripts and its CI
+use. A first run needs none of them.
+
 | | carries | for |
 |---|---|---|
-| `--project=gpu` | Metal, AppleAccelerate, CairoMakie, GLMakie | Apple Silicon |
-| `--project=cuda` | CUDA, CairoMakie | an NVIDIA card, headless included |
-| `--project=viz` | GLMakie | no GPU, and redrawing |
 | `--project=.` | the package alone | the test suite, and using it as a library |
+| `--project=gpu` | Metal, AppleAccelerate, CairoMakie, GLMakie | the Apple campaign scripts |
+| `--project=cuda` | CUDA, CairoMakie | the same on an NVIDIA card |
+| `--project=viz` | GLMakie | redrawing a cached run |
 | `--project=docs` | Documenter, CairoMakie | building the site |
 
 `gpu/` is **the Apple one** — the name predates the port being portable.

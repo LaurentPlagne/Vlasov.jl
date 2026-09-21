@@ -2,8 +2,8 @@
 """
 The xenon film, drawn by the GPU instead of by Cairo.
 
-    julia --project=gpu scripts/xenon.jl            # simulate, then draw
-    julia --project=viz scripts/render_xenon_glmakie.jl  # redraw, without recomputing
+    julia --project=run -t auto scripts/xenon.jl         # simulate, then draw
+    julia --project=run scripts/render_xenon_glmakie.jl  # redraw, without recomputing
 
 It reads `xenon_data_cache.jls`, which `scripts/xenon.jl` leaves behind, so
 the physics is not recomputed — which is what this script is *for* now: changing
@@ -56,7 +56,7 @@ const GREY = RGBf(0.80, 0.80, 0.80)
 function main()
     cache = joinpath(ROOT, "xenon_data_cache.jls")
     isfile(cache) ||
-        error("$cache not found — run `julia --project=gpu scripts/xenon.jl` first: " *
+        error("$cache not found — run `julia --project=run scripts/xenon.jl` first: " *
               "it computes the run and leaves the cache behind.")
     println("Loading the cached run from $cache...")
     data = deserialize(cache)

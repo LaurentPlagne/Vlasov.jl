@@ -60,7 +60,8 @@ répertoire de travail xmgr.
 
 ## Comment exécuter
 
-    julia --project=gpu -t auto scripts/xenon.jl           # premiere simulation + film, ~2 min 10
+    julia scripts/setup.jl                                # construit run/ pour cette machine
+    julia --project=run -t auto scripts/xenon.jl          # premiere simulation + film, ~2 min 10
     julia --project=.   -e 'include("test/runtests.jl")'   # 4824 tests, ~80 s
     julia --project=gpu -t auto scripts/profil_pas.jl      # profil d'un pas, chemin hote
     julia --project=gpu -t auto scripts/profil_device.jl   # profil d'un pas, chemin device

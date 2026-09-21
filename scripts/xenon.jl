@@ -2,9 +2,8 @@
 """
 Na₁₉₆ + Xe²⁵⁺, 500 keV, b = 45 a₀ — the 1997 Springer collision, as a first run.
 
-    julia --project=gpu  -t auto scripts/xenon.jl     # Apple Silicon
-    julia --project=cuda -t auto scripts/xenon.jl     # an NVIDIA card
-    julia --project=viz  -t auto scripts/xenon.jl     # no GPU at all
+    julia scripts/setup.jl                        # once, per machine
+    julia --project=run -t auto scripts/xenon.jl  # the same everywhere
 
 A multicharged xenon ion grazes a sodium cluster. Its field tears an electron
 bridge out of the cloud, part of which it carries away. The run prints the
@@ -86,12 +85,14 @@ function probe_report()
     if Sys.isapple()
         push!(lines, "  Metal: " * (METAL ? "yes" :
               METAL_HERE ? "loaded, but Metal.functional() says no Apple GPU" :
-              "not in this environment (it lives in `gpu/`)"))
+              "not in this environment — `julia scripts/setup.jl` adds it " *
+              "on Apple Silicon"))
     end
     push!(lines, "  CUDA:  " * (CUDA_OK ? "yes" :
           CUDA_HERE ? "loaded, but CUDA.functional() says no usable device — " *
                       "check `nvidia-smi` and the driver" :
-          "not in this environment (it lives in `cuda/`)"))
+          "not in this environment — `julia scripts/setup.jl` adds it where " *
+          "`nvidia-smi` answers"))
     join(lines, "\n")
 end
 
@@ -294,9 +295,9 @@ function main(argv)
     o = parse_args(argv)
     FORCE_GPU && !GPU && error("--gpu asked for, and no device answers here.\n" *
                                probe_report() * "\n" *
-                               (Sys.isapple() ? "Run with --project=gpu, " :
-                                "Run with --project=cuda, ") *
-                               "or drop --gpu to take the processor.")
+                               "Run `julia scripts/setup.jl` to rebuild `run/` " *
+                               "for this machine, or drop --gpu to take the " *
+                               "processor.")
     # Defaults sized for the film: the same 130³ grid on either path, so the
     # picture is the same and only the noise differs.
     npart = o["particules"] > 0 ? o["particules"] : (GPU ? 8_000_000 : 600_000)

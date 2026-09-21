@@ -50,9 +50,8 @@ The shortest path to a running collision is one command. It prints the charge a
 xenon ion carries off a sodium cluster as it passes, and writes the film of it:
 
 ```
-julia --project=gpu -t auto scripts/xenon.jl     # Apple Silicon, ~2 min
-julia --project=cuda -t auto scripts/xenon.jl    # an NVIDIA card
-julia --project=viz -t auto scripts/xenon.jl     # no GPU at all, ~3.5 min
+julia scripts/setup.jl                        # once: builds `run/` for this machine
+julia --project=run -t auto scripts/xenon.jl  # ~2 min on a GPU, ~3.5 without
 ```
 
 The README walks through it from installing Julia. From inside the language:
