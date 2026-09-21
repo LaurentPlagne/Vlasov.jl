@@ -193,16 +193,23 @@ Timed from nothing on the machine above — no cache, cold start: **2 min 12 s**
 of which 30 s of physics, 31 s of drawing and the rest loading the plotting
 stack and encoding. 176 frames, 8.5 fs of collision.
 
-> [!WARNING]
-> **On a machine with no display, use the Cairo path** — the one above. GLMakie
-> needs a window: on a rented Linux box it stops at `GLFW: X11: The DISPLAY
-> environment variable is missing`, during `instantiate` as well as at run time,
-> which is why `cuda/` does not carry it. Measured there, the film costs 22.5 s
-> of physics and 61.5 s of Cairo drawing (2.9 frames/s against 5.7 on the M1
-> Max, which is the CPU talking, not the GPU).
+On a machine with a screen, the same run redraws **six times faster** from its
+cache:
 
-`scripts/render_xenon_glmakie.jl` redraws the cached run **six times faster**,
-and the reason is worth knowing: it is not the backend, it is the primitive.
+```sh
+julia --project=viz -t auto scripts/render_xenon_glmakie.jl
+```
+
+> [!NOTE]
+> That one needs a display — GLMakie opens a window. On a headless box (a rented
+> GPU, a cluster node) it stops at `GLFW: X11: The DISPLAY environment variable
+> is missing`, which is why `cuda/` carries Cairo and not GLMakie: an
+> `instantiate` that prints GLFW errors looks like a broken setup when nothing
+> is broken. The Cairo command above needs no display and draws the same film —
+> measured on a rented RTX 5060: 22.5 s of physics, 61.5 s of drawing.
+
+The reason for the six is worth knowing: it is not the backend, it is the
+primitive.
 
 | encoding 176 frames | CairoMakie | GLMakie |
 |---|---:|---:|
