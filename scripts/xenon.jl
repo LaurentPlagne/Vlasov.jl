@@ -66,12 +66,34 @@ const GREY_RGB = (0.80, 0.80, 0.80)
 # not yet bound.
 const FORCE_CPU = "--cpu" in ARGS
 const FORCE_GPU = "--gpu" in ARGS
-const METAL_HERE = !FORCE_CPU && try; @eval using Metal; true; catch; false; end
+# ⚠️ `Sys.isapple()` gates the Metal probe. Metal.jl runs on Apple hardware and
+# nowhere else, so probing it on Linux can only fail — and a failure it then
+# *mentions* is worse than no probe at all: a user on an NVIDIA box was told
+# Metal was missing, which is true, irrelevant, and not the reason anything
+# went wrong.
+const METAL_HERE = Sys.isapple() && !FORCE_CPU &&
+                   try; @eval using Metal; true; catch; false; end
 const METAL = METAL_HERE && try; @eval Metal.functional(); catch; false; end
 const CUDA_HERE = (FORCE_CPU || METAL) ? false :
                   try; @eval using CUDA; true; catch; false; end
 const CUDA_OK = CUDA_HERE && try; @eval CUDA.functional(); catch; false; end
 const GPU = METAL || CUDA_OK
+
+"""What was probed and what it answered — the two questions a machine that
+refuses to use its GPU needs answered, and in the order that matters here."""
+function probe_report()
+    lines = String[]
+    if Sys.isapple()
+        push!(lines, "  Metal: " * (METAL ? "yes" :
+              METAL_HERE ? "loaded, but Metal.functional() says no Apple GPU" :
+              "not in this environment (it lives in `gpu/`)"))
+    end
+    push!(lines, "  CUDA:  " * (CUDA_OK ? "yes" :
+          CUDA_HERE ? "loaded, but CUDA.functional() says no usable device — " *
+                      "check `nvidia-smi` and the driver" :
+          "not in this environment (it lives in `cuda/`)"))
+    join(lines, "\n")
+end
 
 # ⚠️ `Sys.isapple()` first, for the same reason as `functional()` above:
 # `using AppleAccelerate` succeeds on Linux, and the path line then claimed a
@@ -270,10 +292,11 @@ end
 
 function main(argv)
     o = parse_args(argv)
-    FORCE_GPU && !GPU &&
-        error("--gpu asked for, but no device answers `functional()` here. " *
-              "Run with --project=gpu on Apple Silicon, --project=cuda on an " *
-              "NVIDIA card, or drop the flag to take the processor.")
+    FORCE_GPU && !GPU && error("--gpu asked for, and no device answers here.\n" *
+                               probe_report() * "\n" *
+                               (Sys.isapple() ? "Run with --project=gpu, " :
+                                "Run with --project=cuda, ") *
+                               "or drop --gpu to take the processor.")
     # Defaults sized for the film: the same 130³ grid on either path, so the
     # picture is the same and only the noise differs.
     npart = o["particules"] > 0 ? o["particules"] : (GPU ? 8_000_000 : 600_000)
@@ -300,12 +323,7 @@ function main(argv)
     # A GPU package that is installed but has nothing to talk to is the most
     # confusing way to end up on the CPU — say so rather than let the wall
     # clock be the only clue.
-    if !GPU && !FORCE_CPU && METAL_HERE
-        println("  (Metal is installed but finds no Apple GPU here; " *
-                "for an NVIDIA card, run with --project=cuda)")
-    elseif !GPU && !FORCE_CPU && CUDA_HERE
-        println("  (CUDA is installed but finds no device here)")
-    end
+    !GPU && !FORCE_CPU && println(probe_report())
     flush(stdout)
 
     p = SimulationParameters(nfine = nfine, ninner = g.ninner, nouter = g.nouter,

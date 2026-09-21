@@ -10,9 +10,14 @@ the oracle the port is kept honest against.
 
 **Na₁₉₆ + Xe²⁵⁺, 500 keV, impact parameter 45 a₀, 80 million pseudo-particles.**
 The ion grazes the cluster; its field tears an electron bridge out of the
-valence cloud and carries part of it away. That is the collision the first run
-below computes — the 1997 Springer study, at two hundred times the particle
-count the machines of the day allowed.
+valence cloud and carries part of it away — the 1997 Springer study, at two
+hundred times the particle count the machines of the day allowed.
+
+**The one command below computes that same collision with 8 million**, in two
+minutes, and writes its own film: the same picture, with ten times fewer
+particles and the noise that follows. The 80-million version above is a separate
+script, `scripts/film_xenon_80M.jl` — eleven gigabytes of device memory and a
+different afternoon.
 
 ---
 

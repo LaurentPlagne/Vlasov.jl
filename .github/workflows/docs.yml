@@ -33,7 +33,7 @@ jobs:
       - uses: julia-actions/cache@v2
 
       # `docs/Project.toml` already points its `Vlasov` at `..`, and
-      # `docs/Manifest.toml` is tracked, so this replays known versions.
+      # No manifest is committed, so this resolves — see `.gitignore` for why.
       # Graphviz comes as a Julia artifact (`Graphviz_jll`): nothing to
       # apt-get.
       - name: Instantiate
