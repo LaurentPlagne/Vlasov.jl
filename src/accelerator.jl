@@ -241,6 +241,20 @@ to bound the translation cost — is **much worse**: 154.8 ms for a window of
 4×10⁶ particles and 1009 ms for one of 65 536, against 89.7 for the plain
 stride. Inside a small window the same coarse cells come round again and again,
 and the collisions the stride exists to break come straight back.
+
+⚠️ **On NVIDIA the balance is flatter, and 509 costs little.** An RTX 4070, at
+8×10⁶ particles, kernel alone: a sweep says 33.5 ms at 509 against 27.8 at 7919
+— and an **interleaved** A-B says 32.2 against 30.9, four per cent. The sweep
+had been reading the card's clocks ramping as if it were the stride; six
+alternating measurements of each cancel it, and the effect shrinks by five. So
+the Apple value stays for every backend: what it costs elsewhere is smaller than
+the reason to have one number rather than a table of them.
+
+⚠️ What that measurement also says is where the NVIDIA work actually is. On that
+card this kernel is **45 % of the step** at any stride — 27 to 33 ms, against
+2.6 for the *fine* deposit, whose stencil is eight times larger. Eight scattered
+atomics per particle into a 44 MB grid run at some 2 G/s there. The tuning is
+not what is wrong; the kernel is.
 """
 function scatter_stride(npart::Integer)
     s = 509
